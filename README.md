@@ -1,4 +1,8 @@
 <p align="center">
+  <b>Français</b> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <img src="docs/assets/banner.png" alt="Agent Browser Control, alias ABE" width="100%">
 </p>
 
@@ -165,3 +169,7 @@ npm run build-docs         # visuels de ce README depuis les SVG
 ```
 
 La conception détaillée est dans [`SPEC.md`](SPEC.md).
+
+## Licence
+
+[MIT](LICENSE) : libre d'utilisation, de modification et de redistribution, y compris à des fins commerciales.
