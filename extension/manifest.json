@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Browser Control",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Permet à n'importe quel agent MCP de piloter le navigateur (équivalent de Claude in Chrome).",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -35,5 +35,13 @@
     "32": "icons/icon-32.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
+  },
+  "sandbox": {
+    "pages": [
+      "sandbox.html"
+    ]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'none'; img-src 'none'"
   }
 }

@@ -355,4 +355,35 @@ export const TOOLS: Tool[] = [
       required: ["url"],
     },
   },
+  {
+    name: "browser_script",
+    description:
+      "Exécute un programme JavaScript (async) qui enchaîne des actions dans le navigateur d'un seul tenant, " +
+      "sans aller-retour avec le modèle : idéal pour les boucles et les vérifications en série (parcourir 20 pages, " +
+      "relever un tableau sur chacune…). Le code tourne dans un bac à sable sans réseau ni API du navigateur : " +
+      "il n'agit qu'à travers ces fonctions (toutes async sauf use/tab/log) :\n" +
+      "- nav(url) : navigue l'onglet courant (ou 'back', 'forward', 'reload')\n" +
+      "- text() : texte de la page · read(filter='interactive') : arbre avec refs · find(requête)\n" +
+      "- click(ref ou [x, y]) · type(texte, ref?) · key('Enter') · fill(ref, valeur)\n" +
+      "- js(code) : évalue du JS dans la page et renvoie la valeur (objets JSON compris)\n" +
+      "- shot() : joint une capture au résultat (5 max) · wait(secondes)\n" +
+      "- use(tabId) : change d'onglet courant · tab() : onglet courant\n" +
+      "- call(outil, args) : n'importe quel autre outil, renvoie { text, images, isError } sans lever d'erreur\n" +
+      "- log(...) : ajoute une ligne au journal renvoyé\n" +
+      "Les fonctions lèvent une erreur si l'outil échoue (utiliser try/catch). Passer le code de js() avec " +
+      "String.raw`…` pour que les \\b, \\s, \\d des expressions régulières arrivent intacts dans la page. " +
+      "La valeur renvoyée par `return` " +
+      "(sérialisable en JSON) et le journal forment le résultat. Exemple :\n" +
+      "const res = []; for (const id of [11, 12]) { await nav(`https://site/item/${id}`); " +
+      "res.push(await js(`document.querySelector('h1').textContent`)); } return res;",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "Corps d'une fonction async (peut utiliser await et return)." },
+        tabId: { type: "number", description: "Onglet courant au départ (optionnel si le script appelle use())." },
+        timeoutMs: { type: "number", description: "Durée maximale (défaut 120 000, max 280 000)." },
+      },
+      required: ["code"],
+    },
+  },
 ];

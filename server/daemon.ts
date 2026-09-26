@@ -10,8 +10,9 @@ import { basename, extname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const CALL_TIMEOUT_MS = 90_000;
+const SCRIPT_TIMEOUT_MS = 295_000;
 const EXTENSION_WAIT_MS = 10_000;
 const LOG_FILE = join(CONFIG_DIR, "actions.log");
 const OUTPUT_DIR = join(homedir(), "Downloads", "agent-browser-control");
@@ -57,11 +58,13 @@ async function forward(req: CallRequest): Promise<CallResult> {
     );
   }
   const id = nextId++;
+  // Un script d'agent dure plus longtemps qu'un outil : son propre délai, plus une marge.
+  const timeoutMs = req.tool === "browser_script" ? SCRIPT_TIMEOUT_MS : CALL_TIMEOUT_MS;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      resolve(errorResult(`Délai dépassé (${CALL_TIMEOUT_MS / 1000}s) pour l'outil ${req.tool}.`));
-    }, CALL_TIMEOUT_MS);
+      resolve(errorResult(`Délai dépassé (${timeoutMs / 1000}s) pour l'outil ${req.tool}.`));
+    }, timeoutMs);
     pending.set(id, { resolve, timer });
     extension!.send(JSON.stringify({ id, ...req }));
   });

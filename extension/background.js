@@ -71,6 +71,14 @@ chrome.alarms.onAlarm.addListener(() => connect());
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (msg?.type === "script-call") {
+    const run = scriptRuns.get(msg.runId);
+    if (!run) reply({ content: [text("Script inconnu ou terminé.")], isError: true });
+    else if (msg.tool === "browser_script") reply(fail("Un script ne peut pas lancer un autre script."));
+    else runTool(run.agent, msg.tool, msg.args ?? {}).then(reply);
+    return true; // réponse asynchrone
+  }
+  if (msg?.target === "offscreen") return;
   if (msg?.type === "reconnect") {
     reconnectDelay = 1000;
     connect();
@@ -107,6 +115,9 @@ function createStopSignal() {
 async function stopAll() {
   paused = true;
   stopSignal.trigger();
+  for (const runId of scriptRuns.keys()) {
+    chrome.runtime.sendMessage({ target: "offscreen", type: "abort-script", runId }).catch(() => {});
+  }
   await chrome.storage.session.set({ paused: true });
   for (const tabId of [...attached]) await chrome.debugger.detach({ tabId }).catch(() => {});
   attached.clear();
@@ -179,6 +190,7 @@ const TOOLS = {
   emulate,
   pdf,
   read_websocket_messages: readWebsocketMessages,
+  browser_script: browserScript,
   http_request: httpRequest,
 };
 
@@ -881,6 +893,7 @@ async function computer(agent, args) {
 
 async function javascript(agent, { tabId, code }) {
   await assertOwned(agent, tabId);
+  if (typeof code !== "string" || !code.trim()) throw new Error("'code' requis (expression JavaScript à évaluer).");
   const run = (expression) => cdp(tabId, "Runtime.evaluate", {
     expression,
     awaitPromise: true,
@@ -1017,16 +1030,20 @@ async function renderGif(frames) {
   return encodeGif(encoded, width, height);
 }
 
+/** Document offscreen unique : encodage vidéo (MediaRecorder) et iframe sandbox des scripts. */
+async function ensureOffscreen() {
+  if (await chrome.offscreen.hasDocument()) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["BLOBS", "IFRAME_SCRIPTING"],
+    justification: "Encodage vidéo des enregistrements et exécution isolée des scripts d'agent",
+  });
+}
+
 /** MediaRecorder n'existe pas dans un service worker : l'encodage se fait dans un document offscreen. */
 async function renderWebm(frames) {
   const { width, height } = outputSize(frames, WEBM_MAX_WIDTH);
-  if (!(await chrome.offscreen.hasDocument())) {
-    await chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["BLOBS"],
-      justification: "Encodage des enregistrements en vidéo WebM",
-    });
-  }
+  await ensureOffscreen();
   const payload = [];
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
@@ -1039,4 +1056,45 @@ async function renderWebm(frames) {
   const res = await chrome.runtime.sendMessage({ target: "offscreen", type: "encode-webm", frames: payload, width, height });
   if (!res || res.error) throw new Error(`Encodage WebM impossible : ${res?.error ?? "pas de réponse"}`);
   return res.base64;
+}
+
+// ---------------------------------------------------------------------------
+// browser_script : un programme de l'agent, exécuté d'un seul tenant dans la sandbox
+// ---------------------------------------------------------------------------
+
+const SCRIPT_DEFAULT_MS = 120_000;
+const SCRIPT_MAX_MS = 280_000; // sous le délai HTTP du shim MCP (300 s)
+const scriptRuns = new Map(); // runId -> { agent }
+let scriptCounter = 0;
+
+async function browserScript(agent, { code, tabId, timeoutMs }) {
+  if (typeof code !== "string" || !code.trim()) throw new Error("'code' requis.");
+  if (tabId !== undefined) await assertOwned(agent, tabId);
+  await ensureOffscreen();
+  const runId = `script_${++scriptCounter}`;
+  const limit = Math.min(Math.max(timeoutMs ?? SCRIPT_DEFAULT_MS, 1000), SCRIPT_MAX_MS);
+  scriptRuns.set(runId, { agent });
+  const started = Date.now();
+  let timer;
+  try {
+    const done = chrome.runtime.sendMessage({ target: "offscreen", type: "run-script", runId, code, tabId });
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        chrome.runtime.sendMessage({ target: "offscreen", type: "abort-script", runId }).catch(() => {});
+        resolve({ error: `Délai dépassé (${limit / 1000} s) : script interrompu.`, logs: [], images: [], calls: null });
+      }, limit);
+    });
+    const res = await Promise.race([done, timeout]);
+    const seconds = ((Date.now() - started) / 1000).toFixed(1).replace(".", ",");
+    const lines = [`Script ${res.error ? "en échec" : "terminé"} en ${seconds} s${res.calls != null ? `, ${res.calls} appel(s) d'outils` : ""}.`];
+    if (res.logs?.length) lines.push("", "Journal (log) :", ...res.logs);
+    if (res.error) lines.push("", `Erreur : ${res.error}`);
+    else lines.push("", "Valeur renvoyée :", res.value === null ? "(aucune)" : JSON.stringify(res.value, null, 2));
+    let body = lines.join("\n");
+    if (body.length > 60_000) body = `${body.slice(0, 60_000)}\n[Tronqué]`;
+    return { content: [text(untrusted(body)), ...(res.images ?? [])], isError: !!res.error };
+  } finally {
+    clearTimeout(timer);
+    scriptRuns.delete(runId);
+  }
 }

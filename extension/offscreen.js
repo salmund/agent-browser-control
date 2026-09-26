@@ -48,3 +48,50 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   encodeWebm(msg).then(reply, (err) => reply({ error: String(err?.message ?? err) }));
   return true; // réponse asynchrone
 });
+
+// ---------------------------------------------------------------------------
+// Scripts d'agent : l'iframe sandbox exécute le code, on relaie ses appels d'outils
+// vers le service worker, et le résultat final vers l'appelant.
+// ---------------------------------------------------------------------------
+
+const sandbox = document.createElement("iframe");
+sandbox.src = "sandbox.html";
+const sandboxReady = new Promise((resolve) => {
+  window.addEventListener("message", function onReady(e) {
+    if (e.source === sandbox.contentWindow && e.data?.kind === "ready") {
+      window.removeEventListener("message", onReady);
+      resolve();
+    }
+  });
+});
+document.body.append(sandbox);
+
+const scriptReplies = new Map(); // runId -> réponse à renvoyer au service worker
+
+window.addEventListener("message", async (e) => {
+  if (e.source !== sandbox.contentWindow) return;
+  const msg = e.data;
+  if (msg?.kind === "call") {
+    const result = await chrome.runtime
+      .sendMessage({ type: "script-call", runId: msg.runId, tool: msg.tool, args: msg.args })
+      .catch((err) => ({ content: [{ type: "text", text: String(err?.message ?? err) }], isError: true }));
+    sandbox.contentWindow.postMessage({ kind: "call-result", runId: msg.runId, callId: msg.callId, result }, "*");
+  } else if (msg?.kind === "done") {
+    scriptReplies.get(msg.runId)?.(msg);
+    scriptReplies.delete(msg.runId);
+  }
+});
+
+chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (msg?.target !== "offscreen") return;
+  if (msg.type === "run-script") {
+    sandboxReady.then(() => {
+      scriptReplies.set(msg.runId, reply);
+      sandbox.contentWindow.postMessage({ kind: "run", runId: msg.runId, code: msg.code, tabId: msg.tabId }, "*");
+    });
+    return true; // réponse asynchrone
+  }
+  if (msg.type === "abort-script") {
+    sandbox.contentWindow.postMessage({ kind: "abort", runId: msg.runId }, "*");
+  }
+});

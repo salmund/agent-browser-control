@@ -42,7 +42,7 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 - Le démon refuse toute requête HTTP portant un en-tête `Origin` (pages web) et n'accepte en
   WebSocket que les origines `chrome-extension://`.
 
-## Outils (v0.3)
+## Outils (v0.4)
 
 | Outil | Rôle |
 |---|---|
@@ -64,6 +64,7 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 | `performance_metrics` | Web Vitals, poids de la page, mémoire, layout |
 | `emulate` | Appareil mobile, réseau lent / hors ligne, CPU, thème, géolocalisation |
 | `pdf` | Export PDF de la page |
+| `browser_script` | Programme JS qui enchaîne des actions d'un seul tenant (boucles, audits), exécuté dans une sandbox sans réseau |
 
 ## Panneau latéral
 
@@ -78,4 +79,11 @@ npm run typecheck          # vérification TypeScript du serveur
 npm run reload-extension   # recharge l'extension après modification de ses fichiers
 node test/call.ts <outil> '<json>'   # appeler un outil comme un agent (images dans test/out/)
 node test/smoke.ts  # test de bout en bout sans navigateur (fausse extension)
+```
+
+Exemple de script : `test/scripts/colle.js` (audit d'une colle Moodle, 32 actions en ~12 s) :
+
+```sh
+python -c "import json; print(json.dumps({'tabId': <id>, 'code': open('test/scripts/colle.js', encoding='utf-8').read()}))" > args.json
+node test/call.ts browser_script "$(cat args.json)"
 ```
