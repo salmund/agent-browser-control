@@ -770,7 +770,23 @@ async function formInput(agent, { tabId, ref, value }) {
 async function getPageText(agent, { tabId }) {
   await assertOwned(agent, tabId);
   const { title, url, text: body } = await inPage(tabId, "pageText");
-  return ok(text(`${await overlayNotice(tabId)}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`));
+  return ok(text(`${await overlayNotice(tabId)}${await canvasNotice(tabId)}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`));
+}
+
+/**
+ * Éditeurs et applis qui dessinent leur contenu dans un <canvas> (Google Docs, Figma, tableurs, jeux…) :
+ * ni read_page ni get_page_text n'en voient le texte. L'agent doit le savoir pour ne pas conclure à une page vide.
+ */
+async function canvasNotice(tabId) {
+  const big = await evaluate(tabId, `[...document.querySelectorAll("canvas")].some((c) => {
+    const r = c.getBoundingClientRect();
+    return r.width * r.height > innerWidth * innerHeight * 0.25;
+  })`).catch(() => false);
+  return big
+    ? "ℹ Une grande partie de la page est dessinée dans un <canvas> : son contenu (texte d'un document, dessin…) " +
+      "n'apparaît pas ici. Pour le vérifier, une capture ciblée (computer screenshot avec region) ; pour écrire, " +
+      "computer type fonctionne dans la plupart de ces éditeurs.\n\n"
+    : "";
 }
 
 async function fileUpload(agent, { tabId, ref, paths }) {
@@ -839,7 +855,12 @@ async function uploadViaFileChooser(tabId, ref, paths) {
 // ---------------------------------------------------------------------------
 
 /** Capture le viewport, redimensionnée en pixels CSS (coordonnées image = coordonnées de clic). */
-async function captureViewport(tabId) {
+/**
+ * Capture du viewport. Par défaut en pixels CSS (coordonnées image = coordonnées de clic).
+ * scale (0,2 à 1) réduit l'image ; region [x0, y0, x1, y1] (pixels CSS) zoome sur une zone, à la résolution
+ * réelle de l'écran : de quoi lire un petit texte sans envoyer une grande image.
+ */
+async function captureViewport(tabId, { scale = 1, region } = {}) {
   await inPage(tabId, "hideOverlay").catch(() => {});
   const [{ w, h }, shot] = await Promise.all([
     evaluate(tabId, "({ w: innerWidth, h: innerHeight })"),
@@ -847,10 +868,22 @@ async function captureViewport(tabId) {
   ]);
   const blob = await (await fetch(`data:image/png;base64,${shot.data}`)).blob();
   const bitmap = await createImageBitmap(blob);
-  const canvas = new OffscreenCanvas(w, h);
-  canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  const dpr = bitmap.width / w;
+  let src = [0, 0, w, h];
+  let outW = Math.round(w * scale);
+  let outH = Math.round(h * scale);
+  if (region) {
+    const [x0, y0, x1, y1] = region.map(Number);
+    if (!(x1 > x0 && y1 > y0)) throw new Error("region attendue : [x0, y0, x1, y1] avec x1 > x0 et y1 > y0.");
+    src = [Math.max(0, x0), Math.max(0, y0), Math.min(w, x1), Math.min(h, y1)];
+    const zoom = Math.min(dpr * 2, 1600 / (src[2] - src[0]));
+    outW = Math.round((src[2] - src[0]) * zoom);
+    outH = Math.round((src[3] - src[1]) * zoom);
+  }
+  const canvas = new OffscreenCanvas(outW, outH);
+  canvas.getContext("2d").drawImage(bitmap, src[0] * dpr, src[1] * dpr, (src[2] - src[0]) * dpr, (src[3] - src[1]) * dpr, 0, 0, outW, outH);
   bitmap.close();
-  return { jpeg: await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 }), w, h };
+  return { jpeg: await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 }), w, h, outW, outH, src };
 }
 
 async function blobToBase64(blob) {
@@ -860,11 +893,19 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 
-async function screenshot(tabId) {
-  const { jpeg, w, h } = await captureViewport(tabId);
+async function screenshot(tabId, { scale, region } = {}) {
+  const s = Math.min(Math.max(Number(scale) || 1, 0.2), 1);
+  const { jpeg, w, h, outW, outH, src } = await captureViewport(tabId, { scale: s, region });
+  let note = `Capture ${w}x${h} (pixels CSS du viewport).`;
+  if (region) {
+    note = `Zoom sur la zone (${src[0]}, ${src[1]}) → (${src[2]}, ${src[3]}), image ${outW}x${outH}. ` +
+      `Pour cliquer : x = ${src[0]} + x_image × ${((src[2] - src[0]) / outW).toFixed(3)}, y = ${src[1]} + y_image × ${((src[3] - src[1]) / outH).toFixed(3)}.`;
+  } else if (s < 1) {
+    note = `Capture réduite à ${Math.round(s * 100)} % (${outW}x${outH}) d'un viewport de ${w}x${h} : pour cliquer, diviser les coordonnées de l'image par ${s}.`;
+  }
   return ok(
     { type: "image", data: await blobToBase64(jpeg), mimeType: "image/jpeg" },
-    text(`${await overlayNotice(tabId)}Capture ${w}x${h} (pixels CSS du viewport).`),
+    text(`${await overlayNotice(tabId)}${note}`),
   );
 }
 
@@ -1023,7 +1064,7 @@ async function computer(agent, args) {
 
   switch (action) {
     case "screenshot":
-      return screenshot(tabId);
+      return screenshot(tabId, args);
 
     case "left_click":
     case "right_click":

@@ -82,13 +82,22 @@ export const TOOLS: Tool[] = [
         text: {
           type: "string",
           description:
-            "Pour 'type' : texte à saisir. Pour 'key' : touche(s) séparées par des espaces, " +
+            "Pour 'type' : texte à saisir, même long (plus sûr que copier-coller : le presse-papiers est partagé avec " +
+            "l'utilisateur). Pour 'key' : touche(s) séparées par des espaces, " +
             "combinaisons avec '+' (ex. 'Enter', 'ctrl+a Backspace').",
         },
         modifiers: { type: "string", description: "Modificateurs pour les clics, ex. 'ctrl', 'shift+alt'." },
         scroll_direction: { type: "string", enum: ["up", "down", "left", "right"] },
         scroll_amount: { type: "number", description: "Nombre de crans de molette (défaut 3)." },
         duration: { type: "number", description: "Pour 'wait' : durée en secondes (max 30)." },
+        scale: {
+          type: "number",
+          description: "Pour 'screenshot' : réduit l'image (0,2 à 1). Une capture coûte cher : 0,5 suffit souvent pour voir la mise en page.",
+        },
+        region: {
+          type: "array", items: { type: "number" }, minItems: 4, maxItems: 4,
+          description: "Pour 'screenshot' : [x0, y0, x1, y1] en pixels CSS, zoom net sur une zone (lire un petit texte, vérifier un détail).",
+        },
       },
       required: ["tabId", "action"],
     },
