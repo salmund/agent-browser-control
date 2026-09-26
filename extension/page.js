@@ -390,7 +390,9 @@
   let hideTimer = null;
 
   function ensureOverlay() {
-    if (overlayRoot?.isConnected) return overlayRoot;
+    if (overlayRoot?.host.isConnected) return overlayRoot;
+    // Bordures orphelines (extension rechargée, script réinjecté) : personne ne les masquerait plus.
+    for (const old of document.querySelectorAll("#abc-overlay")) old.remove();
     const host = document.createElement("div");
     host.id = "abc-overlay";
     host.style.cssText = "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
@@ -424,8 +426,12 @@
     hideTimer = setTimeout(hideOverlay, 4000);
   }
 
-  function hideOverlay() {
-    if (overlayRoot?.host) overlayRoot.host.style.display = "none";
+  /** Masque la bordure, puis attend que la page soit redessinée : sinon une capture la verrait encore. */
+  async function hideOverlay() {
+    const hosts = [...document.querySelectorAll("#abc-overlay")].filter((h) => h.style.display !== "none");
+    if (!hosts.length) return;
+    for (const h of hosts) h.style.display = "none";
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   }
 
   const isFileInput = (ref) => {
