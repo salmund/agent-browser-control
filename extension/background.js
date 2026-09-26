@@ -1083,9 +1083,20 @@ async function computer(agent, args) {
       } else {
         await showOverlay(tabId);
       }
+      // Sans champ de saisie actif, le texte part vers la page : les applis le prennent pour des raccourcis.
+      const focus = await evaluate(tabId, `(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return "aucun";
+        if (el.tagName === "IFRAME") return "iframe";
+        return el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ? "champ" : el.tagName.toLowerCase();
+      })()`).catch(() => "inconnu");
       await cdp(tabId, "Input.insertText", { text: args.text });
       await recordFrame(tabId, "type");
-      return ok(text(`Texte saisi (${args.text.length} caractères).`));
+      const warning = ["champ", "iframe", "inconnu"].includes(focus)
+        ? ""
+        : `\n⚠ Aucun champ de saisie n'avait le focus (élément actif : ${focus}) : le texte est parti vers la page, ` +
+          "où il a pu déclencher des raccourcis clavier. Cliquer d'abord dans le champ (ref), puis vérifier.";
+      return ok(text(`Texte saisi (${args.text.length} caractères).${warning}`));
     }
 
     case "key": {
