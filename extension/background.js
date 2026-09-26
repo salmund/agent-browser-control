@@ -879,6 +879,27 @@ function modifierMask(spec) {
   return spec.toLowerCase().split("+").reduce((m, k) => m | (MODIFIER_BITS[k.trim()] ?? 0), 0);
 }
 
+/**
+ * Nombre de positions de pointeur reçues par la page à plus de 25 px du tracé de l'agent : ce ne sont pas
+ * les siennes, c'est un humain qui a bougé la souris sur la page pendant le geste.
+ */
+function strayPointerEvents(received, points) {
+  const dist = (p, a, b) => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = dx * dx + dy * dy;
+    const t = len ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len)) : 0;
+    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  };
+  let stray = 0;
+  for (const [x, y] of received ?? []) {
+    let best = Infinity;
+    for (let k = 1; k < points.length; k++) best = Math.min(best, dist({ x, y }, points[k - 1], points[k]));
+    if (points.length === 1) best = Math.hypot(x - points[0].x, y - points[0].y);
+    if (best > 25) stray++;
+  }
+  return stray;
+}
+
 /** Centre d'un élément (page principale ou iframe) en coordonnées du viewport de l'onglet. */
 async function locateRef(tabId, ref) {
   const target = parseRef(ref);
@@ -903,16 +924,29 @@ async function click(tabId, { x, y }, button, count, modifiers) {
   }
 }
 
-async function drag(tabId, from, to, modifiers) {
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y, modifiers });
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", clickCount: 1, modifiers });
-  const steps = 10;
-  for (let i = 1; i <= steps; i++) {
-    const x = from.x + ((to.x - from.x) * i) / steps;
-    const y = from.y + ((to.y - from.y) * i) / steps;
-    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1, modifiers });
+/**
+ * Glisser le long d'un tracé (au moins deux points), bouton maintenu d'un bout à l'autre : un seul trait
+ * pour un logiciel de dessin, un seul geste pour un curseur ou un glisser-déposer.
+ */
+async function drag(tabId, points, modifiers) {
+  const send = (params) => cdp(tabId, "Input.dispatchMouseEvent", { ...params, modifiers });
+  const move = (x, y) => send({ type: "mouseMoved", x, y, button: "left", buttons: 1 });
+  const [first] = points;
+  const last = points.at(-1);
+  await send({ type: "mouseMoved", x: first.x, y: first.y, button: "none", buttons: 0 });
+  await send({ type: "mousePressed", x: first.x, y: first.y, button: "left", buttons: 1, clickCount: 1 });
+  for (let k = 1; k < points.length; k++) {
+    const a = points[k - 1];
+    const b = points[k];
+    // Un point intermédiaire tous les ~8 px : les applis de dessin et les curseurs suivent le geste.
+    const steps = Math.max(2, Math.min(100, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 8)));
+    for (let i = 1; i <= steps; i++) await move(a.x + ((b.x - a.x) * i) / steps, a.y + ((b.y - a.y) * i) / steps);
   }
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", clickCount: 1, modifiers });
+  // Pause au point d'arrivée : les logiciels qui lissent le trait dessinent avec un point de retard.
+  await move(last.x, last.y);
+  await sleep(30);
+  await move(last.x, last.y);
+  await send({ type: "mouseReleased", x: last.x, y: last.y, button: "left", buttons: 0, clickCount: 1 });
 }
 
 const NAMED_KEYS = {
@@ -1006,14 +1040,30 @@ async function computer(agent, args) {
     }
 
     case "left_click_drag": {
-      if (!Array.isArray(args.start_coordinate)) throw new Error("'start_coordinate' [x, y] requis.");
-      const from = { x: args.start_coordinate[0], y: args.start_coordinate[1] };
-      const to = await targetPoint(tabId, args);
+      let points;
+      if (Array.isArray(args.path)) {
+        points = args.path.map((p) => ({ x: Number(p[0]), y: Number(p[1]) }));
+        if (points.length < 2 || points.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+          throw new Error("'path' doit être une liste d'au moins deux points [x, y].");
+        }
+      } else {
+        if (!Array.isArray(args.start_coordinate)) throw new Error("'start_coordinate' [x, y] (ou 'path') requis.");
+        points = [{ x: args.start_coordinate[0], y: args.start_coordinate[1] }, await targetPoint(tabId, args)];
+      }
+      const [from, to] = [points[0], points.at(-1)];
       await showOverlay(tabId, from);
-      await drag(tabId, from, to, modifiers);
+      await inPage(tabId, "gestureStart").catch(() => {});
+      await drag(tabId, points, modifiers);
+      const received = await inPage(tabId, "gestureEnd").catch(() => []);
       await showOverlay(tabId, to);
       await recordFrame(tabId, action, to);
-      return ok(text(`Glisser de (${from.x}, ${from.y}) à (${to.x}, ${to.y}).`));
+      const via = points.length > 2 ? ` en passant par ${points.length - 2} point(s)` : "";
+      const stray = strayPointerEvents(received, points);
+      const warning = stray
+        ? `\n⚠ Geste probablement perturbé : la page a reçu ${stray} position(s) de pointeur loin du tracé, sans doute ` +
+          "la souris de l'utilisateur. Vérifier le résultat (capture) et recommencer quand il ne la touche plus."
+        : "";
+      return ok(text(`Glisser de (${from.x}, ${from.y}) à (${to.x}, ${to.y})${via}.${warning}`));
     }
 
     case "hover": {

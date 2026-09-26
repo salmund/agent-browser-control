@@ -68,6 +68,13 @@ export const TOOLS: Tool[] = [
           type: "array", items: { type: "number" }, minItems: 2, maxItems: 2,
           description: "Pour 'left_click_drag' : point de départ [x, y].",
         },
+        path: {
+          type: "array",
+          items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
+          description:
+            "Pour 'left_click_drag' : tracé [[x, y], …] parcouru d'un seul geste, bouton maintenu (dessin, courbe, " +
+            "signature). Remplace start_coordinate / coordinate.",
+        },
         ref: {
           type: "string",
           description: "Référence d'élément issue de read_page / find (ex. 'ref_12', ou 'f7:ref_3' dans une iframe).",

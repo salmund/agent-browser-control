@@ -112,7 +112,20 @@
     if (INTERACTIVE_ROLES.has(role)) return true;
     if (el.hasAttribute("onclick")) return true;
     const tabindex = el.getAttribute("tabindex");
-    return tabindex !== null && Number(tabindex) >= 0;
+    if (tabindex !== null && Number(tabindex) >= 0) return true;
+    return hasPointerCursor(el);
+  }
+
+  /**
+   * Beaucoup d'interfaces (éditeurs, applis de dessin, SPA) font leurs boutons avec des <div> sans rôle :
+   * le curseur en main est alors le meilleur indice qu'on peut cliquer. Le curseur s'hérite : on ne garde
+   * que le plus haut élément de la chaîne, pas chacun de ses enfants.
+   */
+  function hasPointerCursor(el) {
+    if (["HTML", "BODY"].includes(el.tagName)) return false;
+    if (getComputedStyle(el).cursor !== "pointer") return false;
+    const parent = el.parentElement;
+    return !parent || getComputedStyle(parent).cursor !== "pointer";
   }
 
   function describe(el, role) {
@@ -404,6 +417,9 @@
                  background: rgba(139, 92, 246, .35); border: 2px solid rgb(139, 92, 246);
                  animation: p .6s ease-out forwards; }
         @keyframes p { to { transform: scale(2.2); opacity: 0; } }
+        .gesture { position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+                   padding: 6px 14px; border-radius: 999px; background: rgb(139, 92, 246); color: #fff;
+                   font: 600 13px/1.3 system-ui, sans-serif; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
       </style>
       <div class="frame"></div>`;
     document.documentElement.appendChild(host);
@@ -626,5 +642,35 @@
     };
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData, blockingOverlay };
+  // --- Gestes de l'agent : prévenir l'humain et repérer ses interférences --------------------
+
+  let pointerLog = null;
+  const recordPointer = (e) => pointerLog?.push([Math.round(e.clientX), Math.round(e.clientY)]);
+  window.addEventListener("pointermove", recordPointer, true);
+  window.addEventListener("pointerdown", recordPointer, true);
+
+  /** Début d'un geste : étiquette pour l'humain, et enregistrement des positions de pointeur. */
+  function gestureStart() {
+    pointerLog = [];
+    const { host, shadow } = ensureOverlay();
+    host.style.display = "block";
+    clearTimeout(hideTimer);
+    if (!shadow.querySelector(".gesture")) {
+      const label = document.createElement("div");
+      label.className = "gesture";
+      label.textContent = "Un agent agit sur cette page : ne touchez pas la souris ici";
+      shadow.appendChild(label);
+    }
+  }
+
+  /** Fin d'un geste : renvoie les positions reçues par la page pendant le geste. */
+  function gestureEnd() {
+    const log = pointerLog ?? [];
+    pointerLog = null;
+    overlayRoot?.shadow.querySelector(".gesture")?.remove();
+    hideTimer = setTimeout(hideOverlay, 4000);
+    return log;
+  }
+
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData, blockingOverlay, gestureStart, gestureEnd };
 })();
