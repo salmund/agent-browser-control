@@ -526,4 +526,43 @@ export const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: "downloads",
+    description:
+      "Fichiers téléchargés depuis les pages. action='download' : télécharge un fichier (url, ou ref d'un lien avec " +
+      "tabId) avec la session de l'utilisateur (PDF d'un cours réservé aux inscrits…) et attend la fin. action='wait' : " +
+      "après un clic qui déclenche un téléchargement, attend qu'il soit terminé. action='list' : les téléchargements " +
+      "de l'agent. Renvoie le chemin du fichier, à passer à read_document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["download", "wait", "list"] },
+        tabId,
+        url: { type: "string" },
+        ref: { type: "string", description: "Lien (ou élément qui en contient un) issu de read_page / find." },
+        filename: {
+          type: "string",
+          description: "download : nom souhaité (certains navigateurs l'ignorent : se fier au chemin renvoyé).",
+        },
+        timeout: { type: "number", description: "Secondes d'attente (défaut 60, max 280)." },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "read_document",
+    description:
+      "Texte d'un document du dossier Téléchargements : PDF (pages scannées lues par OCR), Word (.docx), " +
+      "PowerPoint (.pptx), Excel (.xlsx), fichiers texte (.txt, .md, .csv, .srt, .html…). path : le chemin renvoyé par " +
+      "downloads (ou un nom de fichier). pages : « 3 », « 2-5 », « 1,4 » pour une partie (défaut : tout, 60 000 " +
+      "caractères au plus, la suite est indiquée).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        pages: { type: "string" },
+      },
+      required: ["path"],
+    },
+  },
 ];

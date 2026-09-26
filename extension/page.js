@@ -672,5 +672,14 @@
     return log;
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData, blockingOverlay, gestureStart, gestureEnd };
+  /** Adresse d'un lien (ou d'un élément qui en contient un) : pour télécharger le fichier qu'il désigne. */
+  function linkHref(ref) {
+    const el = elementFor(ref);
+    const link = el.closest("a[href]") ?? el.querySelector("a[href]");
+    const url = link?.href ?? el.getAttribute("src") ?? el.getAttribute("data-href");
+    if (!url) throw new Error(`${ref} n'est pas un lien vers un fichier.`);
+    return new URL(url, location.href).href;
+  }
+
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref };
 })();

@@ -52,6 +52,10 @@ secours, si ABE est injoignable (extension désactivée, démon arrêté), et en
 
 ## Autres outils utiles
 
+- Fichiers : `downloads` (`action: "download"` avec l'URL ou la ref d'un lien, avec la session de
+  l'utilisateur ; `action: "wait"` après un clic qui télécharge), puis `read_document` avec le chemin renvoyé
+  (PDF, même scanné, Word, PowerPoint, Excel, texte ; seulement dans Téléchargements).
+
 `javascript`, `read_console_messages`, `read_network_requests`, `network_get_body`, `read_websocket_messages`,
 `network_intercept`, `http_request` (sans cookies, hors CSP), `storage`, `performance_metrics`, `emulate`, `pdf`,
 `save_image`, `gif_creator` (GIF `quality: "haute"`, ou `format: "webm"` pour une vidéo qu'une IA pourra lire),

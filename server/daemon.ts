@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
+import { readDocument } from "./documents.ts";
 
 const VERSION = "0.5.0";
 const CALL_TIMEOUT_MS = 90_000;
@@ -127,11 +128,9 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 400, { error: "bad json" });
     }
     const started = Date.now();
-    // Suivre un téléchargement ne touche pas au navigateur : le démon répond seul.
-    const result = call.tool === "download_media" && call.args?.action === "status"
-      ? await Promise.resolve()
-          .then((): CallResult => ({ content: [{ type: "text", text: mediaStatus(call.args.jobId as string | undefined) }] }))
-          .catch((err) => errorResult(String(err instanceof Error ? err.message : err)))
+    const local = localTool(call);
+    const result = local
+      ? await local.catch((err) => errorResult(`${call.tool} : ${err instanceof Error ? err.message : err}`))
       : await forward(call);
     log({ agent: call.agent, tool: call.tool, args: redact(call.args), ms: Date.now() - started, error: !!result.isError });
     return sendJson(res, 200, result);
@@ -189,6 +188,20 @@ async function readAttachedOcr(result: CallResult): Promise<CallResult> {
   }
   if (!replaced) result.content.push({ type: "text", text: block });
   return result;
+}
+
+/** Outils qui ne touchent pas au navigateur : le démon, qui a accès au système, répond seul. */
+function localTool(call: CallRequest): Promise<CallResult> | null {
+  const args = call.args ?? {};
+  if (call.tool === "download_media" && args.action === "status") {
+    return Promise.resolve().then(() => ({ content: [{ type: "text", text: mediaStatus(args.jobId as string | undefined) }] }));
+  }
+  if (call.tool === "read_document") {
+    // Le contenu d'un document vient de l'extérieur : non fiable, comme une page web.
+    return readDocument({ path: String(args.path ?? ""), pages: args.pages as string | undefined })
+      .then((text) => ({ content: [{ type: "text", text: untrusted(text) }] }));
+  }
+  return null;
 }
 
 /**
