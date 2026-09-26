@@ -53,7 +53,7 @@ secours, si ABE est injoignable (extension désactivée, démon arrêté), et en
 ## Autres outils utiles
 
 - Vidéo YouTube à lire, résumer ou noter : `transcript` sur l'onglet de la vidéo (texte minuté, `translate: "fr"`,
-  `from` / `to` pour un passage). Rien n'est téléchargé : ne pas utiliser `download_media` pour ça.
+  `start` / `end` pour un passage). Rien n'est téléchargé : ne pas utiliser `download_media` pour ça.
 - Fichiers : `downloads` (`action: "download"` avec l'URL ou la ref d'un lien, avec la session de
   l'utilisateur ; `action: "wait"` après un clic qui télécharge), puis `read_document` avec le chemin renvoyé
   (PDF, même scanné, Word, PowerPoint, Excel, texte ; seulement dans Téléchargements).

@@ -1709,7 +1709,7 @@ const clock = (s) => {
 /** « 754 », « 12:34 » ou « 1:02:03 » : secondes. */
 const seconds = (v) => (v === undefined || v === "" ? undefined : String(v).split(":").reduce((acc, n) => acc * 60 + Number(n), 0));
 
-async function transcript(agent, { tabId, lang, translate, from, to }) {
+async function transcript(agent, { tabId, lang, translate, start: startAt, end: endAt }) {
   const tab = await assertOwned(agent, tabId);
   if (!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(tab.url ?? "")) {
     throw new Error("transcript lit les vidéos YouTube ouvertes dans l'onglet. Pour un autre site : download_media avec mode='subtitles'.");
@@ -1724,8 +1724,8 @@ async function transcript(agent, { tabId, lang, translate, from, to }) {
   const data = res.result?.value;
   if (!data || data.error) return fail(data?.error ?? "Transcription introuvable.");
   // Paragraphes d'environ 30 s, repérés par leur minutage : lisible, et on peut y renvoyer.
-  const start = seconds(from) || 0;
-  const end = seconds(to) ?? Infinity;
+  const start = seconds(startAt) || 0;
+  const end = seconds(endAt) ?? Infinity;
   const paragraphs = [];
   for (const seg of data.segments.filter((s) => s.t >= start && s.t <= end)) {
     const last = paragraphs.at(-1);
@@ -1736,7 +1736,7 @@ async function transcript(agent, { tabId, lang, translate, from, to }) {
   if (body.length > 60_000) {
     const cut = body.lastIndexOf("\n[", 60_000);
     const next = /^\[([\d:]+)\]/.exec(body.slice(cut + 1))?.[1];
-    body = `${body.slice(0, cut)}\n[Tronqué : suite avec from=${next}.]`;
+    body = `${body.slice(0, cut)}\n[Tronqué : suite avec start=${next}.]`;
   }
   const header = `« ${data.title} »${data.author ? ` par ${data.author}` : ""}, ${clock(data.seconds || 0)}. Sous-titres : ${data.language}.`;
   return ok(text(`${header}\n${untrusted(body || "(rien dans cet intervalle)")}`));

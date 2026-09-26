@@ -533,15 +533,15 @@ export const TOOLS: Tool[] = [
       "d'environ 30 s repérés par leur minutage [m:ss]. Rien n'est téléchargé : c'est l'outil pour lire, résumer ou " +
       "prendre des notes sur une vidéo. Lu dans la page comme le fait le lecteur, donc sans les refus (HTTP 429) " +
       "de download_media. Par défaut dans la langue parlée ; lang pour une autre piste, translate pour une traduction " +
-      "automatique par YouTube. from / to pour un passage (« 12:30 »).",
+      "automatique par YouTube. start / end pour un passage (« 12:30 »).",
     inputSchema: {
       type: "object",
       properties: {
         tabId,
         lang: { type: "string", description: "Piste de sous-titres (fr, en…). Défaut : la langue parlée dans la vidéo." },
         translate: { type: "string", description: "Traduire les sous-titres dans cette langue (fr…)." },
-        from: { type: "string", description: "Début du passage : « 754 », « 12:34 » ou « 1:02:03 »." },
-        to: { type: "string", description: "Fin du passage, même format." },
+        start: { type: "string", description: "Début du passage : « 754 », « 12:34 » ou « 1:02:03 »." },
+        end: { type: "string", description: "Fin du passage, même format." },
       },
       required: ["tabId"],
     },
