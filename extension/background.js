@@ -377,7 +377,7 @@ async function navigate(agent, { tabId, url }) {
   });
   const tab = await chrome.tabs.get(tabId);
   await recordFrame(tabId, `navigate ${tab.url}`);
-  return ok(text(`Navigation terminée : ${tab.title} — ${tab.url}${note}`));
+  return ok(text(`${await overlayNotice(tabId)}Navigation terminée : ${tab.title} — ${tab.url}${note}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +666,30 @@ async function inAllFrames(tabId, fnName, arg) {
 /** Retour visuel, sans jamais faire échouer l'action. */
 const showOverlay = (tabId, point) => inPage(tabId, "overlay", point ?? {}).catch(() => {});
 
+/**
+ * Avertissement placé en tête des lectures quand une fenêtre recouvre la page (bannière de cookies,
+ * modale) : sinon, noyée en fin de page, l'agent ne comprend pas pourquoi ses clics n'aboutissent pas.
+ */
+async function overlayNotice(tabId) {
+  let o;
+  try {
+    o = await inPage(tabId, "blockingOverlay");
+  } catch {
+    return "";
+  }
+  if (!o) return "";
+  const what = o.consent ? "Une bannière de cookies" : `Une fenêtre (${o.cover} % de l'écran)`;
+  const advice = o.consent
+    ? "Tant qu'elle est ouverte, les clics sur la page risquent de tomber dessus : la fermer d'abord, en choisissant " +
+      "l'option qui refuse les cookies non essentiels (« Refuser », « Continuer sans accepter »), sauf consigne contraire de l'utilisateur. " +
+      "Si le clic reste sans effet juste après le chargement, attendre (wait_for networkIdle) puis réessayer."
+    : "Elle intercepte probablement les clics sur la page : la traiter ou la fermer d'abord.";
+  const where = o.inIframe ? "\nSes boutons sont dans une iframe : voir la section iframe de read_page." : "";
+  const details = [`Titre : ${o.title}`];
+  if (o.buttons.length) details.push(`Boutons : ${o.buttons.map((b) => `${b.name} [${b.ref}]`).join(" · ")}`);
+  return `⚠ ${what} recouvre la page. ${advice}${where}\n${untrusted(details.join("\n"))}\n\n`;
+}
+
 async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
   await assertOwned(agent, tabId);
   if (ref) {
@@ -683,7 +707,7 @@ async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
   }
   let out = parts.join("\n");
   if (out.length > 80_000) out = `${out.slice(0, 80_000)}\n[Tronqué : cibler une ref ou utiliser viewport=true.]`;
-  return ok(text(untrusted(out)));
+  return ok(text((await overlayNotice(tabId)) + untrusted(out)));
 }
 
 async function find(agent, { tabId, query, limit = 20 }) {
@@ -703,7 +727,7 @@ async function find(agent, { tabId, query, limit = 20 }) {
   const result = shown.length
     ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${shown.join("\n")}${more}`
     : `Aucun élément trouvé pour ${JSON.stringify(query)}.`;
-  return ok(text(untrusted(result)));
+  return ok(text((await overlayNotice(tabId)) + untrusted(result)));
 }
 
 async function formInput(agent, { tabId, ref, value }) {
@@ -720,7 +744,7 @@ async function formInput(agent, { tabId, ref, value }) {
 async function getPageText(agent, { tabId }) {
   await assertOwned(agent, tabId);
   const { title, url, text: body } = await inPage(tabId, "pageText");
-  return ok(text(`Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`));
+  return ok(text(`${await overlayNotice(tabId)}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`));
 }
 
 async function fileUpload(agent, { tabId, ref, paths }) {
@@ -814,7 +838,7 @@ async function screenshot(tabId) {
   const { jpeg, w, h } = await captureViewport(tabId);
   return ok(
     { type: "image", data: await blobToBase64(jpeg), mimeType: "image/jpeg" },
-    text(`Capture ${w}x${h} (pixels CSS du viewport).`),
+    text(`${await overlayNotice(tabId)}Capture ${w}x${h} (pixels CSS du viewport).`),
   );
 }
 

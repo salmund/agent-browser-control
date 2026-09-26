@@ -519,5 +519,106 @@
     throw new Error("Impossible de lire cette image.");
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData };
+  // --- Fenêtre qui recouvre la page (bannière de cookies, modale) ----------------------------
+
+  const CONSENT_RE = /cookie|consentement|traceur|rgpd|gdpr|vie privée|privacy|données personnelles/i;
+
+  /** elementFromPoint qui traverse les shadow DOM. */
+  function deepElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    while (el?.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  /** Le plus haut conteneur fixe / modal au-dessus d'un élément (en sortant des shadow DOM). */
+  function coveringAncestor(el) {
+    let found = null;
+    for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement || n.getRootNode().host) {
+      const st = getComputedStyle(n);
+      if (st.position === "fixed" || st.position === "sticky" || n.getAttribute("aria-modal") === "true" ||
+          n.getAttribute("role") === "dialog" || n.tagName === "DIALOG") found = n;
+    }
+    return found;
+  }
+
+  const CMP_RE = /cookie|consent|privacy|didomi|onetrust|axeptio|tarteaucitron|tc-privacy|cmp|gdpr|rgpd|sp_message|qc-cmp|usercentrics/i;
+
+  /** Le conteneur qui porte vraiment la fenêtre (texte + boutons), quand le calque trouvé n'est qu'un fond. */
+  function overlayContent() {
+    const candidates = [
+      ...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]"),
+      ...[...document.querySelectorAll("body [id], body [class]")].filter((el) => CMP_RE.test(`${el.id} ${el.className}`)),
+    ];
+    let best = null;
+    let bestScore = 0;
+    for (const el of candidates) {
+      if (!isVisible(el) || !inViewport(el)) continue;
+      const scope = el.shadowRoot ?? el;
+      const buttons = scope.querySelectorAll("button, a[href], [role=button], input[type=button], input[type=submit]").length;
+      const text = (el.innerText || scope.textContent || "").trim();
+      if (!buttons || text.length < 20) continue;
+      // Le plus petit conteneur qui a tout : on préfère moins de texte à boutons égaux.
+      const score = Math.min(buttons, 8) * 1000 - Math.min(text.length, 999);
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  function blockingOverlay() {
+    const W = innerWidth;
+    const H = innerHeight;
+    const points = [[0.5, 0.5], [0.25, 0.3], [0.75, 0.3], [0.25, 0.7], [0.75, 0.7], [0.5, 0.93], [0.5, 0.07]];
+    const roots = new Set();
+    for (const [px, py] of points) {
+      const el = deepElementFromPoint(W * px, H * py);
+      const root = el && !el.closest?.("#abc-overlay") && coveringAncestor(el);
+      if (root) roots.add(root);
+    }
+    let best = null;
+    for (const root of roots) {
+      const r = root.getBoundingClientRect();
+      const visibleArea = Math.max(0, Math.min(r.right, W) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, H) - Math.max(r.top, 0));
+      const cover = Math.min(1, visibleArea / (W * H));
+      const scope = root.shadowRoot ?? root;
+      const text = (root.innerText || scope.textContent || "").slice(0, 3000);
+      const consent = CONSENT_RE.test(text) || CONSENT_RE.test(`${root.id} ${root.className}`);
+      const modal = root.getAttribute("aria-modal") === "true" || root.tagName === "DIALOG" || cover >= 0.5;
+      // Les en-têtes et barres de navigation fixes ne gênent pas : on ne garde que les fenêtres qui recouvrent.
+      if (!consent && !modal) continue;
+      const score = (consent ? 2 : 0) + cover;
+      if (!best || score > best.score) best = { root, scope, cover, consent, score };
+    }
+    if (!best) return null;
+    let { root, scope } = best;
+    if ((root.innerText || scope.textContent || "").trim().length < 20) {
+      const content = overlayContent();
+      if (content) {
+        root = content;
+        scope = content.shadowRoot ?? content;
+      }
+    }
+    const heading = scope.querySelector("h1, h2, h3, [role=heading]")?.innerText;
+    const title = clean(heading || root.getAttribute("aria-label") || root.innerText || scope.textContent, 90);
+    const label = (b) => clean(b.innerText || b.value || b.getAttribute("aria-label") || b.getAttribute("title") || "", 50);
+    const buttons = [...scope.querySelectorAll("button, a[href], [role=button], input[type=button], input[type=submit]")]
+      .filter((b) => isVisible(b) && label(b))
+      .slice(0, 8)
+      .map((b) => ({ name: label(b), ref: refFor(b) }));
+    return {
+      consent: best.consent,
+      cover: Math.round(best.cover * 100),
+      title,
+      buttons,
+      inIframe: !buttons.length && !!scope.querySelector("iframe"),
+    };
+  }
+
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData, blockingOverlay };
 })();
