@@ -23,7 +23,17 @@ const session = {
 };
 const local = { blocklist: ["mabanque.fr", "1password.com"] };
 const store = (obj) => ({ get: async () => ({ ...obj }), set: async (v) => Object.assign(obj, v), onChanged: { addListener() {} } });
-window.chrome = { storage: { session: store(session), local: store(local) }, runtime: { sendMessage: async (m) => console.log("message", m) } };
+session.groups = { "claude-code": 1, "deepcode": 2, "muse-code": 3 };
+const fakeGroups = { 1: { id: 1, color: "purple" }, 2: { id: 2, color: "cyan" }, 3: { id: 3, color: "orange" } };
+const fakeTabs = { 1: [{ id: 11, active: true, windowId: 1 }, { id: 12, windowId: 1 }], 2: [{ id: 21, windowId: 1 }], 3: [] };
+const ev = { addListener() {} };
+window.chrome = {
+  storage: { session: store(session), local: store(local) },
+  runtime: { sendMessage: async (m) => console.log("message", m) },
+  tabGroups: { get: async (id) => fakeGroups[id], query: async () => [], update: async (id, o) => console.log("groupe", id, o), onUpdated: ev, onRemoved: ev },
+  tabs: { query: async ({ groupId }) => fakeTabs[groupId] ?? [], update: async (id, o) => console.log("onglet", id, o), onCreated: ev, onRemoved: ev, onUpdated: ev },
+  windows: { update: async (id, o) => console.log("fenêtre", id, o) },
+};
 </script>
 <div id="mount"></div>
 <script>

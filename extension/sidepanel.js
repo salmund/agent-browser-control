@@ -42,29 +42,71 @@ function duration(ms) {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1).replace(".", ",")} s`;
 }
 
-function renderAgents() {
-  const counts = new Map();
-  for (const a of activity) {
-    const c = counts.get(a.agent) ?? { n: 0, color: a.color };
-    c.n++;
-    counts.set(a.agent, c);
+/** Agents connus (groupe d'onglets ou activité), avec leur groupe s'il existe encore. */
+async function agentGroups() {
+  const { groups = {} } = await chrome.storage.session.get("groups");
+  const names = new Set([...Object.keys(groups), ...activity.map((a) => a.agent)]);
+  const result = [];
+  for (const agent of names) {
+    let group = null;
+    try {
+      group = groups[agent] !== undefined ? await chrome.tabGroups.get(groups[agent]) : null;
+    } catch {}
+    // Après un rechargement de l'extension, le groupe se retrouve par son titre.
+    group ??= (await chrome.tabGroups.query({ title: agent }))[0] ?? null;
+    const tabs = group ? await chrome.tabs.query({ groupId: group.id }) : [];
+    const color = group?.color ?? activity.find((a) => a.agent === agent)?.color ?? "grey";
+    result.push({ agent, group, tabs, color });
   }
-  if (agentFilter && !counts.has(agentFilter)) agentFilter = null;
+  return result.sort((a, b) => b.tabs.length - a.tabs.length || a.agent.localeCompare(b.agent));
+}
 
-  $("agent-filters").replaceChildren(...[...counts].map(([agent, { n, color }]) => {
+/** Met au premier plan le groupe d'onglets de l'agent : fenêtre, groupe déplié, onglet actif. */
+async function focusAgent({ group, tabs }) {
+  const tab = tabs.find((t) => t.active) ?? tabs.at(-1);
+  await chrome.tabGroups.update(group.id, { collapsed: false });
+  await chrome.tabs.update(tab.id, { active: true });
+  await chrome.windows.update(tab.windowId, { focused: true });
+}
+
+async function renderAgents() {
+  const agents = await agentGroups();
+  $("agent-chips").replaceChildren(...agents.map((a) => {
     const chip = el("button", "agent-chip");
     chip.type = "button";
-    chip.style.setProperty("--c", `var(--grp-${color ?? "grey"})`);
-    chip.setAttribute("aria-pressed", String(agentFilter === agent));
-    chip.title = agentFilter === agent ? "Afficher tous les agents" : `N'afficher que ${agent}`;
-    chip.append(el("span", null, agent), el("span", "count", String(n)));
-    chip.onclick = () => {
-      agentFilter = agentFilter === agent ? null : agent;
-      render();
-    };
+    chip.style.setProperty("--c", `var(--grp-${a.color})`);
+    const n = a.tabs.length;
+    chip.append(el("span", null, a.agent), el("span", "count", n ? `${n} onglet${n > 1 ? "s" : ""}` : "aucun onglet"));
+    chip.disabled = !n;
+    chip.title = n ? `Aller aux onglets de ${a.agent}` : `${a.agent} n'a plus d'onglet ouvert`;
+    chip.onclick = () => focusAgent(a);
     return chip;
   }));
+
+  const select = $("agent-filter");
+  const names = [...new Set(activity.map((a) => a.agent))];
+  if (agentFilter && !names.includes(agentFilter)) agentFilter = null;
+  select.replaceChildren(el("option", null, "Tous les agents"), ...names.map((n) => el("option", null, n)));
+  select.options[0].value = "";
+  select.value = agentFilter ?? "";
 }
+
+$("agent-filter").onchange = (event) => {
+  agentFilter = event.target.value || null;
+  renderActivity();
+};
+
+// Les pastilles suivent l'ouverture et la fermeture des onglets des agents.
+let agentsTimer = null;
+const refreshAgents = () => {
+  clearTimeout(agentsTimer);
+  agentsTimer = setTimeout(renderAgents, 150);
+};
+chrome.tabs.onCreated.addListener(refreshAgents);
+chrome.tabs.onRemoved.addListener(refreshAgents);
+chrome.tabs.onUpdated.addListener((_id, info) => "groupId" in info && refreshAgents());
+chrome.tabGroups.onUpdated.addListener(refreshAgents);
+chrome.tabGroups.onRemoved.addListener(refreshAgents);
 
 function renderActivity() {
   const rows = activity.filter((a) => !agentFilter || a.agent === agentFilter);

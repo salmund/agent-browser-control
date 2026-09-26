@@ -193,6 +193,7 @@ const TOOLS = {
   read_websocket_messages: readWebsocketMessages,
   browser_script: browserScript,
   wait_for: waitFor,
+  save_image: saveImage,
   handle_dialog: handleDialog,
   http_request: httpRequest,
 };
@@ -1336,4 +1337,44 @@ async function waitFor(agent, args) {
     }
     await sleep(200);
   }
+}
+
+// ---------------------------------------------------------------------------
+// save_image : enregistrer une image de la page sur le disque
+// ---------------------------------------------------------------------------
+
+const IMAGE_EXTENSIONS = {
+  "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
+  "image/svg+xml": "svg", "image/avif": "avif", "image/bmp": "bmp",
+};
+
+async function saveImage(agent, { tabId, ref, filename, show = false }) {
+  await assertOwned(agent, tabId);
+  const target = ref ? parseRef(ref) : { frameId: 0, ref: undefined };
+  const img = await inPage(tabId, "imageData", { ref: target.ref }, target.frameId);
+
+  let { base64, mime } = img;
+  if (img.kind === "url") {
+    // Image publique d'un autre domaine : l'extension la télécharge elle-même, sans cookies.
+    await assertAllowed(img.url);
+    const res = await fetch(img.url, { credentials: "omit", signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Téléchargement de l'image refusé (HTTP ${res.status}).`);
+    const blob = await res.blob();
+    mime = blob.type || res.headers.get("content-type") || "";
+    base64 = await blobToBase64(blob);
+  }
+  mime = mime.split(";")[0].trim();
+  if (!mime.startsWith("image/")) throw new Error(`Ce n'est pas une image (${mime || "type inconnu"}).`);
+
+  const ext = IMAGE_EXTENSIONS[mime] ?? mime.slice(6).replace(/\W/g, "");
+  const fromAlt = img.alt.replace(/,?\s*généré par IA/i, "").trim().slice(0, 60);
+  const stem = (filename || fromAlt || `image-${new Date().toISOString().replace(/[:.]/g, "-")}`).replace(/\.\w{2,5}$/, "");
+  const bytes = Math.round((base64.length * 3) / 4);
+  const size = bytes > 1_048_576 ? `${(bytes / 1_048_576).toFixed(1).replace(".", ",")} Mo` : `${Math.round(bytes / 1024)} Ko`;
+
+  const content = [text(`Image enregistrée (${img.w}×${img.h}, ${size}, ${mime}) : {path}`)];
+  // show : l'agent voit aussi l'image (pour vérifier ce qu'il a enregistré) ; pas pour le SVG, que les modèles ne lisent pas.
+  if (show && mime !== "image/svg+xml" && bytes < 4_000_000) content.push({ type: "image", data: base64, mimeType: mime });
+  await recordFrame(tabId, `save_image ${ref ?? "(plus grande image)"}`);
+  return { content, _file: { name: `${stem}.${ext}`, base64 } };
 }

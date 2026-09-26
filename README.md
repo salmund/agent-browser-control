@@ -55,6 +55,7 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 | `form_input` | Remplir un champ, select, checkbox par ref |
 | `get_page_text`, `javascript` | Texte de la page ; évaluation JS |
 | `read_console_messages`, `read_network_requests` | Console et réseau (capturés via CDP) |
+| `save_image` | Enregistrer une image de la page (générée, illustration, canvas, svg) sur le disque |
 | `file_upload` | Fichiers locaux vers `<input type=file>`, ou via le bouton qui ouvre le sélecteur (boîte de dialogue interceptée) |
 | `resize_window` | Taille de la fenêtre |
 | `gif_creator` | Enregistrement en GIF ou en vidéo WebM (Téléchargements/agent-browser-control/) |
@@ -71,7 +72,7 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 ## Panneau latéral
 
 Clic sur l'icône de l'extension : état de la connexion, **STOP** (coupe immédiatement tous les
-agents et détache le debugger ; « Réarmer » pour réactiver), agents et journal en direct,
+agents et détache le debugger ; « Réarmer » pour réactiver), agents (un clic amène à leur groupe d'onglets), journal en direct filtrable par agent,
 **scripts d'agent** (interrupteur de `browser_script`, désactivé par défaut) et **sites interdits** aux agents.
 Ces réglages ne sont modifiables que depuis le panneau, jamais par un agent.
 

@@ -376,6 +376,7 @@ export const TOOLS: Tool[] = [
       "- js(code) : évalue du JS dans la page et renvoie la valeur (objets JSON compris)\n" +
       "- shot() : joint une capture au résultat (5 max) · wait(secondes)\n" +
       "- waitFor({ selector | text | textGone | urlContains | networkIdle, timeout }) : attend une condition\n" +
+      "- saveImage(ref?, nom?) : enregistre une image (la plus grande visible si pas de ref)\n" +
       "- dialog(accept, promptText?) : répond à une boîte alert / confirm / prompt\n" +
       "- use(tabId) : change d'onglet courant · tab() : onglet courant\n" +
       "- call(outil, args) : n'importe quel autre outil, renvoie { text, images, isError } sans lever d'erreur\n" +
@@ -425,6 +426,24 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: { tabId, accept: { type: "boolean" }, promptText: { type: "string" } },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "save_image",
+    description:
+      "Enregistre une image de la page sur le disque (Téléchargements/agent-browser-control/) : image générée " +
+      "(Gemini…), illustration, schéma, graphique <canvas>, <svg>. Sans ref, prend la plus grande image visible à " +
+      "l'écran. Fonctionne aussi pour les images réservées aux utilisateurs connectés (Moodle…). " +
+      "show=true pour voir l'image enregistrée et vérifier que c'est la bonne.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        ref: { type: "string", description: "Image (ou élément qui en contient une), issue de read_page / find." },
+        filename: { type: "string", description: "Nom du fichier sans extension (défaut : texte alternatif de l'image)." },
+        show: { type: "boolean", description: "Renvoyer aussi l'image à l'agent (défaut false)." },
+      },
       required: ["tabId"],
     },
   },

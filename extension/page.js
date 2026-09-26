@@ -433,5 +433,91 @@
     return el.tagName === "INPUT" && el.type === "file";
   };
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay };
+  // --- Images : récupérer le fichier d'une image de la page ------------------------------------
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  /** La plus grande image (ou canvas) visible à l'écran, au moins 80 px de côté. */
+  function largestImage() {
+    let best = null;
+    let bestArea = 0;
+    for (const el of document.querySelectorAll("img, canvas, svg")) {
+      if (el.closest("#abc-overlay") || !isVisible(el) || !inViewport(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 80 || r.height < 80) continue;
+      if (r.width * r.height > bestArea) {
+        best = el;
+        bestArea = r.width * r.height;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Contenu d'une image, par la première méthode qui marche : fetch depuis la page (blob:, data:,
+   * images du site avec la session de l'utilisateur), puis canvas ; sinon l'URL, que l'extension
+   * téléchargera elle-même (images publiques d'un autre domaine).
+   */
+  async function imageData({ ref } = {}) {
+    let el = ref ? elementFor(ref) : largestImage();
+    if (!el) throw new Error("Aucune image visible à l'écran : préciser une ref (read_page / find).");
+    if (!["IMG", "CANVAS"].includes(el.tagName) && !(el instanceof SVGSVGElement)) {
+      const inner = el.querySelector("img, canvas, svg");
+      if (!inner) throw new Error(`${ref} n'est pas une image et n'en contient pas.`);
+      el = inner;
+    }
+    const alt = el.getAttribute("alt") || el.getAttribute("aria-label") || el.getAttribute("title") || "";
+
+    if (el instanceof SVGSVGElement) {
+      const xml = new XMLSerializer().serializeToString(el);
+      const base64 = await blobToBase64(new Blob([xml], { type: "image/svg+xml" }));
+      return { kind: "data", base64, mime: "image/svg+xml", alt, w: Math.round(el.clientWidth), h: Math.round(el.clientHeight) };
+    }
+    if (el.tagName === "CANVAS") {
+      try {
+        const blob = await new Promise((r) => el.toBlob(r, "image/png"));
+        return { kind: "data", base64: await blobToBase64(blob), mime: "image/png", alt, w: el.width, h: el.height };
+      } catch {
+        throw new Error("Ce canvas contient des images d'un autre site : le navigateur en interdit la lecture.");
+      }
+    }
+
+    if (!el.complete || !el.naturalWidth) {
+      // Image en chargement différé (loading="lazy") : elle ne se charge qu'une fois à l'écran.
+      el.scrollIntoView({ block: "center", behavior: "instant" });
+      const loaded = await Promise.race([
+        new Promise((r) => el.addEventListener("load", () => r(true), { once: true })),
+        new Promise((r) => setTimeout(() => r(el.complete && el.naturalWidth > 0), 8000)),
+      ]);
+      if (!loaded) throw new Error("L'image ne s'est pas chargée (8 s) : vérifier qu'elle s'affiche, puis réessayer.");
+    }
+    const src = el.currentSrc || el.src;
+    const meta = { alt, w: el.naturalWidth, h: el.naturalHeight };
+    try {
+      const res = await fetch(src);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.type.startsWith("image/")) return { kind: "data", base64: await blobToBase64(blob), mime: blob.type, ...meta };
+      }
+    } catch {}
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = el.naturalWidth;
+      canvas.height = el.naturalHeight;
+      canvas.getContext("2d").drawImage(el, 0, 0);
+      const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+      return { kind: "data", base64: await blobToBase64(blob), mime: "image/png", ...meta };
+    } catch {}
+    if (/^https?:/i.test(src)) return { kind: "url", url: src, ...meta };
+    throw new Error("Impossible de lire cette image.");
+  }
+
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData };
 })();

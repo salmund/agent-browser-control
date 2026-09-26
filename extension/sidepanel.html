@@ -34,11 +34,16 @@
 
   <section class="agents" aria-labelledby="agents-title">
     <h2 id="agents-title">Agents</h2>
-    <div id="agent-filters" class="agent-filters" role="group" aria-label="Filtrer le journal par agent"></div>
+    <div id="agent-chips" class="agent-chips" role="group" aria-label="Aller aux onglets d'un agent"></div>
   </section>
 
   <section class="journal" aria-labelledby="journal-title">
-    <h2 id="journal-title">Journal</h2>
+    <div class="section-head">
+      <h2 id="journal-title">Journal</h2>
+      <select id="agent-filter" aria-label="Filtrer le journal par agent">
+        <option value="">Tous les agents</option>
+      </select>
+    </div>
     <ol id="activity" class="activity" aria-live="polite"></ol>
     <p id="activity-empty" class="empty">Aucune action pour l'instant. Les actions des agents s'affichent ici en direct.</p>
   </section>

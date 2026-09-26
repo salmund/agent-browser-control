@@ -173,9 +173,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* --- Agents ---------------------------------------------------------------- */
 
-.agent-filters { display: flex; flex-wrap: wrap; gap: 6px; }
-.agent-filters:empty::after {
-  content: "Aucun agent n'a encore agi.";
+.agent-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-chips:empty::after {
+  content: "Aucun agent n'a encore d'onglet.";
   color: var(--muted); font-size: 13px;
 }
 
@@ -192,9 +192,21 @@ button { font: inherit; color: inherit; cursor: pointer; }
   content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c);
 }
 .agent-chip .count { color: var(--muted); font-variant-numeric: tabular-nums; }
-.agent-chip[aria-pressed="true"] {
+.agent-chip:hover:not(:disabled) {
   border-color: var(--c);
   background: color-mix(in srgb, var(--c) 16%, transparent);
+}
+.agent-chip:disabled { cursor: default; opacity: .55; }
+
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.section-head select {
+  font: 12px var(--font);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  max-width: 55%;
 }
 
 /* --- Journal ---------------------------------------------------------------- */
