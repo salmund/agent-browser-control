@@ -497,4 +497,33 @@ export const TOOLS: Tool[] = [
       required: ["tabId"],
     },
   },
+  {
+    name: "download_media",
+    description:
+      "Télécharge la vidéo ou l'audio d'une page (YouTube, Vimeo, SoundCloud, podcasts, sites de cours… : tout ce que " +
+      "gère yt-dlp) dans Téléchargements/agent-browser-control/. url, ou tabId pour la page de l'onglet. " +
+      "action='info' d'abord pour voir titre, durée, qualités et sous-titres sans rien télécharger. " +
+      "mode='audio' pour l'audio seul (mp3 par défaut). subtitles=true récupère aussi les sous-titres en .srt : " +
+      "le moyen le plus rapide de « lire » une vidéo. Au-delà de 4 minutes, le téléchargement continue en " +
+      "arrière-plan : action='status' avec le jobId pour le suivre. Ne télécharger que ce que l'utilisateur a le " +
+      "droit de conserver (ses contenus, licences libres, cours auxquels il a accès) et dans le respect des sites.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        tabId,
+        action: { type: "string", enum: ["download", "info", "status"], description: "Défaut download." },
+        mode: {
+          type: "string",
+          enum: ["video", "audio", "subtitles"],
+          description: "Défaut video. 'subtitles' : seulement les sous-titres (.srt), sans télécharger la vidéo.",
+        },
+        quality: { type: "number", description: "Vidéo : hauteur maximale (1080, 720, 480…). Défaut : la meilleure." },
+        audioFormat: { type: "string", enum: ["mp3", "m4a", "opus", "wav"], description: "Audio : défaut mp3." },
+        subtitles: { type: "boolean", description: "Récupérer aussi les sous-titres (fr, en) en .srt." },
+        playlist: { type: "boolean", description: "Toute la playlist si l'URL en désigne une (défaut false)." },
+        jobId: { type: "string", description: "status : le téléchargement à suivre (sans jobId : tous)." },
+      },
+    },
+  },
 ];

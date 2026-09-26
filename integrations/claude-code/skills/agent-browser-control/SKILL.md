@@ -54,7 +54,9 @@ secours, si ABE est injoignable (extension désactivée, démon arrêté), et en
 
 `javascript`, `read_console_messages`, `read_network_requests`, `network_get_body`, `read_websocket_messages`,
 `network_intercept`, `http_request` (sans cookies, hors CSP), `storage`, `performance_metrics`, `emulate`, `pdf`,
-`save_image`, `gif_creator` (GIF `quality: "haute"`, ou `format: "webm"` pour une vidéo qu'une IA pourra lire).
+`save_image`, `gif_creator` (GIF `quality: "haute"`, ou `format: "webm"` pour une vidéo qu'une IA pourra lire),
+`download_media` (yt-dlp : `action: "info"` d'abord ; `mode: "subtitles"` pour lire une vidéo par ses
+sous-titres sans la télécharger ; seulement ce que l'utilisateur a le droit de conserver).
 
 ## Limites à respecter
 

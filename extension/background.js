@@ -195,6 +195,7 @@ const TOOLS = {
   wait_for: waitFor,
   save_image: saveImage,
   read_screen_text: readScreenText,
+  download_media: downloadMedia,
   handle_dialog: handleDialog,
   http_request: httpRequest,
 };
@@ -1611,4 +1612,25 @@ async function readScreenText(agent, { tabId, region }) {
   await assertOwned(agent, tabId);
   await ensureAttached(tabId);
   return { content: [text(`${await overlayNotice(tabId)}{ocr}`)], _ocr: await captureForOcr(tabId, region) };
+}
+
+// ---------------------------------------------------------------------------
+// download_media : l'extension vérifie l'URL, le démon lance yt-dlp
+// ---------------------------------------------------------------------------
+
+async function downloadMedia(agent, args) {
+  let url = args.url;
+  if (typeof args.tabId === "number") {
+    const tab = await assertOwned(agent, args.tabId);
+    url ??= tab.url;
+  }
+  if (!url) throw new Error("Préciser 'url', ou 'tabId' pour la page ouverte dans l'onglet.");
+  if (!/^https?:\/\//i.test(url)) throw new Error("URL http(s) attendue.");
+  await assertAllowed(url);
+  const { action = "download", mode, quality, audioFormat, subtitles, playlist } = args;
+  if (!["download", "info"].includes(action)) throw new Error("action attendue : download, info ou status.");
+  return {
+    content: [text(`${action === "info" ? "Informations" : "Téléchargement"} : ${url}`)],
+    _media: { url, action, mode, quality, audioFormat, subtitles, playlist },
+  };
 }

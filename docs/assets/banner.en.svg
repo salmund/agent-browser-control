@@ -55,7 +55,7 @@
     <rect x="556" y="310" width="178" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
     <text x="645" y="335" text-anchor="middle">Chrome · Comet</text>
     <rect x="746" y="310" width="120" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
-    <text x="806" y="335" text-anchor="middle">28 tools</text>
+    <text x="806" y="335" text-anchor="middle">29 tools</text>
     <rect x="878" y="310" width="150" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
     <text x="953" y="335" text-anchor="middle">100% local</text>
   </g>

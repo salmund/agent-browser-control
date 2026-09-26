@@ -10,6 +10,7 @@ import { basename, extname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
 import { runOcr } from "./ocr.ts";
+import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
 
 const VERSION = "0.5.0";
 const CALL_TIMEOUT_MS = 90_000;
@@ -126,7 +127,12 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 400, { error: "bad json" });
     }
     const started = Date.now();
-    const result = await forward(call);
+    // Suivre un téléchargement ne touche pas au navigateur : le démon répond seul.
+    const result = call.tool === "download_media" && call.args?.action === "status"
+      ? await Promise.resolve()
+          .then((): CallResult => ({ content: [{ type: "text", text: mediaStatus(call.args.jobId as string | undefined) }] }))
+          .catch((err) => errorResult(String(err instanceof Error ? err.message : err)))
+      : await forward(call);
     log({ agent: call.agent, tool: call.tool, args: redact(call.args), ms: Date.now() - started, error: !!result.isError });
     return sendJson(res, 200, result);
   }
@@ -186,6 +192,22 @@ async function readAttachedOcr(result: CallResult): Promise<CallResult> {
 }
 
 /**
+ * download_media : l'extension a vérifié l'URL (onglet de l'agent, sites interdits) et la renvoie sous
+ * `_media` ; le démon, qui a accès au système, lance yt-dlp.
+ */
+async function runAttachedMedia(result: CallResult): Promise<CallResult> {
+  const req = result._media as MediaRequest | undefined;
+  if (!req) return result;
+  delete result._media;
+  try {
+    const body = req.action === "info" ? await mediaInfo(req) : await mediaDownload(req);
+    return { content: [{ type: "text", text: body }], isError: /^Échec/.test(body) };
+  } catch (err) {
+    return errorResult(`download_media : ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/**
  * L'extension peut joindre un fichier (ex. GIF) sous `_file` : le démon l'écrit dans
  * ~/Downloads/agent-browser-control/ et remplace `{path}` dans le texte par le chemin final.
  */
@@ -242,7 +264,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     clearTimeout(p.timer);
     pending.delete(msg.id);
     if (!msg.result) return p.resolve(errorResult("Réponse vide de l'extension."));
-    readAttachedOcr(saveAttachedFile(msg.result)).then(p.resolve);
+    readAttachedOcr(saveAttachedFile(msg.result)).then(runAttachedMedia).then(p.resolve);
   });
 
   ws.on("close", () => {

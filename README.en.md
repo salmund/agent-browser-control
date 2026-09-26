@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#the-tools">The 28 tools</a> ·
+  <a href="#the-tools">The 29 tools</a> ·
   <a href="#the-side-panel">The side panel</a> ·
   <a href="#security">Security</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Your real browser.** Not a headless Chromium running on the side: the agent works in your tabs, with the
   accounts you're already signed in to. It sees what you see.
 - **Any agent.** Everything goes through [MCP](https://modelcontextprotocol.io): one line of configuration and the
-  agent gets all 28 tools, whatever model runs behind it.
+  agent gets all 29 tools, whatever model runs behind it.
 - **Far more than a click driver.** Accessibility tree with stable references, iframes (even cross-origin),
   network, WebSocket, console, cookies, performance, mobile emulation, request interception, GIF or video
   recording… The agent gets the DevTools, not just a mouse.
@@ -59,6 +59,7 @@
 ## Installation
 
 > Requirements: **Node.js 22.18+** and a Chromium-based browser (tested on Comet, meant for Chrome, Edge, Brave…).
+> Optional: [yt-dlp](https://github.com/yt-dlp/yt-dlp) and ffmpeg for `download_media`.
 
 **1. Get the project**
 
@@ -97,7 +98,7 @@ tab group, is the one announced by the MCP client; use `--agent-name my-agent` t
 | **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `read_screen_text` (local OCR) · `save_image` |
 | **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `file_upload` · `wait_for` · `handle_dialog` |
 | **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `network_get_body` · `network_intercept` · `read_websocket_messages` · `http_request` · `storage` · `performance_metrics` · `emulate` · `pdf` |
-| **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` |
+| **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` · `download_media` (a page's video, audio or subtitles, with yt-dlp) |
 
 A few details that make all the difference on real websites:
 
