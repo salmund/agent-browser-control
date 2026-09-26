@@ -295,7 +295,7 @@ async function assertOwned(agent, tabId) {
 
 function formatTab(t) {
   const flags = [t.active && "actif", t.incognito && "navigation privée"].filter(Boolean).join(", ");
-  return `- tabId ${t.id}${flags ? ` (${flags})` : ""} : ${t.title || "(sans titre)"} — ${t.url || t.pendingUrl || ""}`;
+  return `- tabId ${t.id}${flags ? ` (${flags})` : ""} : ${t.title || "(sans titre)"} · ${t.url || t.pendingUrl || ""}`;
 }
 
 async function tabsContext(agent) {
@@ -403,7 +403,7 @@ async function navigate(agent, { tabId, url }) {
   });
   const tab = await chrome.tabs.get(tabId);
   await recordFrame(tabId, `navigate ${tab.url}`);
-  return ok(text(`${await overlayNotice(tabId)}Navigation terminée : ${tab.title} — ${tab.url}${note}`));
+  return ok(text(`${await overlayNotice(tabId)}Navigation terminée : ${tab.title} · ${tab.url}${note}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,7 +1162,7 @@ async function recordingWait(tabId, seconds) {
   }
 }
 
-async function gifCreator(agent, { tabId, action, filename, format = "gif" }) {
+async function gifCreator(agent, { tabId, action, filename, format = "gif", quality = "haute", maxWidth, labels = true, border = false }) {
   await assertOwned(agent, tabId);
   switch (action) {
     case "start_recording":
@@ -1188,7 +1188,12 @@ async function gifCreator(agent, { tabId, action, filename, format = "gif" }) {
       if (!frames?.length) throw new Error("Aucune image enregistrée.");
       if (!["gif", "webm"].includes(format)) throw new Error("format attendu : 'gif' ou 'webm'.");
       const stem = (filename || `enregistrement-${new Date().toISOString().replace(/[:.]/g, "-")}`).replace(/\.(gif|webm)$/i, "");
-      const base64 = format === "webm" ? await renderWebm(frames) : await blobToBase64(new Blob([await renderGif(frames)]));
+      if (!["haute", "standard"].includes(quality)) throw new Error("quality attendue : 'haute' ou 'standard'.");
+      const width = Math.min(Math.max(Math.round(maxWidth ?? (format === "webm" ? WEBM_MAX_WIDTH : GIF_MAX_WIDTH)), 200), 1600);
+      const style = { labels: labels !== false, border: border === true };
+      const base64 = format === "webm"
+        ? await renderWebm(frames, width, style)
+        : await blobToBase64(new Blob([await renderGif(frames, width, quality, style)]));
       const kind = format === "webm" ? "Vidéo WebM" : "GIF";
       return {
         content: [text(`${kind} exporté (${frames.length} images) : {path}`)],
@@ -1213,17 +1218,17 @@ function outputSize(frames, maxWidth) {
   return { width: Math.round((w * scale) / 2) * 2, height: Math.round((h * scale) / 2) * 2 };
 }
 
-async function renderGif(frames) {
-  const { width, height } = outputSize(frames, GIF_MAX_WIDTH);
+async function renderGif(frames, maxWidth = GIF_MAX_WIDTH, quality = "haute", style = {}) {
+  const { width, height } = outputSize(frames, maxWidth);
   const ctx = new OffscreenCanvas(width, height).getContext("2d", { willReadFrequently: true });
   const encoded = [];
   for (let i = 0; i < frames.length; i++) {
     const bitmap = await createImageBitmap(frames[i].jpeg);
-    drawAnnotatedFrame(ctx, bitmap, frames[i], width, height);
+    drawAnnotatedFrame(ctx, bitmap, frames[i], width, height, style);
     bitmap.close();
     encoded.push({ rgba: ctx.getImageData(0, 0, width, height).data, delayMs: frameDelay(frames, i, 400, 3000) });
   }
-  return encodeGif(encoded, width, height);
+  return encodeGif(encoded, width, height, { quality });
 }
 
 /** Document offscreen unique : encodage vidéo (MediaRecorder) et iframe sandbox des scripts. */
@@ -1237,8 +1242,8 @@ async function ensureOffscreen() {
 }
 
 /** MediaRecorder n'existe pas dans un service worker : l'encodage se fait dans un document offscreen. */
-async function renderWebm(frames) {
-  const { width, height } = outputSize(frames, WEBM_MAX_WIDTH);
+async function renderWebm(frames, maxWidth = WEBM_MAX_WIDTH, style = {}) {
+  const { width, height } = outputSize(frames, maxWidth);
   await ensureOffscreen();
   const payload = [];
   for (let i = 0; i < frames.length; i++) {
@@ -1249,7 +1254,7 @@ async function renderWebm(frames) {
       delayMs: frameDelay(frames, i, 100, 3000),
     });
   }
-  const res = await chrome.runtime.sendMessage({ target: "offscreen", type: "encode-webm", frames: payload, width, height });
+  const res = await chrome.runtime.sendMessage({ target: "offscreen", type: "encode-webm", frames: payload, width, height, style });
   if (!res || res.error) throw new Error(`Encodage WebM impossible : ${res?.error ?? "pas de réponse"}`);
   return res.base64;
 }

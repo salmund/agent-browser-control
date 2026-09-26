@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400">
+  <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#243240"/>
+      <stop offset="1" stop-color="#10171c"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".16"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#cbb8ff"/>
+      <stop offset="1" stop-color="#7c4dff"/>
+    </linearGradient>
+    <radialGradient id="pulse">
+      <stop offset=".45" stop-color="#b79cff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#b79cff" stop-opacity=".55"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c2833"/>
+      <stop offset="1" stop-color="#0d1418"/>
+    </linearGradient>
+    <radialGradient id="aura" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8b5cf6" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="400" rx="24" fill="url(#page)"/>
+  <circle cx="230" cy="200" r="210" fill="url(#aura)"/>
+  <g transform="translate(118 88) scale(1.75)">
+      <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="none" stroke="url(#edge)" stroke-width="2"/>
+  <!-- halo de l'onglet piloté -->
+  <rect x="17" y="22" width="94" height="76" rx="15" fill="none" stroke="#8b5cf6" stroke-width="10" opacity=".55" filter="url(#glow)"/>
+  <!-- fenêtre -->
+  <rect x="17" y="22" width="94" height="76" rx="15" fill="#131b21" stroke="url(#frame)" stroke-width="6"/>
+  <rect x="28" y="31" width="28" height="7" rx="3.5" fill="#8b5cf6"/>
+  <rect x="61" y="31" width="14" height="7" rx="3.5" fill="#8b5cf6" opacity=".4"/>
+  <!-- impulsion de clic, comme celle que l'extension affiche sur la page -->
+  <circle cx="58" cy="57" r="15" fill="url(#pulse)"/>
+  <circle cx="58" cy="57" r="15" fill="none" stroke="#cbb8ff" stroke-width="2.5" opacity=".9"/>
+  <!-- curseur de l'agent -->
+  <path d="M58 57 L58 105 L70 93.5 L78.5 112 L87.5 108 L79 90 L95 89.5 Z"
+        fill="#ffffff" stroke="#10171c" stroke-width="6" stroke-linejoin="round" paint-order="stroke"/>
+  </g>
+  <text x="440" y="168" font-family="Segoe UI Variable Display, Segoe UI, Helvetica, Arial, sans-serif" font-size="70" font-weight="700" fill="#f1f4f2">Agent Browser Control</text>
+  <text x="446" y="218" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="28" font-weight="600" fill="#b9a4ff" letter-spacing="1">alias ABE</text>
+  <text x="446" y="280" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="24" fill="#a7b4b8">Les commandes de votre vrai navigateur, pour n'importe quel agent IA.</text>
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="600" fill="#d9e1de">
+    <rect x="446" y="310" width="98" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
+    <text x="495" y="335" text-anchor="middle">MCP</text>
+    <rect x="556" y="310" width="178" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
+    <text x="645" y="335" text-anchor="middle">Chrome · Comet</text>
+    <rect x="746" y="310" width="120" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
+    <text x="806" y="335" text-anchor="middle">27 outils</text>
+    <rect x="878" y="310" width="150" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>
+    <text x="953" y="335" text-anchor="middle">100 % local</text>
+  </g>
+</svg>

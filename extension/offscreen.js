@@ -3,7 +3,7 @@
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function encodeWebm({ frames, width, height }) {
+async function encodeWebm({ frames, width, height, style }) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -21,7 +21,7 @@ async function encodeWebm({ frames, width, height }) {
 
   for (const frame of frames) {
     const bitmap = await createImageBitmap(await (await fetch(frame.dataUrl)).blob());
-    drawAnnotatedFrame(ctx, bitmap, frame, width, height);
+    drawAnnotatedFrame(ctx, bitmap, frame, width, height, style);
     bitmap.close();
     // Réémet l'image toutes les 100 ms pour que la vidéo garde un rythme régulier.
     const end = performance.now() + frame.delayMs;

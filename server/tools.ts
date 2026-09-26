@@ -220,6 +220,14 @@ export const TOOLS: Tool[] = [
         tabId,
         action: { type: "string", enum: ["start_recording", "stop_recording", "export", "clear"] },
         format: { type: "string", enum: ["gif", "webm"], description: "Pour 'export' (défaut gif)." },
+        quality: {
+          type: "string",
+          enum: ["haute", "standard"],
+          description: "GIF : 'haute' (défaut, palette adaptée + tramage, pour un GIF à montrer) ou 'standard' (plus léger et rapide).",
+        },
+        maxWidth: { type: "number", description: "Largeur maximale en pixels (défaut 800 pour un GIF, 1280 en WebM ; max 1600)." },
+        labels: { type: "boolean", description: "Légende de chaque action en bas à gauche (défaut true ; false pour une présentation)." },
+        border: { type: "boolean", description: "Dessiner la bordure violette d'onglet piloté (défaut false ; true pour une démo)." },
         filename: { type: "string", description: "Pour 'export' : nom du fichier (optionnel)." },
       },
       required: ["tabId", "action"],
@@ -379,7 +387,8 @@ export const TOOLS: Tool[] = [
       "- nav(url) : navigue l'onglet courant (ou 'back', 'forward', 'reload')\n" +
       "- text() : texte de la page · read(filter='interactive') : arbre avec refs · find(requête)\n" +
       "- click(ref ou [x, y]) · type(texte, ref?) · key('Enter') · fill(ref, valeur)\n" +
-      "- js(code) : évalue du JS dans la page et renvoie la valeur (objets JSON compris)\n" +
+      "- js(code) : évalue du JS dans la page et renvoie la valeur (objets JSON compris ; 50 000 caractères max : " +
+      "filtrer et résumer dans la page plutôt que tout renvoyer)\n" +
       "- shot() : joint une capture au résultat (5 max) · wait(secondes)\n" +
       "- waitFor({ selector | text | textGone | urlContains | networkIdle, timeout }) : attend une condition\n" +
       "- saveImage(ref?, nom?) : enregistre une image (la plus grande visible si pas de ref)\n" +

@@ -7,11 +7,27 @@ function frameDelay(frames, i, minMs, maxMs) {
   return next ? Math.min(Math.max(next.t - frames[i].t, minMs), maxMs) : 2000;
 }
 
-function drawAnnotatedFrame(ctx, bitmap, frame, width, height) {
+/**
+ * options.labels : légende de l'action en bas à gauche (défaut true).
+ * options.border : bordure violette lumineuse, comme sur un onglet piloté par un agent (défaut false).
+ */
+function drawAnnotatedFrame(ctx, bitmap, frame, width, height, { labels = true, border = false } = {}) {
   const scale = width / frame.w;
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, width, height);
   ctx.drawImage(bitmap, 0, 0, width, height);
+  if (border) {
+    // Halo intérieur en dégradé, puis trait net : le rendu de l'overlay de page.js.
+    const glow = Math.max(6, Math.round(width / 70));
+    for (let i = glow; i > 0; i--) {
+      ctx.strokeStyle = `rgba(139, 92, 246, ${(0.5 * (1 - i / glow)).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(i, i, width - 2 * i, height - 2 * i);
+    }
+    ctx.strokeStyle = "rgba(139, 92, 246, 0.9)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, width - 4, height - 4);
+  }
   if (frame.point) {
     ctx.strokeStyle = "rgb(139, 92, 246)";
     ctx.lineWidth = 3;
@@ -19,7 +35,7 @@ function drawAnnotatedFrame(ctx, bitmap, frame, width, height) {
     ctx.arc(frame.point.x * scale, frame.point.y * scale, 14, 0, Math.PI * 2);
     ctx.stroke();
   }
-  if (frame.label) {
+  if (labels && frame.label) {
     const size = Math.max(12, Math.round(width / 57));
     ctx.font = `bold ${size}px sans-serif`;
     const label = frame.label.slice(0, 80);

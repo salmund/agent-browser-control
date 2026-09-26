@@ -1,4 +1,4 @@
-# Agent Browser Control — Spécification
+# Agent Browser Control : spécification
 
 > Un équivalent de Claude in Chrome, utilisable par **n'importe quel agent** (Claude Code, Muse Code, DeepCode…) via MCP.
 > Outil personnel, pas destiné à être publié.
@@ -44,7 +44,7 @@ Principes :
 | `tabs_context` | Liste les onglets du groupe de l'agent (id, titre, URL) |
 | `tabs_create` / `tabs_close` | Ouvre / ferme un onglet dans le groupe de l'agent |
 | `navigate` | URL, `back`, `forward`, `reload` |
-| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait` — par coordonnées **ou** par `ref` |
+| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` |
 | `read_page` | Arbre d'accessibilité compact avec `ref` stables (`ref_12`) ; filtre `interactive` |
 | `find` | Recherche d'éléments par texte / rôle / sélecteur (sans LLM) |
 | `get_page_text` | Texte principal de la page (type Readability) |
@@ -105,14 +105,14 @@ Cible ultérieure : extension migrée sous **WXT** en TypeScript quand elle gros
 
 > État : v0.1 à v0.3 écrites. v0.1–v0.2 testées dans Comet (Wikipédia, Gemini, YouTube). Export WebM ajouté (les IA ne lisent que la 1re image d'un GIF). WebSocket (workers/iframes inclus via Target.setAutoAttach) et http_request ajoutés, testés sur Polymarket. v0.4 : browser_script (iframe sandbox, CSP sans réseau, relais via le document offscreen). v0.5 : wait_for, iframes (y compris d'une autre origine), boîtes de dialogue, lectures viewport / diff.
 
-1. **v0.1 — Faisabilité** : daemon + shim + extension ; `tabs_context`, `tabs_create`, `navigate`, `computer` (screenshot/click/type/key/scroll), `read_page`. Test dans **Comet**.
-2. **v0.2 — Parité Claude in Chrome** : reste du §3.1, groupes d'onglets par agent, side panel + STOP.
-3. **v0.3 — DevTools** : §3.2 sauf `cdp_send`.
-4. **v0.4 — Confort** : GIF, journal consultable, sites interdits, macros / raccourcis.
+1. **v0.1 : Faisabilité** : daemon + shim + extension ; `tabs_context`, `tabs_create`, `navigate`, `computer` (screenshot/click/type/key/scroll), `read_page`. Test dans **Comet**.
+2. **v0.2 : Parité Claude in Chrome** : reste du §3.1, groupes d'onglets par agent, side panel + STOP.
+3. **v0.3 : DevTools** : §3.2 sauf `cdp_send`.
+4. **v0.4 : Confort** : GIF, journal consultable, sites interdits, macros / raccourcis.
 5. **Plus tard** : `cdp_send`, port Firefox, rejeu de scénarios.
 
 ## 8. Risques connus
 
-- **Comet** : risque levé — Claude in Chrome (qui repose sur `chrome.debugger`) y fonctionne déjà.
+- **Comet** : risque levé, puisque Claude in Chrome (qui repose sur `chrome.debugger`) y fonctionne déjà.
 - Le bandeau « … débogue ce navigateur » s'affiche quand le debugger est attaché : inévitable.
 - Service worker MV3 : peut être suspendu ; la connexion WebSocket active et la reconnexion automatique doivent le gérer.
