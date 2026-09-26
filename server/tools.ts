@@ -153,7 +153,10 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "get_page_text",
-    description: "Renvoie le texte visible de la page (titre, URL, contenu principal).",
+    description:
+      "Renvoie le texte visible de la page (titre, URL, contenu principal). Si la page est dessinée dans un <canvas> " +
+      "(Google Docs, Sheets, Slides, éditeurs…), va chercher le texte ailleurs : export de l'application quand il existe " +
+      "(texte exact), sinon lecture de l'écran par OCR.",
     inputSchema: { type: "object", properties: { tabId }, required: ["tabId"] },
   },
   {
@@ -474,6 +477,22 @@ export const TOOLS: Tool[] = [
         ref: { type: "string", description: "Image (ou élément qui en contient une), issue de read_page / find." },
         filename: { type: "string", description: "Nom du fichier sans extension (défaut : texte alternatif de l'image)." },
         show: { type: "boolean", description: "Renvoyer aussi l'image à l'agent (défaut false)." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "read_screen_text",
+    description:
+      "Lit le texte affiché à l'écran par reconnaissance de caractères (OCR locale, Windows), avec le centre de chaque " +
+      "ligne en pixels CSS pour pouvoir cliquer dessus. Pour les pages dessinées dans un <canvas> (logiciels de dessin, " +
+      "Figma, jeux, visionneuses PDF), les images, tout ce que read_page ne voit pas. region [x0, y0, x1, y1] pour une zone. " +
+      "Lecture approximative ; bien moins coûteux qu'une capture d'écran pour un modèle.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        region: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "[x0, y0, x1, y1] en pixels CSS." },
       },
       required: ["tabId"],
     },

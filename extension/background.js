@@ -194,6 +194,7 @@ const TOOLS = {
   browser_script: browserScript,
   wait_for: waitFor,
   save_image: saveImage,
+  read_screen_text: readScreenText,
   handle_dialog: handleDialog,
   http_request: httpRequest,
 };
@@ -770,23 +771,26 @@ async function formInput(agent, { tabId, ref, value }) {
 async function getPageText(agent, { tabId }) {
   await assertOwned(agent, tabId);
   const { title, url, text: body } = await inPage(tabId, "pageText");
-  return ok(text(`${await overlayNotice(tabId)}${await canvasNotice(tabId)}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`));
+  const head = `${await overlayNotice(tabId)}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`;
+  if (!(await hasBigCanvas(tabId))) return ok(text(head));
+  // Page dessinée dans un canvas : le texte n'est pas dans le HTML. On va le chercher là où il est.
+  const exported = await adapterText(tabId, url);
+  if (exported) {
+    return ok(text(`${head}\n\nContenu du document, lu via l'export de ${exported.name} (texte exact, dernière version enregistrée) :\n` +
+      untrusted(exported.text)));
+  }
+  return { content: [text(`${head}\n\nℹ La page est surtout dessinée dans un <canvas>, invisible dans le HTML.\n{ocr}`)], _ocr: await captureForOcr(tabId) };
 }
 
 /**
  * Éditeurs et applis qui dessinent leur contenu dans un <canvas> (Google Docs, Figma, tableurs, jeux…) :
  * ni read_page ni get_page_text n'en voient le texte. L'agent doit le savoir pour ne pas conclure à une page vide.
  */
-async function canvasNotice(tabId) {
-  const big = await evaluate(tabId, `[...document.querySelectorAll("canvas")].some((c) => {
+async function hasBigCanvas(tabId) {
+  return evaluate(tabId, `[...document.querySelectorAll("canvas")].some((c) => {
     const r = c.getBoundingClientRect();
     return r.width * r.height > innerWidth * innerHeight * 0.25;
   })`).catch(() => false);
-  return big
-    ? "ℹ Une grande partie de la page est dessinée dans un <canvas> : son contenu (texte d'un document, dessin…) " +
-      "n'apparaît pas ici. Pour le vérifier, une capture ciblée (computer screenshot avec region) ; pour écrire, " +
-      "computer type fonctionne dans la plupart de ces éditeurs.\n\n"
-    : "";
 }
 
 async function fileUpload(agent, { tabId, ref, paths }) {
@@ -1534,4 +1538,77 @@ async function saveImage(agent, { tabId, ref, filename, show = false }) {
   if (show && mime !== "image/svg+xml" && bytes < 4_000_000) content.push({ type: "image", data: base64, mimeType: mime });
   await recordFrame(tabId, `save_image ${ref ?? "(plus grande image)"}`);
   return { content, _file: { name: `${stem}.${ext}`, base64 } };
+}
+
+// ---------------------------------------------------------------------------
+// Lire le texte d'une page dessinée dans un canvas : export de l'application, sinon OCR
+// ---------------------------------------------------------------------------
+
+/**
+ * Adaptateurs : des applis qui dessinent leur contenu mais savent l'exporter. On demande l'export depuis la
+ * page (même origine, avec la session de l'utilisateur) : texte exact, en une requête, sans capture.
+ */
+const ADAPTERS = [
+  { name: "Google Docs", match: /^https:\/\/docs\.google\.com\/document\/(?:u\/\d+\/)?d\/([\w-]+)/, path: (m) => `/document/d/${m[1]}/export?format=txt` },
+  {
+    name: "Google Sheets",
+    match: /^https:\/\/docs\.google\.com\/spreadsheets\/(?:u\/\d+\/)?d\/([\w-]+)/,
+    path: (m, url) => `/spreadsheets/d/${m[1]}/export?format=csv&gid=${/gid=(\d+)/.exec(url)?.[1] ?? 0}`,
+  },
+  { name: "Google Slides", match: /^https:\/\/docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\/([\w-]+)/, path: (m) => `/presentation/d/${m[1]}/export/txt` },
+];
+
+async function adapterText(tabId, url) {
+  for (const adapter of ADAPTERS) {
+    const m = adapter.match.exec(url ?? "");
+    if (!m) continue;
+    const path = adapter.path(m, url);
+    const res = await cdp(tabId, "Runtime.evaluate", {
+      expression: `fetch(${JSON.stringify(path)}, { credentials: "include" }).then((r) => r.ok ? r.text() : Promise.reject(new Error("HTTP " + r.status)))`,
+      awaitPromise: true,
+      returnByValue: true,
+    }).catch(() => null);
+    let body = res && !res.exceptionDetails ? res.result?.value : null;
+    if (typeof body !== "string") {
+      // Export redirigé vers un autre domaine (bloqué en CORS depuis la page) : l'extension le télécharge elle-même.
+      const direct = await fetch(new URL(path, url), { credentials: "include" }).catch(() => null);
+      body = direct?.ok ? await direct.text() : null;
+    }
+    if (typeof body !== "string") return null;
+    body = body.replace(/^﻿/, "").trim();
+    return { name: adapter.name, text: body.length > 50_000 ? `${body.slice(0, 50_000)}\n[Tronqué]` : body || "(document vide)" };
+  }
+  return null;
+}
+
+/**
+ * Capture pour l'OCR : au moins 2 pixels d'image par pixel CSS (la reconnaissance est bien meilleure sur un
+ * texte plus grand). pxToCss et offset permettent au démon de rendre des positions cliquables.
+ */
+async function captureForOcr(tabId, region) {
+  await inPage(tabId, "hideOverlay").catch(() => {});
+  const [{ w, h }, shot] = await Promise.all([
+    evaluate(tabId, "({ w: innerWidth, h: innerHeight })"),
+    cdp(tabId, "Page.captureScreenshot", { format: "png" }),
+  ]);
+  const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${shot.data}`)).blob());
+  const dpr = bitmap.width / w;
+  const [x0, y0, x1, y1] = region ? region.map(Number) : [0, 0, w, h];
+  const src = [Math.max(0, x0), Math.max(0, y0), Math.min(w, x1), Math.min(h, y1)];
+  if (!(src[2] > src[0] && src[3] > src[1])) throw new Error("region attendue : [x0, y0, x1, y1] dans le viewport.");
+  const factor = Math.min(Math.max(2, dpr), 9000 / Math.max(src[2] - src[0], src[3] - src[1]));
+  const canvas = new OffscreenCanvas(Math.round((src[2] - src[0]) * factor), Math.round((src[3] - src[1]) * factor));
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap, src[0] * dpr, src[1] * dpr, (src[2] - src[0]) * dpr, (src[3] - src[1]) * dpr, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const png = await canvas.convertToBlob({ type: "image/png" });
+  return { base64: await blobToBase64(png), pxToCss: 1 / factor, offset: [src[0], src[1]] };
+}
+
+/** read_screen_text : le texte affiché à l'écran (ou dans une zone), lu par OCR, avec sa position. */
+async function readScreenText(agent, { tabId, region }) {
+  await assertOwned(agent, tabId);
+  await ensureAttached(tabId);
+  return { content: [text(`${await overlayNotice(tabId)}{ocr}`)], _ocr: await captureForOcr(tabId, region) };
 }

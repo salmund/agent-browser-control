@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#the-tools">The 27 tools</a> ·
+  <a href="#the-tools">The 28 tools</a> ·
   <a href="#the-side-panel">The side panel</a> ·
   <a href="#security">Security</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Your real browser.** Not a headless Chromium running on the side: the agent works in your tabs, with the
   accounts you're already signed in to. It sees what you see.
 - **Any agent.** Everything goes through [MCP](https://modelcontextprotocol.io): one line of configuration and the
-  agent gets all 27 tools, whatever model runs behind it.
+  agent gets all 28 tools, whatever model runs behind it.
 - **Far more than a click driver.** Accessibility tree with stable references, iframes (even cross-origin),
   network, WebSocket, console, cookies, performance, mobile emulation, request interception, GIF or video
   recording… The agent gets the DevTools, not just a mouse.
@@ -94,7 +94,7 @@ tab group, is the one announced by the MCP client; use `--agent-name my-agent` t
 | | Tools |
 |---|---|
 | **Tabs** | `tabs_context` · `tabs_create` (incognito too) · `tabs_close` · `navigate` · `resize_window` |
-| **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `get_page_text` · `save_image` |
+| **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `read_screen_text` (local OCR) · `save_image` |
 | **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `file_upload` · `wait_for` · `handle_dialog` |
 | **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `network_get_body` · `network_intercept` · `read_websocket_messages` · `http_request` · `storage` · `performance_metrics` · `emulate` · `pdf` |
 | **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` |
@@ -127,6 +127,12 @@ The script runs in a *sandbox* page of the extension, with no network and no bro
 through the tools, with the same safeguards. Because it chains actions without looking at the page in between,
 **it is disabled by default**: you're the one who allows it, in the side panel. More examples in
 [`examples/scripts/`](examples/scripts): comparing cities on Wikipedia, checking a page for broken links.
+
+### With Claude Code
+
+To make Claude Code prefer Agent Browser Control over Claude in Chrome, copy the skill in
+[`integrations/claude-code/skills/agent-browser-control`](integrations/claude-code/skills/agent-browser-control)
+to `~/.claude/skills/`. It tells Claude when and how to use the tools (written in French).
 
 ## Security
 

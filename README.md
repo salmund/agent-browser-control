@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#les-outils">Les 27 outils</a> ·
+  <a href="#les-outils">Les 28 outils</a> ·
   <a href="#le-panneau">Le panneau</a> ·
   <a href="#sécurité">Sécurité</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Votre vrai navigateur.** Pas un Chromium headless lancé à côté : l'agent travaille dans vos onglets, avec vos
   comptes déjà connectés. Il voit ce que vous voyez.
 - **N'importe quel agent.** Tout passe par [MCP](https://modelcontextprotocol.io) : une ligne de configuration, et
-  l'agent dispose des 27 outils, quel que soit le modèle derrière.
+  l'agent dispose des 28 outils, quel que soit le modèle derrière.
 - **Bien plus qu'un pilote de clics.** Arbre d'accessibilité avec des références stables, iframes (même d'une autre
   origine), réseau, WebSocket, console, cookies, performance, émulation mobile, interception de requêtes,
   enregistrement GIF ou vidéo… L'agent a les DevTools, pas seulement une souris.
@@ -94,7 +94,7 @@ groupe d'onglets, est celui qu'annonce le client MCP ; `--agent-name mon-agent` 
 | | Outils |
 |---|---|
 | **Onglets** | `tabs_context` · `tabs_create` (aussi en navigation privée) · `tabs_close` · `navigate` · `resize_window` |
-| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `get_page_text` · `save_image` |
+| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `read_screen_text` (OCR locale) · `save_image` |
 | **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `file_upload` · `wait_for` · `handle_dialog` |
 | **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `network_get_body` · `network_intercept` · `read_websocket_messages` · `http_request` · `storage` · `performance_metrics` · `emulate` · `pdf` |
 | **Enregistrer, automatiser** | `gif_creator` (GIF haute qualité ou vidéo WebM) · `browser_script` |
@@ -129,6 +129,12 @@ Le script tourne dans une page *sandbox* de l'extension, sans réseau ni API du 
 les outils, avec les mêmes garde-fous. Comme il enchaîne les actions sans regarder la page entre deux, **il est
 désactivé par défaut** : c'est vous qui l'autorisez, dans le panneau. D'autres exemples dans
 [`examples/scripts/`](examples/scripts) : comparer des villes sur Wikipédia, vérifier les liens cassés d'une page.
+
+### Avec Claude Code
+
+Pour que Claude Code préfère Agent Browser Control à Claude in Chrome, copiez le skill
+[`integrations/claude-code/skills/agent-browser-control`](integrations/claude-code/skills/agent-browser-control)
+dans `~/.claude/skills/`. Il lui explique quand et comment utiliser les outils.
 
 ## Sécurité
 
