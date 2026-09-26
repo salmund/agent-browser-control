@@ -20,6 +20,8 @@ const OUTPUT_DIR = join(homedir(), "Downloads", "agent-browser-control");
 const token = getToken();
 
 let extension: WebSocket | null = null;
+/** Réglages de l'utilisateur, envoyés par l'extension (browser_script désactivé tant qu'on ne sait rien). */
+let settings: { scriptsEnabled: boolean } = { scriptsEnabled: false };
 let nextId = 1;
 const pending = new Map<number, { resolve: (r: CallResult) => void; timer: NodeJS.Timeout }>();
 const extensionWaiters = new Set<() => void>();
@@ -90,7 +92,7 @@ const server = createServer(async (req, res) => {
   if (req.headers.origin) return sendJson(res, 403, { error: "forbidden" });
 
   if (req.method === "GET" && req.url === "/health") {
-    return sendJson(res, 200, { ok: true, version: VERSION, extensionConnected: extension !== null });
+    return sendJson(res, 200, { ok: true, version: VERSION, extensionConnected: extension !== null, settings });
   }
 
   if (req.method === "POST" && req.url === "/reload-extension") {
@@ -161,13 +163,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   for (const w of [...extensionWaiters]) w();
 
   ws.on("message", (raw) => {
-    let msg: { id?: number; result?: CallResult; type?: string };
+    let msg: { id?: number; result?: CallResult; type?: string; settings?: { scriptsEnabled?: boolean } };
     try {
       msg = JSON.parse(raw.toString());
     } catch {
       return;
     }
     if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong" }));
+    if (msg.type === "settings") {
+      settings = { scriptsEnabled: msg.settings?.scriptsEnabled === true };
+      log({ event: "settings", ...settings });
+      return;
+    }
     if (typeof msg.id !== "number") return;
     const p = pending.get(msg.id);
     if (!p) return;

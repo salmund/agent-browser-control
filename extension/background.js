@@ -31,6 +31,7 @@ function connect() {
     clearInterval(pingTimer);
     // L'activité WebSocket maintient le service worker MV3 en vie.
     pingTimer = setInterval(() => ws?.readyState === WebSocket.OPEN && ws.send('{"type":"ping"}'), PING_MS);
+    sendSettings();
   };
 
   ws.onmessage = async (event) => {
@@ -1068,6 +1069,12 @@ const scriptRuns = new Map(); // runId -> { agent }
 let scriptCounter = 0;
 
 async function browserScript(agent, { code, tabId, timeoutMs }) {
+  if (!(await scriptsEnabled())) {
+    return fail(
+      "browser_script est désactivé par l'utilisateur (panneau de l'extension). Ne pas réessayer : " +
+      "agir pas à pas avec les autres outils, ou lui demander de l'activer s'il le souhaite.",
+    );
+  }
   if (typeof code !== "string" || !code.trim()) throw new Error("'code' requis.");
   if (tabId !== undefined) await assertOwned(agent, tabId);
   await ensureOffscreen();
@@ -1098,3 +1105,23 @@ async function browserScript(agent, { code, tabId, timeoutMs }) {
     scriptRuns.delete(runId);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Réglages choisis par l'utilisateur dans le panneau (hors de portée des agents)
+// ---------------------------------------------------------------------------
+
+/** browser_script est désactivé par défaut : seul l'utilisateur peut l'activer, dans le panneau. */
+async function scriptsEnabled() {
+  const { scriptsEnabled: enabled = false } = await chrome.storage.local.get("scriptsEnabled");
+  return enabled === true;
+}
+
+/** Le démon s'en sert pour retirer les outils désactivés de la liste que voient les agents. */
+async function sendSettings() {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "settings", settings: { scriptsEnabled: await scriptsEnabled() } }));
+}
+
+chrome.storage.local.onChanged.addListener((changes) => {
+  if ("scriptsEnabled" in changes) sendSettings();
+});

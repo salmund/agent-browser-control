@@ -64,13 +64,14 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 | `performance_metrics` | Web Vitals, poids de la page, mémoire, layout |
 | `emulate` | Appareil mobile, réseau lent / hors ligne, CPU, thème, géolocalisation |
 | `pdf` | Export PDF de la page |
-| `browser_script` | Programme JS qui enchaîne des actions d'un seul tenant (boucles, audits), exécuté dans une sandbox sans réseau |
+| `browser_script` | Programme JS qui enchaîne des actions d'un seul tenant (boucles, audits), exécuté dans une sandbox sans réseau. **Désactivé par défaut** : à activer dans le panneau |
 
 ## Panneau latéral
 
 Clic sur l'icône de l'extension : état de la connexion, **STOP** (coupe immédiatement tous les
-agents et détache le debugger ; « Réarmer » pour réactiver), agents et journal en direct, et
-**sites interdits** aux agents.
+agents et détache le debugger ; « Réarmer » pour réactiver), agents et journal en direct,
+**scripts d'agent** (interrupteur de `browser_script`, désactivé par défaut) et **sites interdits** aux agents.
+Ces réglages ne sont modifiables que depuis le panneau, jamais par un agent.
 
 ## Développement
 

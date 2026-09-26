@@ -136,6 +136,22 @@ $("block-form").onsubmit = (event) => {
   $("block-input").value = "";
 };
 
+// --- Scripts d'agent ------------------------------------------------------------------
+
+function renderScripts(enabled) {
+  $("scripts-toggle").checked = enabled;
+  $("scripts-hint").textContent = enabled
+    ? "Activé : un agent peut enchaîner des dizaines d'actions en un appel, sans voir les pages entre deux."
+    : "Désactivé : les agents agissent pas à pas, et voient chaque page avant d'agir.";
+}
+
+$("scripts-toggle").onchange = async (event) => {
+  await chrome.storage.local.set({ scriptsEnabled: event.target.checked });
+  renderScripts(event.target.checked);
+};
+
+chrome.storage.local.get("scriptsEnabled").then(({ scriptsEnabled = false }) => renderScripts(scriptsEnabled === true));
+
 // --- Synchronisation ---------------------------------------------------------------
 
 async function refresh() {

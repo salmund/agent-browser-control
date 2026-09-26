@@ -242,6 +242,34 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 @keyframes blink { 50% { opacity: .2; } }
 
+/* --- Scripts d'agent (interrupteur) ----------------------------------------------- */
+
+.switch-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+.switch-text { display: grid; gap: 2px; }
+.switch-text .section-hint { margin: 0; }
+.switch-row input { position: absolute; opacity: 0; pointer-events: none; }
+.switch {
+  width: 38px; height: 22px; border-radius: 999px;
+  background: var(--line);
+  position: relative;
+  transition: background .15s ease-out;
+}
+.switch::after {
+  content: ""; position: absolute; top: 3px; left: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--ink);
+  transition: transform .15s ease-out;
+}
+.switch-row input:checked + .switch { background: var(--grp-purple); }
+.switch-row input:checked + .switch::after { transform: translateX(16px); background: #fff; }
+.switch-row input:focus-visible + .switch { outline: 2px solid var(--focus); outline-offset: 2px; }
+
 /* --- Sites interdits --------------------------------------------------------- */
 
 .block-form { display: flex; gap: 8px; }
@@ -283,7 +311,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mushroom { transition: none; }
+  .mushroom, .switch, .switch::after { transition: none; }
   .entry[data-status="running"] .entry-state::before { animation: none; }
 }
 

@@ -358,6 +358,7 @@ export const TOOLS: Tool[] = [
   {
     name: "browser_script",
     description:
+      "(Disponible seulement si l'utilisateur l'a activé dans le panneau de l'extension.) " +
       "Exécute un programme JavaScript (async) qui enchaîne des actions dans le navigateur d'un seul tenant, " +
       "sans aller-retour avec le modèle : idéal pour les boucles et les vérifications en série (parcourir 20 pages, " +
       "relever un tableau sur chacune…). Le code tourne dans un bac à sable sans réseau ni API du navigateur : " +

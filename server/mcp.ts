@@ -58,7 +58,7 @@ async function call(tool: string, args: Record<string, unknown>): Promise<CallRe
 const server = new Server(
   { name: "agent-browser-control", version: "0.4.0" },
   {
-    capabilities: { tools: {} },
+    capabilities: { tools: { listChanged: true } },
     instructions:
       "Contrôle du navigateur principal de l'utilisateur via l'extension Agent Browser Control. " +
       "Commence par tabs_context ; si aucun onglet, crée-en un avec tabs_create. " +
@@ -68,7 +68,29 @@ const server = new Server(
   },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+/** Outils que l'utilisateur a désactivés dans le panneau de l'extension (browser_script par défaut). */
+async function disabledTools(): Promise<Set<string>> {
+  try {
+    const res = await fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    const { settings } = (await res.json()) as { settings?: { scriptsEnabled?: boolean } };
+    return new Set(settings?.scriptsEnabled ? [] : ["browser_script"]);
+  } catch {
+    return new Set(["browser_script"]);
+  }
+}
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const disabled = await disabledTools();
+  return { tools: TOOLS.filter((t) => !disabled.has(t.name)) };
+});
+
+// Si l'utilisateur change le réglage pendant la session, on prévient l'agent que la liste a changé.
+let lastDisabled = "";
+setInterval(async () => {
+  const current = [...(await disabledTools())].join(",");
+  if (lastDisabled && current !== lastDisabled) server.sendToolListChanged().catch(() => {});
+  lastDisabled = current;
+}, 3000).unref();
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
