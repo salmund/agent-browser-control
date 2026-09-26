@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Aperçu panneau</title>
+<link rel="stylesheet" href="/extension/sidepanel.css">
+<style>html { max-width: 400px; border-right: 1px dashed #888; min-height: 100vh; }</style>
+</head>
+<body>
+<script>
+// Faux chrome.* pour prévisualiser le panneau hors extension.
+const now = Date.now();
+const params = new URLSearchParams(location.search);
+const session = {
+  connected: params.get("off") === null,
+  paused: params.get("paused") !== null,
+  activity: params.get("empty") !== null ? [] : [
+    { id: 7, t: now - 2000, agent: "claude-code", color: "purple", tool: "computer", summary: "left_click ref_13", status: "running" },
+    { id: 6, t: now - 9000, agent: "claude-code", color: "purple", tool: "read_page", summary: "", status: "ok", ms: 84 },
+    { id: 5, t: now - 21000, agent: "deepcode", color: "cyan", tool: "navigate", summary: "https://fr.wikipedia.org/wiki/Tour_Eiffel", status: "ok", ms: 1320 },
+    { id: 4, t: now - 30000, agent: "deepcode", color: "cyan", tool: "navigate", summary: "https://mabanque.fr", status: "error", ms: 3, error: "Le site mabanque.fr est interdit aux agents (liste de blocage : mabanque.fr)." },
+    { id: 3, t: now - 42000, agent: "muse-code", color: "orange", tool: "find", summary: "\"bouton connexion\"", status: "ok", ms: 41 },
+    { id: 2, t: now - 60000, agent: "muse-code", color: "orange", tool: "tabs_create", summary: "github.com", status: "ok", ms: 2210 },
+  ],
+};
+const local = { blocklist: ["mabanque.fr", "1password.com"] };
+const store = (obj) => ({ get: async () => ({ ...obj }), set: async (v) => Object.assign(obj, v), onChanged: { addListener() {} } });
+window.chrome = { storage: { session: store(session), local: store(local) }, runtime: { sendMessage: async (m) => console.log("message", m) } };
+</script>
+<div id="mount"></div>
+<script>
+fetch("/extension/sidepanel.html").then(r => r.text()).then(html => {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script, link").forEach(n => n.remove());
+  document.getElementById("mount").replaceWith(...doc.body.childNodes);
+  const s = document.createElement("script"); s.src = "/extension/sidepanel.js"; document.body.append(s);
+});
+</script>
+</body>
+</html>

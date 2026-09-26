@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Fixture Agent Browser Control</title></head>
+<body>
+  <header><nav><a href="/accueil">Accueil</a> <a href="/contact">Contact</a></nav></header>
+  <main>
+    <h1>Formulaire de test</h1>
+    <p>Du texte d'introduction avec un <strong>mot important</strong>.</p>
+    <form onsubmit="event.preventDefault(); document.getElementById('out').textContent = JSON.stringify(Object.fromEntries(new FormData(this)))">
+      <label for="nom">Nom complet</label> <input id="nom" name="nom" placeholder="Jean Dupont">
+      <label>Mot de passe <input type="password" name="mdp"></label>
+      <select name="pays" aria-label="Pays"><option value="fr">France</option><option value="be">Belgique</option></select>
+      <label><input type="checkbox" name="cgu"> J'accepte les conditions</label>
+      <input type="file" name="doc" aria-label="Document">
+      <button type="submit">Envoyer le formulaire</button>
+    </form>
+    <div id="out"></div>
+    <div hidden><button>Bouton caché</button></div>
+    <div role="button" tabindex="0">Faux bouton</div>
+  </main>
+  <script src="/extension/page.js"></script>
+</body>
+</html>

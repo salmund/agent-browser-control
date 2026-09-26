@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Browser Control</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="status" id="status" data-state="off">
+    <span class="status-lamp" aria-hidden="true"></span>
+    <p class="status-text">
+      <strong id="status-title">Démon arrêté</strong>
+      <span id="status-hint">Il démarre tout seul dès qu'un agent se connecte.</span>
+    </p>
+    <button id="reconnect" class="quiet-button" type="button">Réessayer</button>
+  </header>
+
+  <section class="estop" id="estop" data-paused="false" aria-labelledby="estop-caption">
+    <div class="plate">
+      <svg class="plate-ring" viewBox="0 0 200 200" aria-hidden="true">
+        <defs><path id="ring-path" d="M 100,100 m -80,0 a 80,80 0 1,1 160,0 a 80,80 0 1,1 -160,0"></path></defs>
+        <text><textPath href="#ring-path" textLength="486" lengthAdjust="spacing">ARRÊT D'URGENCE • ARRÊT D'URGENCE •</textPath></text>
+      </svg>
+      <button class="mushroom" id="stop" type="button" aria-describedby="estop-caption">
+        <span class="visually-hidden" id="stop-label">Arrêter tous les agents</span>
+      </button>
+    </div>
+    <div class="estop-copy">
+      <p id="estop-caption">Coupe les actions en cours et libère les onglets pilotés.</p>
+      <button id="resume" class="rearm" type="button" hidden>Réarmer</button>
+    </div>
+  </section>
+
+  <section class="agents" aria-labelledby="agents-title">
+    <h2 id="agents-title">Agents</h2>
+    <div id="agent-filters" class="agent-filters" role="group" aria-label="Filtrer le journal par agent"></div>
+  </section>
+
+  <section class="journal" aria-labelledby="journal-title">
+    <h2 id="journal-title">Journal</h2>
+    <ol id="activity" class="activity" aria-live="polite"></ol>
+    <p id="activity-empty" class="empty">Aucune action pour l'instant. Les actions des agents s'affichent ici en direct.</p>
+  </section>
+
+  <section class="blocklist" aria-labelledby="blocklist-title">
+    <h2 id="blocklist-title">Sites interdits</h2>
+    <p class="section-hint">Les agents ne peuvent ni ouvrir ni manipuler ces domaines, sous-domaines compris.</p>
+    <form id="block-form" class="block-form">
+      <label class="visually-hidden" for="block-input">Domaine à interdire</label>
+      <input id="block-input" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="mabanque.fr">
+      <button type="submit">Interdire</button>
+    </form>
+    <ul id="blocked" class="blocked"></ul>
+    <p id="blocked-empty" class="empty">Aucun site interdit : les agents peuvent ouvrir toutes les pages.</p>
+  </section>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

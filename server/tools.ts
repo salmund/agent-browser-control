@@ -1,0 +1,358 @@
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+
+const tabId = {
+  type: "number",
+  description: "Id de l'onglet ciblé (obtenu via tabs_context ou tabs_create).",
+} as const;
+
+/** Outils exposés aux agents. L'extension implémente chacun d'eux sous le même nom. */
+export const TOOLS: Tool[] = [
+  {
+    name: "tabs_context",
+    description:
+      "Liste les onglets du groupe de l'agent (id, titre, URL). À appeler en début de session. " +
+      "Si le groupe est vide, créer un onglet avec tabs_create.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "tabs_create",
+    description: "Ouvre un nouvel onglet dans le groupe de l'agent et renvoie son id.",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string", description: "URL à ouvrir (défaut : about:blank)." } },
+    },
+  },
+  {
+    name: "tabs_close",
+    description: "Ferme un onglet du groupe de l'agent.",
+    inputSchema: { type: "object", properties: { tabId }, required: ["tabId"] },
+  },
+  {
+    name: "navigate",
+    description: "Navigue vers une URL, ou 'back' / 'forward' / 'reload'. Attend la fin du chargement.",
+    inputSchema: {
+      type: "object",
+      properties: { tabId, url: { type: "string", description: "URL, 'back', 'forward' ou 'reload'." } },
+      required: ["tabId", "url"],
+    },
+  },
+  {
+    name: "computer",
+    description:
+      "Interagit avec la page comme un utilisateur. Les coordonnées sont en pixels CSS du viewport, " +
+      "identiques à celles de la capture 'screenshot'. Un élément peut aussi être ciblé par 'ref' (issu de read_page / find).\n" +
+      "Actions : screenshot, left_click, right_click, double_click, triple_click, left_click_drag " +
+      "(de start_coordinate vers coordinate), hover, type, key, scroll, scroll_to (ref), wait.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        action: {
+          type: "string",
+          enum: [
+            "screenshot", "left_click", "right_click", "double_click", "triple_click", "left_click_drag",
+            "hover", "type", "key", "scroll", "scroll_to", "wait",
+          ],
+        },
+        coordinate: {
+          type: "array", items: { type: "number" }, minItems: 2, maxItems: 2,
+          description: "[x, y] en pixels CSS du viewport.",
+        },
+        start_coordinate: {
+          type: "array", items: { type: "number" }, minItems: 2, maxItems: 2,
+          description: "Pour 'left_click_drag' : point de départ [x, y].",
+        },
+        ref: { type: "string", description: "Référence d'élément issue de read_page (ex. 'ref_12')." },
+        text: {
+          type: "string",
+          description:
+            "Pour 'type' : texte à saisir. Pour 'key' : touche(s) séparées par des espaces, " +
+            "combinaisons avec '+' (ex. 'Enter', 'ctrl+a Backspace').",
+        },
+        modifiers: { type: "string", description: "Modificateurs pour les clics, ex. 'ctrl', 'shift+alt'." },
+        scroll_direction: { type: "string", enum: ["up", "down", "left", "right"] },
+        scroll_amount: { type: "number", description: "Nombre de crans de molette (défaut 3)." },
+        duration: { type: "number", description: "Pour 'wait' : durée en secondes (max 30)." },
+      },
+      required: ["tabId", "action"],
+    },
+  },
+  {
+    name: "read_page",
+    description:
+      "Renvoie l'arbre d'accessibilité de la page sous forme compacte, avec une 'ref' par élément " +
+      "utilisable par computer. filter='interactive' ne garde que les éléments cliquables / éditables.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        filter: { type: "string", enum: ["all", "interactive"], description: "Défaut : all." },
+        ref: { type: "string", description: "Limiter l'arbre au sous-arbre de cet élément." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "find",
+    description:
+      "Cherche des éléments de la page par texte (nom accessible, libellé, placeholder, valeur…) et renvoie " +
+      "leurs refs. Préfixer par 'css:' pour un sélecteur CSS (ex. 'css:button.primary').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        query: { type: "string", description: "Mots-clés (ex. 'bouton connexion') ou 'css:<sélecteur>'." },
+        limit: { type: "number", description: "Nombre maximal de résultats (défaut 20)." },
+      },
+      required: ["tabId", "query"],
+    },
+  },
+  {
+    name: "form_input",
+    description:
+      "Définit directement la valeur d'un champ par ref : texte, select (valeur ou libellé de l'option), " +
+      "checkbox / radio (true / false). Plus fiable que la saisie clavier pour les formulaires.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        ref: { type: "string" },
+        value: { type: ["string", "number", "boolean"] },
+      },
+      required: ["tabId", "ref", "value"],
+    },
+  },
+  {
+    name: "get_page_text",
+    description: "Renvoie le texte visible de la page (titre, URL, contenu principal).",
+    inputSchema: { type: "object", properties: { tabId }, required: ["tabId"] },
+  },
+  {
+    name: "javascript",
+    description:
+      "Évalue une expression JavaScript dans la page et renvoie le résultat sérialisé. " +
+      "Les promesses sont attendues. Utiliser 'return' n'est pas nécessaire : la dernière expression est renvoyée.",
+    inputSchema: {
+      type: "object",
+      properties: { tabId, code: { type: "string" } },
+      required: ["tabId", "code"],
+    },
+  },
+  {
+    name: "read_console_messages",
+    description:
+      "Messages console de l'onglet (logs, avertissements, erreurs, exceptions non capturées). " +
+      "La capture démarre quand l'agent commence à piloter l'onglet ; recharger la page pour tout capturer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        pattern: { type: "string", description: "Filtre regex (insensible à la casse) sur le texte." },
+        onlyErrors: { type: "boolean" },
+        limit: { type: "number", description: "Nombre maximal de messages (défaut 100, les plus récents)." },
+        clear: { type: "boolean", description: "Vider le tampon après lecture." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "read_network_requests",
+    description: "Requêtes réseau de l'onglet (id, méthode, statut, type, URL). Le corps d'une réponse se lit avec network_get_body.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        urlPattern: { type: "string", description: "Filtre regex sur l'URL." },
+        limit: { type: "number", description: "Nombre maximal de requêtes (défaut 100, les plus récentes)." },
+        clear: { type: "boolean", description: "Vider le tampon après lecture." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "file_upload",
+    description:
+      "Charge des fichiers locaux. 'ref' peut viser un <input type=file>, ou le bouton / élément de menu " +
+      "qui ouvre le sélecteur de fichiers (la boîte de dialogue native est interceptée, rien ne s'affiche).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        ref: { type: "string" },
+        paths: { type: "array", items: { type: "string" }, description: "Chemins absolus des fichiers." },
+      },
+      required: ["tabId", "ref", "paths"],
+    },
+  },
+  {
+    name: "resize_window",
+    description: "Redimensionne la fenêtre contenant l'onglet (utile pour tester le responsive).",
+    inputSchema: {
+      type: "object",
+      properties: { tabId, width: { type: "number" }, height: { type: "number" } },
+      required: ["tabId", "width", "height"],
+    },
+  },
+  {
+    name: "gif_creator",
+    description:
+      "Enregistre un onglet en GIF animé ou en vidéo WebM. start_recording, puis agir normalement " +
+      "(chaque action ajoute une image ; computer action='wait' capture une image par seconde, pour filmer " +
+      "une vidéo ou une animation), stop_recording, puis export (fichier dans Téléchargements/agent-browser-control/). " +
+      "Choisir format='webm' pour un fichier destiné à une IA : la plupart ne lisent que la première image d'un GIF, " +
+      "mais analysent une vidéo en entier. L'export WebM prend environ la durée de l'enregistrement.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        action: { type: "string", enum: ["start_recording", "stop_recording", "export", "clear"] },
+        format: { type: "string", enum: ["gif", "webm"], description: "Pour 'export' (défaut gif)." },
+        filename: { type: "string", description: "Pour 'export' : nom du fichier (optionnel)." },
+      },
+      required: ["tabId", "action"],
+    },
+  },
+  {
+    name: "network_intercept",
+    description:
+      "Intercepte les requêtes de l'onglet selon des règles : bloquer, simuler une réponse (mock), modifier " +
+      "les en-têtes envoyés ou retarder. action='add' crée une règle (urlPattern en glob, ex. '*/api/users*'), " +
+      "'list' les affiche avec leur nombre d'interceptions, 'remove' (ruleId) en supprime une, 'clear' les supprime toutes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        action: { type: "string", enum: ["add", "list", "remove", "clear"] },
+        urlPattern: { type: "string", description: "Glob sur l'URL complète, '*' = n'importe quoi." },
+        method: { type: "string", description: "Limiter à une méthode HTTP (GET, POST…)." },
+        effect: { type: "string", enum: ["block", "mock", "modify_headers", "delay"] },
+        status: { type: "number", description: "mock : code HTTP (défaut 200)." },
+        body: { description: "mock : corps de la réponse (texte, ou objet JSON)." },
+        contentType: { type: "string", description: "mock : Content-Type (défaut application/json)." },
+        headers: {
+          type: "object",
+          description: "mock : en-têtes de réponse ajoutés. modify_headers : en-têtes de requête à définir (null pour supprimer).",
+        },
+        delayMs: { type: "number", description: "delay : durée en ms (défaut 2000)." },
+        ruleId: { type: "string", description: "remove : id de la règle (ex. 'rule_1')." },
+      },
+      required: ["tabId", "action"],
+    },
+  },
+  {
+    name: "network_get_body",
+    description: "Renvoie le corps de la réponse d'une requête (id obtenu via read_network_requests). JSON indenté, binaire non affiché.",
+    inputSchema: {
+      type: "object",
+      properties: { tabId, requestId: { type: "string" } },
+      required: ["tabId", "requestId"],
+    },
+  },
+  {
+    name: "storage",
+    description:
+      "Lit ou modifie les cookies, le localStorage ou le sessionStorage du site ouvert dans l'onglet. " +
+      "Attention : 'clear' sur les cookies déconnecte en général l'utilisateur du site.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        type: { type: "string", enum: ["cookies", "localStorage", "sessionStorage"] },
+        action: { type: "string", enum: ["get", "set", "delete", "clear"] },
+        name: { type: "string", description: "Nom du cookie ou clé. Pour 'get', omettre pour tout lister." },
+        value: { type: "string" },
+        domain: { type: "string", description: "Cookies : domaine (défaut : celui de la page)." },
+        path: { type: "string" },
+        secure: { type: "boolean" },
+        httpOnly: { type: "boolean" },
+        sameSite: { type: "string", enum: ["Strict", "Lax", "None"] },
+        expires: { type: "number", description: "Cookies : expiration en secondes depuis l'epoch (omis = cookie de session)." },
+      },
+      required: ["tabId", "type", "action"],
+    },
+  },
+  {
+    name: "performance_metrics",
+    description:
+      "Mesure la performance de la page : Web Vitals (LCP, CLS, INP, FCP, TTFB) avec appréciation, temps de chargement, " +
+      "poids par type de ressource, mémoire JS, nœuds DOM, temps de layout et de script.",
+    inputSchema: { type: "object", properties: { tabId }, required: ["tabId"] },
+  },
+  {
+    name: "emulate",
+    description:
+      "Émule un appareil (iphone-15, pixel-8, ipad, ou width/height), un réseau (offline, slow-3g, fast-3g, 4g, none), " +
+      "un ralentissement CPU, un thème clair/sombre ou une position GPS. Plusieurs réglages combinables en un appel ; " +
+      "reset=true annule tout. Les captures et les coordonnées suivent le viewport émulé.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        device: { type: "string", enum: ["iphone-15", "pixel-8", "ipad", "custom"] },
+        width: { type: "number" },
+        height: { type: "number" },
+        mobile: { type: "boolean", description: "Pour un appareil personnalisé." },
+        network: { type: "string", enum: ["offline", "slow-3g", "fast-3g", "4g", "none"] },
+        cpuThrottling: { type: "number", description: "Facteur de ralentissement CPU (1 = normal, 4 = mobile moyen)." },
+        colorScheme: { type: "string", enum: ["dark", "light", "none"] },
+        geolocation: {
+          type: "object",
+          properties: { latitude: { type: "number" }, longitude: { type: "number" }, accuracy: { type: "number" } },
+          required: ["latitude", "longitude"],
+        },
+        reset: { type: "boolean" },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "pdf",
+    description: "Exporte la page en PDF (fichier dans Téléchargements/agent-browser-control/).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        filename: { type: "string" },
+        landscape: { type: "boolean" },
+        printBackground: { type: "boolean", description: "Inclure les arrière-plans (défaut true)." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "read_websocket_messages",
+    description:
+      "Connexions WebSocket de l'onglet et leurs messages (flux temps réel : prix, chat, notifications). " +
+      "La capture commence quand l'agent prend l'onglet en main ; recharger la page pour voir les sockets ouverts au chargement.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        urlPattern: { type: "string", description: "Filtre regex sur l'URL du socket." },
+        pattern: { type: "string", description: "Filtre regex sur le contenu des messages." },
+        direction: { type: "string", enum: ["all", "received", "sent"] },
+        limit: { type: "number", description: "Nombre maximal de messages (défaut 50, les plus récents)." },
+        clear: { type: "boolean", description: "Vider le tampon après lecture." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "http_request",
+    description:
+      "Requête HTTP faite par l'extension, hors de toute page : pas de restriction CSP ni CORS. " +
+      "Pour interroger une API publique qu'une page ne peut pas appeler. Envoyée sans cookies (pas au nom de l'utilisateur). " +
+      "Réponse : statut, en-têtes principaux, corps (JSON indenté, tronqué à 50 000 caractères).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        method: { type: "string", description: "Défaut GET." },
+        headers: { type: "object", description: "En-têtes de requête." },
+        body: { description: "Corps : texte, ou objet envoyé en JSON." },
+        timeoutMs: { type: "number", description: "Délai maximal (défaut 30 000, max 60 000)." },
+      },
+      required: ["url"],
+    },
+  },
+];

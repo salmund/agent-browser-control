@@ -1,0 +1,4 @@
+node_modules/
+# Captures et sorties des tests : peuvent contenir des pages personnelles (comptes, e-mails)
+test/out/
+*.log
