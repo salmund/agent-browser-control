@@ -108,7 +108,12 @@ export async function mediaDownload(req: MediaRequest): Promise<string> {
     args.push("-f", h > 0 ? `bv*[height<=${h}]+ba/b[height<=${h}]` : "bv*+ba/b", "--merge-output-format", "mp4");
   }
   args.push("--print", "video:[identifiant] %(id)s");
-  if (req.subtitles || req.mode === "subtitles") args.push("--write-subs", "--write-auto-subs", "--sub-langs", "fr,fr-FR,fr-orig,en,en-US,en-GB,en-orig", "--convert-subs", "srt");
+  if (req.subtitles || req.mode === "subtitles") {
+    // YouTube limite vite les sous-titres (HTTP 429) : des pauses entre les requêtes, des nouvelles tentatives,
+    // et un refus sur une langue ne doit pas faire échouer tout le téléchargement.
+    args.push("--write-subs", "--write-auto-subs", "--sub-langs", "fr,fr-FR,fr-orig,en,en-US,en-GB,en-orig", "--convert-subs", "srt",
+      "--sleep-subtitles", "3", "--retries", "5", "--retry-sleep", "http:exp=2:30", "--ignore-errors");
+  }
   args.push(req.url);
 
   const job: Job = { id: `media_${++jobCounter}`, url: req.url, started: Date.now(), done: false, files: [], ids: [], error: "", progress: "", ended: 0 };
@@ -142,14 +147,17 @@ function describe(job: Job): string {
     return `Téléchargement ${job.id} en cours depuis ${elapsed} s${job.progress ? ` (${job.progress})` : ""} : ${job.url}\n` +
       `Il continue en arrière-plan ; suivre avec action="status", jobId="${job.id}".`;
   }
-  if (job.error && !job.files.length) return `Échec du téléchargement ${job.id} : ${job.error}`;
+  const hint = /429|Too Many Requests/i.test(job.error)
+    ? "\nYouTube limite les requêtes de sous-titres. Pour lire une vidéo ouverte dans un onglet : l'outil transcript, qui ne passe pas par yt-dlp."
+    : "";
   const subtitles = readdirSync(MEDIA_DIR)
     .filter((n) => n.endsWith(".srt") && job.ids.some((id) => n.includes(`[${id}]`)))
     .map((n) => join(MEDIA_DIR, n));
+  if (!job.files.length && !subtitles.length) return `Échec du téléchargement ${job.id} : ${job.error || "aucun fichier produit"}${hint}`;
   const files = [...job.files, ...subtitles].map((f) => {
     const bytes = existsSync(f) ? statSync(f).size : 0;
     return `- ${basename(f)} (${size(bytes)})\n  ${f}`;
   });
   return `Téléchargement ${job.id} terminé en ${Math.round(((job.ended || Date.now()) - job.started) / 1000)} s :\n${files.join("\n")}` +
-    (job.error ? `\n(avec une erreur : ${job.error})` : "");
+    (job.error ? `\n(avec une erreur : ${job.error})${hint}` : "");
 }

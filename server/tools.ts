@@ -503,8 +503,8 @@ export const TOOLS: Tool[] = [
       "Télécharge la vidéo ou l'audio d'une page (YouTube, Vimeo, SoundCloud, podcasts, sites de cours… : tout ce que " +
       "gère yt-dlp) dans Téléchargements/agent-browser-control/. url, ou tabId pour la page de l'onglet. " +
       "action='info' d'abord pour voir titre, durée, qualités et sous-titres sans rien télécharger. " +
-      "mode='audio' pour l'audio seul (mp3 par défaut). subtitles=true récupère aussi les sous-titres en .srt : " +
-      "le moyen le plus rapide de « lire » une vidéo. Au-delà de 4 minutes, le téléchargement continue en " +
+      "mode='audio' pour l'audio seul (mp3 par défaut). subtitles=true récupère aussi les sous-titres en .srt. " +
+      "Pour lire, résumer ou prendre des notes sur une vidéo YouTube, ne rien télécharger : utiliser transcript. Au-delà de 4 minutes, le téléchargement continue en " +
       "arrière-plan : action='status' avec le jobId pour le suivre. Ne télécharger que ce que l'utilisateur a le " +
       "droit de conserver (ses contenus, licences libres, cours auxquels il a accès) et dans le respect des sites.",
     inputSchema: {
@@ -524,6 +524,26 @@ export const TOOLS: Tool[] = [
         playlist: { type: "boolean", description: "Toute la playlist si l'URL en désigne une (défaut false)." },
         jobId: { type: "string", description: "status : le téléchargement à suivre (sans jobId : tous)." },
       },
+    },
+  },
+  {
+    name: "transcript",
+    description:
+      "Le texte d'une vidéo YouTube ouverte dans l'onglet (sous-titres, sinon sous-titres automatiques), en paragraphes " +
+      "d'environ 30 s repérés par leur minutage [m:ss]. Rien n'est téléchargé : c'est l'outil pour lire, résumer ou " +
+      "prendre des notes sur une vidéo. Lu dans la page comme le fait le lecteur, donc sans les refus (HTTP 429) " +
+      "de download_media. Par défaut dans la langue parlée ; lang pour une autre piste, translate pour une traduction " +
+      "automatique par YouTube. from / to pour un passage (« 12:30 »).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        lang: { type: "string", description: "Piste de sous-titres (fr, en…). Défaut : la langue parlée dans la vidéo." },
+        translate: { type: "string", description: "Traduire les sous-titres dans cette langue (fr…)." },
+        from: { type: "string", description: "Début du passage : « 754 », « 12:34 » ou « 1:02:03 »." },
+        to: { type: "string", description: "Fin du passage, même format." },
+      },
+      required: ["tabId"],
     },
   },
   {

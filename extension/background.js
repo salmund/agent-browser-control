@@ -196,6 +196,7 @@ const TOOLS = {
   save_image: saveImage,
   read_screen_text: readScreenText,
   download_media: downloadMedia,
+  transcript,
   downloads,
   handle_dialog: handleDialog,
   http_request: httpRequest,
@@ -1635,6 +1636,110 @@ async function downloadMedia(agent, args) {
     content: [text(`${action === "info" ? "Informations" : "Téléchargement"} : ${url}`)],
     _media: { url, action, mode, quality, audioFormat, subtitles, playlist },
   };
+}
+
+// ---------------------------------------------------------------------------
+// transcript : le texte d'une vidéo, lu dans la page comme le fait le lecteur
+// ---------------------------------------------------------------------------
+
+/**
+ * YouTube refuse souvent les sous-titres demandés hors du lecteur (HTTP 429 pour yt-dlp, réponse vide sans
+ * jeton). On réutilise donc la requête signée du lecteur de l'onglet : on allume les sous-titres si besoin,
+ * on relève l'URL qu'il a appelée, on la rejoue pour la langue voulue, puis on remet le lecteur comme avant.
+ */
+const YOUTUBE_TRANSCRIPT = String.raw`async ({ lang, translate }) => {
+  // Onglet tout juste ouvert : le lecteur arrive après la page.
+  let player, response;
+  for (let i = 0; i < 50 && !response?.videoDetails; i++) {
+    player = document.querySelector("#movie_player");
+    response = player?.getPlayerResponse?.();
+    if (!response?.videoDetails) await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!response) return { error: "Lecteur YouTube introuvable : ouvrir la page de la vidéo (youtube.com/watch?v=…)." };
+  const videoId = response.videoDetails?.videoId;
+  const tracks = response.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+  if (!tracks.length) return { error: "Cette vidéo n'a pas de sous-titres, même automatiques." };
+  const base = (code) => code.split("-")[0];
+  const spoken = tracks.find((t) => t.kind === "asr")?.languageCode;
+  const wanted = lang ? [lang] : [spoken, "fr", "en"].filter(Boolean);
+  const pick = wanted.map((l) => tracks.find((t) => t.languageCode === l && t.kind !== "asr") ?? tracks.find((t) => t.languageCode === l)
+    ?? tracks.find((t) => base(t.languageCode) === base(l))).find(Boolean) ?? tracks[0];
+  if (lang && base(pick.languageCode) !== base(lang) && !translate) {
+    return { error: "Pas de sous-titres en " + lang + ". Disponibles : " + tracks.map((t) => t.languageCode + (t.kind === "asr" ? " (auto)" : "")).join(", ") + ". Ou translate: \"" + lang + "\"." };
+  }
+  const signed = () => performance.getEntriesByType("resource").map((e) => e.name)
+    .filter((u) => u.includes("/api/timedtext") && u.includes("pot=") && u.includes("v=" + videoId)).pop();
+  let url = signed();
+  if (!url) {
+    const wasOn = player.isSubtitlesOn?.();
+    const before = player.getOption?.("captions", "track") ?? {};
+    performance.setResourceTimingBufferSize?.(2000);
+    player.loadModule?.("captions");
+    player.setOption?.("captions", "track", { languageCode: pick.languageCode });
+    for (let i = 0; i < 40 && !url; i++) { await new Promise((r) => setTimeout(r, 200)); url = signed(); }
+    // Remettre le lecteur comme l'utilisateur l'avait laissé : même piste, sous-titres affichés ou non.
+    if (before.languageCode) player.setOption?.("captions", "track", before);
+    await new Promise((r) => setTimeout(r, 100));
+    if (player.isSubtitlesOn?.() !== wasOn) player.toggleSubtitles?.();
+    if (!url) return { error: "Le lecteur n'a pas chargé les sous-titres (publicité en cours, vidéo pas encore lancée ?). Réessayer dans quelques secondes." };
+  }
+  const u = new URL(url);
+  u.searchParams.set("lang", pick.languageCode);
+  u.searchParams.set("fmt", "json3");
+  if (pick.kind) u.searchParams.set("kind", pick.kind); else u.searchParams.delete("kind");
+  if (translate && base(translate) !== base(pick.languageCode)) u.searchParams.set("tlang", translate); else u.searchParams.delete("tlang");
+  const r = await fetch(u);
+  const body = await r.text();
+  if (!r.ok || !body) return { error: "YouTube a refusé les sous-titres (HTTP " + r.status + ")." };
+  const segments = (JSON.parse(body).events ?? []).filter((e) => e.segs)
+    .map((e) => ({ t: Math.floor((e.tStartMs ?? 0) / 1000), text: e.segs.map((s) => s.utf8).join("").replace(/\s+/g, " ").trim() }))
+    .filter((s) => s.text);
+  return {
+    title: response.videoDetails?.title, author: response.videoDetails?.author, seconds: Number(response.videoDetails?.lengthSeconds),
+    language: pick.languageCode + (pick.kind === "asr" ? " (automatiques)" : "") + (u.searchParams.get("tlang") ? " traduits en " + translate : ""),
+    segments,
+  };
+}`;
+
+const clock = (s) => {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+};
+
+/** « 754 », « 12:34 » ou « 1:02:03 » : secondes. */
+const seconds = (v) => (v === undefined || v === "" ? undefined : String(v).split(":").reduce((acc, n) => acc * 60 + Number(n), 0));
+
+async function transcript(agent, { tabId, lang, translate, from, to }) {
+  const tab = await assertOwned(agent, tabId);
+  if (!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(tab.url ?? "")) {
+    throw new Error("transcript lit les vidéos YouTube ouvertes dans l'onglet. Pour un autre site : download_media avec mode='subtitles'.");
+  }
+  await ensureAttached(tabId);
+  const res = await cdp(tabId, "Runtime.evaluate", {
+    expression: `(${YOUTUBE_TRANSCRIPT})(${JSON.stringify({ lang, translate })})`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (res.exceptionDetails) throw new Error(`Lecture de la transcription impossible : ${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text}`);
+  const data = res.result?.value;
+  if (!data || data.error) return fail(data?.error ?? "Transcription introuvable.");
+  // Paragraphes d'environ 30 s, repérés par leur minutage : lisible, et on peut y renvoyer.
+  const start = seconds(from) || 0;
+  const end = seconds(to) ?? Infinity;
+  const paragraphs = [];
+  for (const seg of data.segments.filter((s) => s.t >= start && s.t <= end)) {
+    const last = paragraphs.at(-1);
+    if (last && seg.t - last.t < 30) last.text += ` ${seg.text}`;
+    else paragraphs.push({ t: seg.t, text: seg.text });
+  }
+  let body = paragraphs.map((p) => `[${clock(p.t)}] ${p.text}`).join("\n");
+  if (body.length > 60_000) {
+    const cut = body.lastIndexOf("\n[", 60_000);
+    const next = /^\[([\d:]+)\]/.exec(body.slice(cut + 1))?.[1];
+    body = `${body.slice(0, cut)}\n[Tronqué : suite avec from=${next}.]`;
+  }
+  const header = `« ${data.title} »${data.author ? ` par ${data.author}` : ""}, ${clock(data.seconds || 0)}. Sous-titres : ${data.language}.`;
+  return ok(text(`${header}\n${untrusted(body || "(rien dans cet intervalle)")}`));
 }
 
 // ---------------------------------------------------------------------------

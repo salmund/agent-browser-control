@@ -52,6 +52,8 @@ secours, si ABE est injoignable (extension désactivée, démon arrêté), et en
 
 ## Autres outils utiles
 
+- Vidéo YouTube à lire, résumer ou noter : `transcript` sur l'onglet de la vidéo (texte minuté, `translate: "fr"`,
+  `from` / `to` pour un passage). Rien n'est téléchargé : ne pas utiliser `download_media` pour ça.
 - Fichiers : `downloads` (`action: "download"` avec l'URL ou la ref d'un lien, avec la session de
   l'utilisateur ; `action: "wait"` après un clic qui télécharge), puis `read_document` avec le chemin renvoyé
   (PDF, même scanné, Word, PowerPoint, Excel, texte ; seulement dans Téléchargements).
@@ -59,8 +61,8 @@ secours, si ABE est injoignable (extension désactivée, démon arrêté), et en
 `javascript`, `read_console_messages`, `read_network_requests`, `network_get_body`, `read_websocket_messages`,
 `network_intercept`, `http_request` (sans cookies, hors CSP), `storage`, `performance_metrics`, `emulate`, `pdf`,
 `save_image`, `gif_creator` (GIF `quality: "haute"`, ou `format: "webm"` pour une vidéo qu'une IA pourra lire),
-`download_media` (yt-dlp : `action: "info"` d'abord ; `mode: "subtitles"` pour lire une vidéo par ses
-sous-titres sans la télécharger ; seulement ce que l'utilisateur a le droit de conserver).
+`download_media` (yt-dlp, seulement si l'utilisateur demande un fichier : `action: "info"` d'abord ; seulement ce
+qu'il a le droit de conserver).
 
 ## Limites à respecter
 
