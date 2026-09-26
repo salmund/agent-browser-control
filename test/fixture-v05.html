@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Fixture v0.5</title></head>
+<body>
+  <h1>Test v0.5</h1>
+  <button onclick="alert('Bonjour depuis alert')">Alerte</button>
+  <button onclick="document.getElementById('res').textContent = confirm('Supprimer ?') ? 'confirmé' : 'annulé'">Supprimer</button>
+  <button onclick="document.getElementById('res').textContent = 'prompt : ' + prompt('Ton nom ?', 'x')">Demander</button>
+  <p id="res">(aucune réponse)</p>
+  <button onclick="setTimeout(() => { const d = document.createElement('div'); d.id = 'late'; d.textContent = 'Contenu chargé'; document.body.append(d); document.getElementById('spin').remove(); }, 2000)">Charger</button>
+  <p id="spin">Chargement…</p>
+  <ul id="list"><li>Premier élément</li></ul>
+  <iframe title="même origine" src="/test/frame-inner.html" width="420" height="110"></iframe>
+  <iframe title="autre origine" id="xo" width="420" height="110"></iframe>
+  <script>document.getElementById("xo").src = "http://localhost:8792/test/frame-inner.html";</script>
+  <div style="height: 2000px"></div>
+  <p>Paragraphe tout en bas de la page</p>
+</body>
+</html>

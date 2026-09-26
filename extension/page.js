@@ -136,7 +136,20 @@
     return parts.join(" ");
   }
 
-  function readPage({ filter = "all", ref } = {}) {
+  const lastReads = new Map(); // options de lecture -> lignes, pour diff=true
+
+  function inViewport(el) {
+    if (getComputedStyle(el).display === "contents") return true;
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+  }
+
+  /**
+   * viewport : seulement ce qui est à l'écran. diff : seulement ce qui a changé depuis la lecture
+   * précédente avec les mêmes options. frame : lecture d'une iframe (null si minuscule ou vide).
+   */
+  function readPage({ filter = "all", ref, viewport = false, diff = false, frame = false } = {}) {
+    if (frame && (innerWidth < 30 || innerHeight < 30)) return null; // pixels de suivi, iframes cachées
     const interactiveOnly = filter === "interactive";
     const lines = [];
     let size = 0;
@@ -179,6 +192,7 @@
         }
         if (child.nodeType !== Node.ELEMENT_NODE || SKIP_TAGS.has(child.tagName.toUpperCase())) continue;
         if (!isVisible(child)) continue;
+        if (viewport && !inViewport(child)) continue;
         visit(child, depth);
       }
       if (node.shadowRoot) walk(node.shadowRoot, depth);
@@ -202,21 +216,82 @@
     if (ref) visit(root, 0);
     else walk(root, 0);
 
-    const header = `Page : ${document.title}\nURL : ${location.href}\nViewport : ${innerWidth}x${innerHeight}`;
+    if (frame && !lines.length) return null;
+    const scope = viewport ? " (partie visible seulement)" : "";
+    const header = `Page : ${document.title}\nURL : ${location.href}\nViewport : ${innerWidth}x${innerHeight}${scope}`;
     const footer = truncated
-      ? "\n[Tronqué : utiliser filter='interactive' ou ref pour cibler un sous-arbre.]"
+      ? "\n[Tronqué : utiliser filter='interactive', viewport=true ou ref pour cibler un sous-arbre.]"
       : "";
-    return `${header}\n\n${lines.join("\n") || "(aucun élément)"}${footer}`;
+
+    const key = JSON.stringify([filter, ref ?? null, viewport]);
+    const previous = lastReads.get(key);
+    lastReads.set(key, lines);
+    if (diff && previous) {
+      // Les refs sont stables d'une lecture à l'autre : une ligne identique = élément inchangé.
+      const before = new Set(previous);
+      const after = new Set(lines);
+      const bare = (l) => l.trim().replace(/^- /, "");
+      const removed = previous.filter((l) => !after.has(l)).map((l) => "- " + bare(l));
+      const added = lines.filter((l) => !before.has(l)).map((l) => "+ " + bare(l));
+      if (!removed.length && !added.length) {
+        return frame ? null : `${header}\n\nAucun changement depuis la dernière lecture.`;
+      }
+      return `${header}\n\nChangements depuis la dernière lecture (${added.length} ajout(s), ${removed.length} retrait(s)) :\n` +
+        [...removed, ...added].join("\n") + footer;
+    }
+    const note = diff ? "\n[Première lecture : les suivantes avec diff=true ne montreront que les changements.]" : "";
+    return `${header}\n\n${lines.join("\n") || "(aucun élément)"}${footer}${note}`;
   }
 
-  /** Fait défiler jusqu'à l'élément et renvoie son centre en coordonnées viewport. */
-  function locate(ref) {
+  /**
+   * Fait défiler jusqu'à l'élément et renvoie son centre en coordonnées du viewport de la page
+   * principale : dans une iframe, on ajoute la position de chaque iframe parente.
+   */
+  async function locate(ref) {
     const el = elementFor(ref);
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) throw new Error(`Élément ${ref} sans dimensions (invisible ?).`);
-    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    const offset = await frameOffset();
+    return { x: Math.round(offset.x + r.left + r.width / 2), y: Math.round(offset.y + r.top + r.height / 2) };
   }
+
+  // --- Position d'une iframe dans la page principale ------------------------------------
+  // Une frame d'une autre origine ne peut pas lire sa position : elle la demande à sa frame
+  // parente par postMessage ; la parente reconnaît l'iframe émettrice (contentWindow === source),
+  // mesure sa position, y ajoute la sienne (récursivement) et répond.
+
+  const pendingOffsets = new Map();
+
+  function frameOffset() {
+    if (window === top) return Promise.resolve({ x: 0, y: 0 });
+    return new Promise((resolve, reject) => {
+      const id = crypto.randomUUID();
+      pendingOffsets.set(id, resolve);
+      parent.postMessage({ __abc: "offset?", id }, "*");
+      setTimeout(() => {
+        if (pendingOffsets.delete(id)) reject(new Error("Position de l'iframe introuvable : relancer read_page puis réessayer."));
+      }, 2000);
+    });
+  }
+
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (data?.__abc === "offset?") {
+      const iframe = [...document.querySelectorAll("iframe, frame")].find((f) => f.contentWindow === event.source);
+      if (!iframe) return;
+      const r = iframe.getBoundingClientRect();
+      frameOffset().then((mine) => {
+        event.source.postMessage(
+          { __abc: "offset!", id: data.id, x: mine.x + r.left + iframe.clientLeft, y: mine.y + r.top + iframe.clientTop },
+          "*",
+        );
+      }, () => {});
+    } else if (data?.__abc === "offset!" && event.source === parent) {
+      pendingOffsets.get(data.id)?.({ x: data.x, y: data.y });
+      pendingOffsets.delete(data.id);
+    }
+  });
 
   function pageText() {
     const text = (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").trim();
@@ -229,7 +304,7 @@
   }
 
   /** Recherche d'éléments par texte (nom accessible, placeholder, valeur…) ou par sélecteur 'css:…'. */
-  function find({ query, limit = 20 }) {
+  function find({ query, limit = 20, structured = false }) {
     if (!query) throw new Error("'query' manquant.");
     let matches;
     if (query.startsWith("css:")) {
@@ -268,6 +343,7 @@
       }
       return line;
     });
+    if (structured) return { total, items: matches.slice(0, limit).map((m, i) => ({ line: lines[i], score: m.score })) };
     const more = total > limit ? `\n(${total - limit} autres résultats non affichés)` : "";
     return lines.length ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${lines.join("\n")}${more}` : `Aucun élément trouvé pour ${JSON.stringify(query)}.`;
   }

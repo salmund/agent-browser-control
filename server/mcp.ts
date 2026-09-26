@@ -56,7 +56,7 @@ async function call(tool: string, args: Record<string, unknown>): Promise<CallRe
 }
 
 const server = new Server(
-  { name: "agent-browser-control", version: "0.4.0" },
+  { name: "agent-browser-control", version: "0.5.0" },
   {
     capabilities: { tools: { listChanged: true } },
     instructions:

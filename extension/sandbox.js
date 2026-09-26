@@ -73,6 +73,8 @@ function makeApi(runId, initialTab, output) {
       return `capture ${output.images.length} jointe au résultat`;
     },
     wait: (seconds) => new Promise((r) => setTimeout(r, Math.min(seconds, 60) * 1000)),
+    waitFor: async (conditions) => (await must("wait_for", withTab(conditions))).text,
+    dialog: async (accept = true, promptText) => (await must("handle_dialog", withTab({ accept, promptText }))).text,
     log: (...parts) => {
       output.logs.push(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
     },

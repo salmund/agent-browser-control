@@ -103,7 +103,7 @@ Cible ultérieure : extension migrée sous **WXT** en TypeScript quand elle gros
 
 ## 7. Feuille de route
 
-> État : v0.1 à v0.3 écrites. v0.1–v0.2 testées dans Comet (Wikipédia, Gemini, YouTube). Export WebM ajouté (les IA ne lisent que la 1re image d'un GIF). WebSocket (workers/iframes inclus via Target.setAutoAttach) et http_request ajoutés, testés sur Polymarket. v0.4 : browser_script (iframe sandbox, CSP sans réseau, relais via le document offscreen).
+> État : v0.1 à v0.3 écrites. v0.1–v0.2 testées dans Comet (Wikipédia, Gemini, YouTube). Export WebM ajouté (les IA ne lisent que la 1re image d'un GIF). WebSocket (workers/iframes inclus via Target.setAutoAttach) et http_request ajoutés, testés sur Polymarket. v0.4 : browser_script (iframe sandbox, CSP sans réseau, relais via le document offscreen). v0.5 : wait_for, iframes (y compris d'une autre origine), boîtes de dialogue, lectures viewport / diff.
 
 1. **v0.1 — Faisabilité** : daemon + shim + extension ; `tabs_context`, `tabs_create`, `navigate`, `computer` (screenshot/click/type/key/scroll), `read_page`. Test dans **Comet**.
 2. **v0.2 — Parité Claude in Chrome** : reste du §3.1, groupes d'onglets par agent, side panel + STOP.

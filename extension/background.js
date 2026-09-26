@@ -192,6 +192,8 @@ const TOOLS = {
   pdf,
   read_websocket_messages: readWebsocketMessages,
   browser_script: browserScript,
+  wait_for: waitFor,
+  handle_dialog: handleDialog,
   http_request: httpRequest,
 };
 
@@ -368,7 +370,10 @@ async function navigate(agent, { tabId, url }) {
   else if (url === "reload") await chrome.tabs.reload(tabId);
   else await chrome.tabs.update(tabId, { url: normalizeUrl(url) });
   let note = "";
-  await loaded.catch((err) => (note = `\n(${err.message})`));
+  await raceDialog(tabId, loaded).catch((err) => {
+    if (err instanceof DialogOpenError) throw err;
+    note = `\n(${err.message})`;
+  });
   const tab = await chrome.tabs.get(tabId);
   await recordFrame(tabId, `navigate ${tab.url}`);
   return ok(text(`Navigation terminée : ${tab.title} — ${tab.url}${note}`));
@@ -401,7 +406,10 @@ async function ensureAttached(tabId) {
   attached.add(tabId);
   const send = (m) => chrome.debugger.sendCommand({ tabId }, m).catch(() => {});
   // Performance dès l'attachement : ses compteurs (layouts, script) ne partent que de là.
-  await Promise.all([send("Runtime.enable"), send("Log.enable"), send("Network.enable"), send("Performance.enable")]);
+  // Page.enable : nécessaire pour être prévenu des boîtes de dialogue.
+  await Promise.all([
+    send("Runtime.enable"), send("Log.enable"), send("Network.enable"), send("Performance.enable"), send("Page.enable"),
+  ]);
   // Workers et iframes d'une autre origine ont leur propre cible : on s'y attache aussi, pour voir
   // leur réseau et leurs WebSocket (les flux temps réel passent souvent par un worker).
   await chrome.debugger
@@ -411,7 +419,66 @@ async function ensureAttached(tabId) {
 
 async function cdp(tabId, method, params = {}) {
   await ensureAttached(tabId);
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  if (method === "Page.handleJavaScriptDialog") return chrome.debugger.sendCommand({ tabId }, method, params);
+  assertNoDialog(tabId);
+  // Une commande qui déclenche une boîte (clic sur « Supprimer » → confirm) ne répondrait qu'à sa fermeture.
+  return raceDialog(tabId, chrome.debugger.sendCommand({ tabId }, method, params));
+}
+
+// ---------------------------------------------------------------------------
+// Boîtes de dialogue JavaScript : elles bloquent la page jusqu'à ce qu'on y réponde
+// ---------------------------------------------------------------------------
+
+const dialogs = new Map(); // tabId -> { type, message, defaultPrompt, url }
+const dialogWaiters = new Map(); // tabId -> Set(callback)
+
+class DialogOpenError extends Error {}
+
+function dialogError(tabId) {
+  const d = dialogs.get(tabId);
+  const kind = { alert: "alert", confirm: "confirm", prompt: "prompt", beforeunload: "« quitter la page ? »" }[d.type] ?? d.type;
+  return new DialogOpenError(
+    `Une boîte de dialogue ${kind} est ouverte sur la page et la bloque : ` +
+    `${untrusted(d.message || "(sans message)")}\n` +
+    `Y répondre avec handle_dialog (accept: true ou false${d.type === "prompt" ? ", promptText" : ""}) avant toute autre action.`,
+  );
+}
+
+function assertNoDialog(tabId) {
+  if (dialogs.has(tabId)) throw dialogError(tabId);
+}
+
+/** Rejette dès qu'une boîte s'ouvre sur l'onglet, pour ne pas attendre indéfiniment. */
+function raceDialog(tabId, promise) {
+  let callback;
+  const opened = new Promise((_, reject) => {
+    callback = () => reject(dialogError(tabId));
+    let set = dialogWaiters.get(tabId);
+    if (!set) dialogWaiters.set(tabId, (set = new Set()));
+    set.add(callback);
+  });
+  return Promise.race([promise, opened]).finally(() => dialogWaiters.get(tabId)?.delete(callback));
+}
+
+chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
+  if (tabId === undefined) return;
+  if (method === "Page.javascriptDialogOpening") {
+    dialogs.set(tabId, { type: params.type, message: params.message, defaultPrompt: params.defaultPrompt, url: params.url });
+    for (const cb of dialogWaiters.get(tabId) ?? []) cb();
+  } else if (method === "Page.javascriptDialogClosed") {
+    dialogs.delete(tabId);
+  }
+});
+chrome.debugger.onDetach.addListener(({ tabId }) => dialogs.delete(tabId));
+
+async function handleDialog(agent, { tabId, accept = true, promptText }) {
+  await assertOwned(agent, tabId);
+  const d = dialogs.get(tabId);
+  if (!d) return ok(text("Aucune boîte de dialogue ouverte sur cet onglet."));
+  await cdp(tabId, "Page.handleJavaScriptDialog", { accept: !!accept, ...(promptText !== undefined && { promptText: String(promptText) }) });
+  dialogs.delete(tabId);
+  await sleep(150);
+  return ok(text(`Boîte ${d.type} ${accept ? "acceptée" : "refusée"}${promptText !== undefined ? ` (réponse : ${JSON.stringify(String(promptText))})` : ""}.`));
 }
 
 async function evaluate(tabId, expression) {
@@ -432,6 +499,7 @@ function remoteObjectToString(o) {
 
 chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
   if (tabId === undefined) return;
+  if (method.startsWith("Network.")) trackInflight(tabId, method, params);
 
   if (method === "Target.attachedToTarget") {
     // Sous-cible (worker, iframe) : on y active le réseau ; ses événements arrivent avec le même tabId.
@@ -542,42 +610,107 @@ async function readNetworkRequests(agent, { tabId, urlPattern, limit = 100, clea
 // Script de page (monde isolé)
 // ---------------------------------------------------------------------------
 
-async function inPage(tabId, fnName, arg) {
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["page.js"] });
-  const [res] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, a) => {
-      try {
-        return { value: globalThis.__abc[name](a) };
-      } catch (e) {
-        return { error: e.message };
-      }
-    },
-    args: [fnName, arg ?? null],
-  });
+/** Exécuté dans la frame : appelle une fonction de page.js (éventuellement async). */
+async function callPageFunction(name, a) {
+  try {
+    return { value: await globalThis.__abc[name](a) };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/** "f12:ref_3" désigne un élément de l'iframe 12 ; "ref_3", un élément de la page principale. */
+function parseRef(ref) {
+  const m = /^f(\d+):(ref_\d+)$/.exec(ref ?? "");
+  return m ? { frameId: Number(m[1]), ref: m[2] } : { frameId: 0, ref };
+}
+
+/** Préfixe les refs d'une iframe, pour que les outils sachent dans quelle frame agir. */
+const prefixRefs = (text, frameId) => (frameId ? text.replace(/\[ref_(\d+)\]/g, `[f${frameId}:ref_$1]`) : text);
+
+async function inPage(tabId, fnName, arg, frameId = 0) {
+  assertNoDialog(tabId);
+  const target = { tabId, frameIds: [frameId] };
+  const run = async () => {
+    await chrome.scripting.executeScript({ target, files: ["page.js"] });
+    const [res] = await chrome.scripting.executeScript({ target, func: callPageFunction, args: [fnName, arg ?? null] });
+    return res;
+  };
+  const res = await raceDialog(tabId, run());
   if (res?.result?.error) throw new Error(res.result.error);
   return res?.result?.value;
+}
+
+/** Même appel dans toutes les frames de l'onglet ; renvoie [{ frameId, value }] (frames injoignables ignorées). */
+async function inAllFrames(tabId, fnName, arg) {
+  assertNoDialog(tabId);
+  const target = { tabId, allFrames: true };
+  const run = async () => {
+    await chrome.scripting.executeScript({ target, files: ["page.js"] });
+    return chrome.scripting.executeScript({ target, func: callPageFunction, args: [fnName, arg ?? null] });
+  };
+  let results;
+  try {
+    results = await raceDialog(tabId, run());
+  } catch (err) {
+    if (err instanceof DialogOpenError) throw err;
+    // Une frame refuse l'injection (page interne…) : on se rabat sur la page principale.
+    return [{ frameId: 0, value: await inPage(tabId, fnName, arg) }];
+  }
+  const main = results.find((r) => r.frameId === 0);
+  if (main?.result?.error) throw new Error(main.result.error);
+  return results.filter((r) => r.result && !r.result.error).map((r) => ({ frameId: r.frameId, value: r.result.value }));
 }
 
 /** Retour visuel, sans jamais faire échouer l'action. */
 const showOverlay = (tabId, point) => inPage(tabId, "overlay", point ?? {}).catch(() => {});
 
-async function readPage(agent, { tabId, filter, ref }) {
+async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
   await assertOwned(agent, tabId);
-  const tree = await inPage(tabId, "readPage", { filter, ref });
-  return ok(text(untrusted(tree)));
+  if (ref) {
+    const target = parseRef(ref);
+    const tree = await inPage(tabId, "readPage", { filter, ref: target.ref, viewport, diff }, target.frameId);
+    return ok(text(untrusted(prefixRefs(tree, target.frameId))));
+  }
+  // Une seule passe dans toutes les frames : la page principale lit avec frame=false.
+  const frames = await inAllFrames(tabId, "readPage", { filter, viewport, diff, frame: true });
+  const main = frames.find((f) => f.frameId === 0)?.value ?? (await inPage(tabId, "readPage", { filter, viewport, diff }));
+  const parts = [main];
+  for (const { frameId, value } of frames) {
+    if (frameId === 0 || !value) continue;
+    parts.push(`\n=== iframe ${frameId} (refs « f${frameId}:… ») ===\n${prefixRefs(value, frameId)}`);
+  }
+  let out = parts.join("\n");
+  if (out.length > 80_000) out = `${out.slice(0, 80_000)}\n[Tronqué : cibler une ref ou utiliser viewport=true.]`;
+  return ok(text(untrusted(out)));
 }
 
-async function find(agent, { tabId, query, limit }) {
+async function find(agent, { tabId, query, limit = 20 }) {
   await assertOwned(agent, tabId);
-  const result = await inPage(tabId, "find", { query, limit });
+  const frames = await inAllFrames(tabId, "find", { query, limit, structured: true });
+  let total = 0;
+  const items = [];
+  for (const { frameId, value } of frames) {
+    if (!value) continue;
+    total += value.total;
+    const suffix = frameId ? `  (iframe ${frameId})` : "";
+    items.push(...value.items.map((it) => ({ line: prefixRefs(it.line, frameId) + suffix, score: it.score })));
+  }
+  // Classement global par pertinence, toutes frames confondues.
+  const shown = items.sort((a, b) => b.score - a.score).slice(0, limit).map((it) => it.line);
+  const more = total > shown.length ? `\n(${total - shown.length} autres résultats non affichés)` : "";
+  const result = shown.length
+    ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${shown.join("\n")}${more}`
+    : `Aucun élément trouvé pour ${JSON.stringify(query)}.`;
   return ok(text(untrusted(result)));
 }
 
 async function formInput(agent, { tabId, ref, value }) {
   await bringToFront(await assertOwned(agent, tabId));
   if (!ref) throw new Error("'ref' manquant.");
-  const result = await inPage(tabId, "formInput", { ref, value });
+  const target = parseRef(ref);
+  const result = prefixRefs(await inPage(tabId, "formInput", { ref: target.ref, value }, target.frameId), target.frameId)
+    .replace(/^ref_(\d+)/, target.frameId ? `f${target.frameId}:ref_$1` : "ref_$1");
   await showOverlay(tabId);
   await recordFrame(tabId, `form_input ${ref}`);
   return ok(text(result));
@@ -593,7 +726,8 @@ async function fileUpload(agent, { tabId, ref, paths }) {
   await bringToFront(await assertOwned(agent, tabId));
   if (!ref) throw new Error("'ref' manquant.");
   if (!Array.isArray(paths) || !paths.length) throw new Error("'paths' doit être une liste de chemins absolus.");
-  if (!(await inPage(tabId, "isFileInput", ref))) return uploadViaFileChooser(tabId, ref, paths);
+  // Dans une iframe, on passe par le sélecteur de fichiers (le marquage ci-dessous vise la page principale).
+  if (parseRef(ref).frameId || !(await inPage(tabId, "isFileInput", ref))) return uploadViaFileChooser(tabId, ref, paths);
   const selector = await inPage(tabId, "markRef", ref);
   const { result } = await cdp(tabId, "Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(selector)})` });
   if (!result?.objectId) throw new Error(`Élément ${ref} introuvable.`);
@@ -633,7 +767,7 @@ async function uploadViaFileChooser(tabId, ref, paths) {
   await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
   try {
     const opened = waitForCdpEvent(tabId, "Page.fileChooserOpened", 5000);
-    const point = await inPage(tabId, "locate", ref);
+    const point = await locateRef(tabId, ref);
     await showOverlay(tabId, point);
     await click(tabId, point, "left", 1, 0);
     const { backendNodeId, mode } = await opened.catch(() => {
@@ -694,8 +828,18 @@ function modifierMask(spec) {
   return spec.toLowerCase().split("+").reduce((m, k) => m | (MODIFIER_BITS[k.trim()] ?? 0), 0);
 }
 
+/** Centre d'un élément (page principale ou iframe) en coordonnées du viewport de l'onglet. */
+async function locateRef(tabId, ref) {
+  const target = parseRef(ref);
+  if (target.frameId) {
+    // La frame demande sa position à ses parentes : page.js doit y être présent aussi.
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["page.js"] }).catch(() => {});
+  }
+  return inPage(tabId, "locate", target.ref, target.frameId);
+}
+
 async function targetPoint(tabId, { coordinate, ref }) {
-  if (ref) return inPage(tabId, "locate", ref);
+  if (ref) return locateRef(tabId, ref);
   if (Array.isArray(coordinate) && coordinate.length === 2) return { x: coordinate[0], y: coordinate[1] };
   throw new Error("Fournir 'coordinate' [x, y] ou 'ref'.");
 }
@@ -870,7 +1014,7 @@ async function computer(agent, args) {
 
     case "scroll_to": {
       if (!args.ref) throw new Error("'ref' requis.");
-      const point = await inPage(tabId, "locate", args.ref);
+      const point = await locateRef(tabId, args.ref);
       await showOverlay(tabId, point);
       await recordFrame(tabId, `scroll_to ${args.ref}`);
       return ok(text(`${args.ref} amené à l'écran, centre en (${point.x}, ${point.y}).`));
@@ -1125,3 +1269,71 @@ async function sendSettings() {
 chrome.storage.local.onChanged.addListener((changes) => {
   if ("scriptsEnabled" in changes) sendSettings();
 });
+
+// ---------------------------------------------------------------------------
+// wait_for : attendre une condition plutôt qu'un nombre de secondes
+// ---------------------------------------------------------------------------
+
+const inflight = new Map(); // tabId -> { ids: Set, last: instant de la dernière activité réseau }
+
+function trackInflight(tabId, method, params) {
+  let state = inflight.get(tabId);
+  if (!state) inflight.set(tabId, (state = { ids: new Set(), last: Date.now() }));
+  if (method === "Network.requestWillBeSent") state.ids.add(params.requestId);
+  else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") state.ids.delete(params.requestId);
+  else return;
+  state.last = Date.now();
+}
+chrome.tabs.onRemoved.addListener((tabId) => inflight.delete(tabId));
+
+async function waitFor(agent, args) {
+  const { tabId, selector, text: expected, textGone, urlContains, networkIdle } = args;
+  await assertOwned(agent, tabId);
+  await ensureAttached(tabId);
+  if (!selector && !expected && !textGone && !urlContains && !networkIdle) {
+    throw new Error("Préciser au moins une condition : selector, text, textGone, urlContains ou networkIdle.");
+  }
+  const limitMs = Math.min(Math.max(args.timeout ?? 10, 0.5), 60) * 1000;
+  const quietMs = networkIdle === true ? 500 : Number(networkIdle) || 0;
+  const started = Date.now();
+  const probe = `(() => {
+    const sel = ${JSON.stringify(selector ?? null)};
+    const el = sel ? document.querySelector(sel) : null;
+    const visible = !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+    const body = document.body ? document.body.innerText : "";
+    return {
+      visible,
+      text: ${JSON.stringify(expected ?? null)} === null || body.includes(${JSON.stringify(expected ?? "")}),
+      gone: ${JSON.stringify(textGone ?? null)} === null || !body.includes(${JSON.stringify(textGone ?? "")}),
+      url: location.href,
+    };
+  })()`;
+
+  let last = {};
+  while (true) {
+    try {
+      last = (await cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true })).result?.value ?? {};
+    } catch (err) {
+      if (err instanceof DialogOpenError) throw err;
+      last = {}; // page en pleine navigation : on réessaie au tour suivant
+    }
+    const net = inflight.get(tabId) ?? { ids: new Set(), last: started };
+    const checks = {
+      selector: !selector || !!last.visible,
+      text: !expected || !!last.text,
+      textGone: !textGone || !!last.gone,
+      urlContains: !urlContains || (last.url ?? "").includes(urlContains),
+      // Réseau calme : au plus 2 requêtes en cours (connexions longues) et rien de neuf depuis quietMs.
+      networkIdle: !quietMs || (net.ids.size <= 2 && Date.now() - net.last >= quietMs),
+    };
+    const elapsed = ((Date.now() - started) / 1000).toFixed(1).replace(".", ",");
+    if (Object.values(checks).every(Boolean)) {
+      return ok(text(`Condition remplie en ${elapsed} s.${last.url ? ` URL : ${last.url}` : ""}`));
+    }
+    if (Date.now() - started >= limitMs) {
+      const pending = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k).join(", ");
+      return fail(`Délai dépassé (${String(limitMs / 1000).replace(".", ",")} s), condition(s) non remplie(s) : ${pending}. URL actuelle : ${last.url ?? "?"}`);
+    }
+    await sleep(200);
+  }
+}

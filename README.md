@@ -42,14 +42,16 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 - Le démon refuse toute requête HTTP portant un en-tête `Origin` (pages web) et n'accepte en
   WebSocket que les origines `chrome-extension://`.
 
-## Outils (v0.4)
+## Outils (v0.5)
 
 | Outil | Rôle |
 |---|---|
 | `tabs_context`, `tabs_create`, `tabs_close` | Onglets du groupe de l'agent |
 | `navigate` | URL, `back`, `forward`, `reload` |
 | `computer` | screenshot, clics (simple/double/triple/droit), left_click_drag, hover, type, key, scroll, scroll_to, wait |
-| `read_page`, `find` | Arbre d'accessibilité avec refs ; recherche par texte ou `css:` |
+| `read_page`, `find` | Arbre d'accessibilité avec refs, iframes comprises (`f7:ref_3`) ; `viewport` (partie visible), `diff` (changements seulement) ; recherche par texte ou `css:` |
+| `wait_for` | Attendre un élément, un texte (présent ou disparu), une URL ou un réseau calme |
+| `handle_dialog` | Répondre à une boîte alert / confirm / prompt qui bloque la page |
 | `form_input` | Remplir un champ, select, checkbox par ref |
 | `get_page_text`, `javascript` | Texte de la page ; évaluation JS |
 | `read_console_messages`, `read_network_requests` | Console et réseau (capturés via CDP) |

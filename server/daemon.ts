@@ -10,7 +10,7 @@ import { basename, extname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const CALL_TIMEOUT_MS = 90_000;
 const SCRIPT_TIMEOUT_MS = 295_000;
 const EXTENSION_WAIT_MS = 10_000;

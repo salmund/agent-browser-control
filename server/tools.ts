@@ -62,7 +62,10 @@ export const TOOLS: Tool[] = [
           type: "array", items: { type: "number" }, minItems: 2, maxItems: 2,
           description: "Pour 'left_click_drag' : point de départ [x, y].",
         },
-        ref: { type: "string", description: "Référence d'élément issue de read_page (ex. 'ref_12')." },
+        ref: {
+          type: "string",
+          description: "Référence d'élément issue de read_page / find (ex. 'ref_12', ou 'f7:ref_3' dans une iframe).",
+        },
         text: {
           type: "string",
           description:
@@ -81,13 +84,17 @@ export const TOOLS: Tool[] = [
     name: "read_page",
     description:
       "Renvoie l'arbre d'accessibilité de la page sous forme compacte, avec une 'ref' par élément " +
-      "utilisable par computer. filter='interactive' ne garde que les éléments cliquables / éditables.",
+      "utilisable par computer. filter='interactive' ne garde que les éléments cliquables / éditables. " +
+      "Le contenu des iframes suit, avec des refs préfixées ('f7:ref_3'). Pour économiser : viewport=true " +
+      "(seulement la partie visible), diff=true (seulement ce qui a changé depuis la lecture précédente).",
     inputSchema: {
       type: "object",
       properties: {
         tabId,
         filter: { type: "string", enum: ["all", "interactive"], description: "Défaut : all." },
         ref: { type: "string", description: "Limiter l'arbre au sous-arbre de cet élément." },
+        viewport: { type: "boolean", description: "Seulement les éléments visibles à l'écran." },
+        diff: { type: "boolean", description: "Seulement les lignes ajoutées (+) ou retirées (-) depuis la dernière lecture avec les mêmes options." },
       },
       required: ["tabId"],
     },
@@ -368,6 +375,8 @@ export const TOOLS: Tool[] = [
       "- click(ref ou [x, y]) · type(texte, ref?) · key('Enter') · fill(ref, valeur)\n" +
       "- js(code) : évalue du JS dans la page et renvoie la valeur (objets JSON compris)\n" +
       "- shot() : joint une capture au résultat (5 max) · wait(secondes)\n" +
+      "- waitFor({ selector | text | textGone | urlContains | networkIdle, timeout }) : attend une condition\n" +
+      "- dialog(accept, promptText?) : répond à une boîte alert / confirm / prompt\n" +
       "- use(tabId) : change d'onglet courant · tab() : onglet courant\n" +
       "- call(outil, args) : n'importe quel autre outil, renvoie { text, images, isError } sans lever d'erreur\n" +
       "- log(...) : ajoute une ligne au journal renvoyé\n" +
@@ -385,6 +394,38 @@ export const TOOLS: Tool[] = [
         timeoutMs: { type: "number", description: "Durée maximale (défaut 120 000, max 280 000)." },
       },
       required: ["code"],
+    },
+  },
+  {
+    name: "wait_for",
+    description:
+      "Attend qu'une condition soit remplie plutôt qu'un nombre fixe de secondes : un élément visible (selector CSS), " +
+      "un texte présent (text) ou disparu (textGone, ex. 'Chargement…'), une URL (urlContains), ou le réseau calme " +
+      "(networkIdle: true = 500 ms sans requête, ou un nombre de ms). Conditions combinables ; timeout en secondes " +
+      "(défaut 10, max 60). À utiliser après un envoi, un upload ou une navigation, avant l'action suivante.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        selector: { type: "string" },
+        text: { type: "string" },
+        textGone: { type: "string" },
+        urlContains: { type: "string" },
+        networkIdle: { type: ["boolean", "number"] },
+        timeout: { type: "number" },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "handle_dialog",
+    description:
+      "Répond à une boîte de dialogue JavaScript (alert, confirm, prompt, « quitter la page ? ») qui bloque l'onglet. " +
+      "Les autres outils signalent quand une boîte est ouverte. accept=false pour Annuler ; promptText pour un prompt.",
+    inputSchema: {
+      type: "object",
+      properties: { tabId, accept: { type: "boolean" }, promptText: { type: "string" } },
+      required: ["tabId"],
     },
   },
 ];
