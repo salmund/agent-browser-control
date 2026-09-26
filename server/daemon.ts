@@ -3,7 +3,7 @@
  * Point de rendez-vous entre les shims MCP (HTTP, authentifiés par jeton)
  * et l'extension du navigateur (WebSocket, origine chrome-extension://).
  */
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
@@ -20,8 +20,21 @@ const OUTPUT_DIR = join(homedir(), "Downloads", "agent-browser-control");
 const token = getToken();
 
 let extension: WebSocket | null = null;
-/** Réglages de l'utilisateur, envoyés par l'extension (browser_script désactivé tant qu'on ne sait rien). */
-let settings: { scriptsEnabled: boolean } = { scriptsEnabled: false };
+/**
+ * Réglages de l'utilisateur, envoyés par l'extension. Gardés sur disque : après un redémarrage du
+ * démon, les agents voient le dernier réglage connu sans attendre que l'extension se reconnecte.
+ */
+const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
+let settings: { scriptsEnabled: boolean } = loadSettings();
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
+    return { scriptsEnabled: saved.scriptsEnabled === true };
+  } catch {
+    return { scriptsEnabled: false };
+  }
+}
 let nextId = 1;
 const pending = new Map<number, { resolve: (r: CallResult) => void; timer: NodeJS.Timeout }>();
 const extensionWaiters = new Set<() => void>();
@@ -172,6 +185,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong" }));
     if (msg.type === "settings") {
       settings = { scriptsEnabled: msg.settings?.scriptsEnabled === true };
+      try {
+        writeFileSync(SETTINGS_FILE, JSON.stringify(settings));
+      } catch {}
       log({ event: "settings", ...settings });
       return;
     }
