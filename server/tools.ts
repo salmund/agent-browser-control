@@ -19,7 +19,13 @@ export const TOOLS: Tool[] = [
     description: "Ouvre un nouvel onglet dans le groupe de l'agent et renvoie son id.",
     inputSchema: {
       type: "object",
-      properties: { url: { type: "string", description: "URL à ouvrir (défaut : about:blank)." } },
+      properties: {
+        url: { type: "string", description: "URL à ouvrir (défaut : about:blank)." },
+        incognito: {
+          type: "boolean",
+          description: "Ouvrir en navigation privée (sans cookies ni session de l'utilisateur), dans un groupe « agent (privé) ».",
+        },
+      },
     },
   },
   {

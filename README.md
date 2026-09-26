@@ -46,7 +46,7 @@ Agent ──MCP stdio──► server/mcp.ts ──HTTP + jeton──► server/
 
 | Outil | Rôle |
 |---|---|
-| `tabs_context`, `tabs_create`, `tabs_close` | Onglets du groupe de l'agent |
+| `tabs_context`, `tabs_create`, `tabs_close` | Onglets du groupe de l'agent ; `incognito` pour la navigation privée (groupe « agent (privé) », extension à autoriser en navigation privée) |
 | `navigate` | URL, `back`, `forward`, `reload` |
 | `computer` | screenshot, clics (simple/double/triple/droit), left_click_drag, hover, type, key, scroll, scroll_to, wait |
 | `read_page`, `find` | Arbre d'accessibilité avec refs, iframes comprises (`f7:ref_3`) ; `viewport` (partie visible), `diff` (changements seulement) ; recherche par texte ou `css:` |

@@ -247,9 +247,13 @@ function colorFor(agent) {
   return GROUP_COLORS[h % GROUP_COLORS.length];
 }
 
-async function getGroupId(agent) {
+/** Chaque agent a un groupe normal (« agent ») et, s'il en ouvre, un groupe privé (« agent (privé) »). */
+const groupTitle = (agent, incognito = false) => (incognito ? `${agent} (privé)` : agent);
+
+async function getGroupId(agent, incognito = false) {
+  const title = groupTitle(agent, incognito);
   const { groups = {} } = await chrome.storage.session.get("groups");
-  const groupId = groups[agent];
+  const groupId = groups[title];
   if (groupId !== undefined) {
     try {
       await chrome.tabGroups.get(groupId);
@@ -257,29 +261,32 @@ async function getGroupId(agent) {
     } catch {}
   }
   // storage.session est vidé quand l'extension est rechargée : on retrouve le groupe par son titre.
-  const [existing] = await chrome.tabGroups.query({ title: agent });
+  const [existing] = await chrome.tabGroups.query({ title });
   if (!existing) return null;
-  await setGroupId(agent, existing.id);
+  await setGroupId(title, existing.id);
   return existing.id;
 }
 
-async function setGroupId(agent, groupId) {
+async function setGroupId(title, groupId) {
   const { groups = {} } = await chrome.storage.session.get("groups");
-  groups[agent] = groupId;
+  groups[title] = groupId;
   await chrome.storage.session.set({ groups });
 }
 
+async function agentGroupIds(agent) {
+  return (await Promise.all([getGroupId(agent), getGroupId(agent, true)])).filter((id) => id !== null);
+}
+
 async function agentTabs(agent) {
-  const groupId = await getGroupId(agent);
-  return groupId === null ? [] : chrome.tabs.query({ groupId });
+  const tabs = await Promise.all((await agentGroupIds(agent)).map((groupId) => chrome.tabs.query({ groupId })));
+  return tabs.flat();
 }
 
 async function assertOwned(agent, tabId) {
   if (typeof tabId !== "number") throw new Error("tabId manquant.");
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) throw new Error(`Onglet ${tabId} introuvable.`);
-  const groupId = await getGroupId(agent);
-  if (groupId === null || tab.groupId !== groupId) {
+  if (!(await agentGroupIds(agent)).includes(tab.groupId)) {
     throw new Error(`L'onglet ${tabId} n'appartient pas au groupe de l'agent « ${agent} ». Utiliser tabs_context / tabs_create.`);
   }
   await assertAllowed(tab.url);
@@ -287,7 +294,8 @@ async function assertOwned(agent, tabId) {
 }
 
 function formatTab(t) {
-  return `- tabId ${t.id}${t.active ? " (actif)" : ""} : ${t.title || "(sans titre)"} — ${t.url || t.pendingUrl || ""}`;
+  const flags = [t.active && "actif", t.incognito && "navigation privée"].filter(Boolean).join(", ");
+  return `- tabId ${t.id}${flags ? ` (${flags})` : ""} : ${t.title || "(sans titre)"} — ${t.url || t.pendingUrl || ""}`;
 }
 
 async function tabsContext(agent) {
@@ -296,15 +304,33 @@ async function tabsContext(agent) {
   return ok(text(`Onglets de l'agent « ${agent} » :\n${tabs.map(formatTab).join("\n")}`));
 }
 
-async function tabsCreate(agent, { url }) {
+async function tabsCreate(agent, { url, incognito = false }) {
   if (url) await assertAllowed(normalizeUrl(url));
-  const groupId = await getGroupId(agent);
-  const windowId = groupId === null ? undefined : (await chrome.tabGroups.get(groupId)).windowId;
-  const tab = await chrome.tabs.create({ url: "about:blank", windowId, active: true });
+  const groupId = await getGroupId(agent, incognito);
+  let windowId = groupId === null ? undefined : (await chrome.tabGroups.get(groupId)).windowId;
+  let tab = null;
+  if (incognito && windowId === undefined) {
+    if (!(await chrome.extension.isAllowedIncognitoAccess())) {
+      throw new Error(
+        "L'extension n'est pas autorisée en navigation privée. L'utilisateur doit l'activer : " +
+        "chrome://extensions → Agent Browser Control → Détails → « Autoriser en mode navigation privée ».",
+      );
+    }
+    // Une fenêtre privée déjà ouverte, sinon une nouvelle.
+    const existing = (await chrome.windows.getAll({ windowTypes: ["normal"] })).find((w) => w.incognito);
+    if (existing) windowId = existing.id;
+    else {
+      const win = await chrome.windows.create({ incognito: true, focused: true, url: "about:blank" });
+      windowId = win.id;
+      tab = win.tabs[0];
+    }
+  }
+  tab ??= await chrome.tabs.create({ url: "about:blank", windowId, active: true });
   if (groupId === null) {
-    const newGroup = await chrome.tabs.group({ tabIds: [tab.id] });
-    await chrome.tabGroups.update(newGroup, { title: agent, color: colorFor(agent) });
-    await setGroupId(agent, newGroup);
+    const title = groupTitle(agent, incognito);
+    const newGroup = await chrome.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } });
+    await chrome.tabGroups.update(newGroup, { title, color: colorFor(agent) });
+    await setGroupId(title, newGroup);
   } else {
     await chrome.tabs.group({ groupId, tabIds: [tab.id] });
   }
