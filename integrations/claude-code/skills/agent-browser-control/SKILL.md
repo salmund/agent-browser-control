@@ -54,6 +54,9 @@ secours, si ABE est injoignable (extension désactivée, démon arrêté), et en
 
 - Vidéo YouTube à lire, résumer ou noter : `transcript` sur l'onglet de la vidéo (texte minuté, `translate: "fr"`,
   `start` / `end` pour un passage). Rien n'est téléchargé : ne pas utiliser `download_media` pour ça.
+- Réseau d'un parcours : `network_har` garde chaque requête de tes onglets sur disque (en-têtes, corps des
+  réponses de données), même après un rechargement de l'extension. `export` pour un fichier HAR (secrets
+  masqués), `keep` pour le garder après la fermeture de l'onglet.
 - Fichiers : `downloads` (`action: "download"` avec l'URL ou la ref d'un lien, avec la session de
   l'utilisateur ; `action: "wait"` après un clic qui télécharge), puis `read_document` avec le chemin renvoyé
   (PDF, même scanné, Word, PowerPoint, Excel, texte ; seulement dans Téléchargements).

@@ -186,6 +186,7 @@ const TOOLS = {
   gif_creator: gifCreator,
   network_intercept: networkIntercept,
   network_get_body: networkGetBody,
+  network_har: networkHar,
   storage,
   performance_metrics: performanceMetrics,
   emulate,
@@ -421,6 +422,8 @@ const networkLogs = new Map(); // tabId -> Map(requestId -> entry)
 
 chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
 chrome.tabs.onRemoved.addListener((tabId) => {
+  // Le HAR de l'onglet peut dater d'avant un rechargement de l'extension : on prévient toujours le démon.
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "har-close", tabId }));
   attached.delete(tabId);
   consoleLogs.delete(tabId);
   networkLogs.delete(tabId);
@@ -567,26 +570,99 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
     pushCapped(list, { t: e.timestamp, level: e.level === "warning" ? "warn" : e.level, text: e.text, source: e.url ?? "" }, MAX_CONSOLE);
   } else if (method === "Network.requestWillBeSent") {
     const map = networkLogs.get(tabId) ?? networkLogs.set(tabId, new Map()).get(tabId);
+    const previous = map.get(params.requestId);
+    if (previous && params.redirectResponse) {
+      // Redirection : même requestId ; l'étape précédente part au HAR sous son propre identifiant.
+      previous.id = `${params.requestId}:${previous.redirects ?? 0}`;
+      setResponse(previous, params.redirectResponse);
+      previous.duration = Math.round((params.timestamp - previous.ts) * 1000);
+      harPush(tabId, previous);
+    }
+    const extra = pendingExtraHeaders.get(params.requestId);
+    pendingExtraHeaders.delete(params.requestId);
     map.set(params.requestId, {
       id: params.requestId,
       t: params.wallTime * 1000,
+      ts: params.timestamp,
       method: params.request.method,
       url: params.request.url,
       type: params.type ?? "",
+      page: params.documentURL,
       status: null,
+      requestHeaders: { ...params.request.headers, ...extra },
+      postData: params.request.postData?.slice(0, HAR_MAX_POST),
+      redirects: previous && params.redirectResponse ? (previous.redirects ?? 0) + 1 : 0,
     });
     if (map.size > MAX_NETWORK) map.delete(map.keys().next().value);
+  } else if (method === "Network.requestWillBeSentExtraInfo") {
+    // En-têtes réellement envoyés, cookies compris (absents de requestWillBeSent) ; peut arriver avant.
+    const entry = networkLogs.get(tabId)?.get(params.requestId);
+    if (entry) Object.assign(entry.requestHeaders, params.headers);
+    else pendingExtraHeaders.set(params.requestId, params.headers);
   } else if (method === "Network.responseReceived") {
     const entry = networkLogs.get(tabId)?.get(params.requestId);
-    if (entry) {
-      entry.status = params.response.status;
-      entry.mimeType = params.response.mimeType;
-    }
+    if (entry) setResponse(entry, params.response);
+  } else if (method === "Network.responseReceivedExtraInfo") {
+    const entry = networkLogs.get(tabId)?.get(params.requestId);
+    if (entry) entry.responseHeaders = { ...entry.responseHeaders, ...params.headers };
+  } else if (method === "Network.loadingFinished") {
+    const entry = networkLogs.get(tabId)?.get(params.requestId);
+    if (entry) harFinish(tabId, entry, params);
   } else if (method === "Network.loadingFailed") {
     const entry = networkLogs.get(tabId)?.get(params.requestId);
-    if (entry) entry.error = params.canceled ? "canceled" : params.errorText;
+    if (entry) {
+      entry.error = params.canceled ? "canceled" : params.errorText;
+      entry.duration = Math.round((params.timestamp - entry.ts) * 1000);
+      harPush(tabId, entry);
+    }
   }
 });
+
+// ---------------------------------------------------------------------------
+// HAR persistant : chaque requête terminée part au démon, qui l'écrit sur disque (server/har.ts).
+// La mémoire de l'extension ne garde que le résumé ; en-têtes et corps ne font que transiter.
+// ---------------------------------------------------------------------------
+
+const HAR_MAX_BODY = 2 * 1024 * 1024; // corps de réponse gardé jusqu'à 2 Mo
+const HAR_MAX_POST = 256 * 1024;
+const HAR_BODY_TYPES = new Set(["XHR", "Fetch", "Document", "EventSource", "Other"]);
+const pendingExtraHeaders = new Map(); // requestId -> en-têtes arrivés avant requestWillBeSent
+const harQueue = []; // entrées en attente si le démon est momentanément injoignable
+
+function setResponse(entry, response) {
+  entry.status = response.status;
+  entry.statusText = response.statusText;
+  entry.mimeType = response.mimeType;
+  entry.httpVersion = response.protocol;
+  entry.responseHeaders = { ...response.headers, ...entry.responseHeaders };
+}
+
+async function harFinish(tabId, entry, params) {
+  entry.duration = Math.round((params.timestamp - entry.ts) * 1000);
+  const wantsBody = HAR_BODY_TYPES.has(entry.type) && TEXT_MIME.test(entry.mimeType ?? "") && (params.encodedDataLength ?? 0) <= HAR_MAX_BODY * 2;
+  if (wantsBody) {
+    try {
+      const res = await cdp(tabId, "Network.getResponseBody", { requestId: params.requestId });
+      let body = res.body;
+      if (res.base64Encoded) body = new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0)));
+      entry.body = body.length > HAR_MAX_BODY ? body.slice(0, HAR_MAX_BODY) : body;
+      entry.bodyTruncated = body.length > HAR_MAX_BODY;
+    } catch {}
+  }
+  harPush(tabId, entry);
+  delete entry.body; // la mémoire ne garde que le résumé
+}
+
+function harPush(tabId, entry) {
+  const { ts, redirects, ...rest } = entry;
+  const msg = JSON.stringify({ type: "har", tabId, entry: rest });
+  if (ws?.readyState === WebSocket.OPEN) {
+    while (harQueue.length) ws.send(harQueue.shift());
+    ws.send(msg);
+  } else if (harQueue.length < 300) {
+    harQueue.push(msg);
+  }
+}
 
 function compileRegex(pattern) {
   if (!pattern) return null;

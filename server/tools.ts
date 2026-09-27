@@ -253,6 +253,35 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: "network_har",
+    description:
+      "Enregistrement réseau persistant des onglets de l'agent (HAR) : chaque requête, avec ses en-têtes et le " +
+      "corps des réponses de données (XHR, fetch, document ; 2 Mo max), est écrite sur disque par le démon. Il survit " +
+      "au rechargement de l'extension et à la navigation : étudier un parcours de plusieurs pages après coup, " +
+      "retrouver un corps disparu, re-dériver un client quand un site change. action : 'status' (défaut), 'list' " +
+      "(urlPattern, limit), 'body' (requestId), 'export' (fichier HAR 1.2 dans Téléchargements, secrets masqués ; " +
+      "secrets: true seulement si l'utilisateur le demande), 'keep' (garder après la fermeture de l'onglet, label), " +
+      "'clear' (avec saved : supprime un enregistrement gardé), 'saved' (enregistrements gardés, à relire avec le " +
+      "paramètre saved). Supprimé à la fermeture de " +
+      "l'onglet sauf keep. network_get_body et read_network_requests s'en servent déjà seuls après un rechargement.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        action: { type: "string", enum: ["status", "list", "body", "export", "keep", "clear", "saved"] },
+        requestId: { type: "string", description: "body : l'id de la requête (colonne id de list)." },
+        urlPattern: { type: "string", description: "list : expression régulière sur l'URL." },
+        limit: { type: "number", description: "list : nombre maximum de requêtes (défaut 100, les plus récentes)." },
+        name: { type: "string", description: "export : nom du fichier .har." },
+        secrets: { type: "boolean", description: "export : garder cookies et jetons en clair (défaut false)." },
+        keep: { type: "boolean", description: "keep : true pour garder à la fermeture (défaut), false pour annuler." },
+        label: { type: "string", description: "keep : nom lisible de l'enregistrement gardé." },
+        saved: { type: "string", description: "list, body, export : lire un enregistrement gardé (nom donné par action='saved')." },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
     name: "network_intercept",
     description:
       "Intercepte les requêtes de l'onglet selon des règles : bloquer, simuler une réponse (mock), modifier " +

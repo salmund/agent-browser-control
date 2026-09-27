@@ -169,6 +169,19 @@ async function networkGetBody(agent, { tabId, requestId }) {
   return ok(text(`${header}\n${untrusted(body)}`));
 }
 
+/**
+ * network_har : l'enregistrement réseau persistant de l'onglet, tenu par le démon (il survit au
+ * rechargement de l'extension). L'extension vérifie seulement que l'onglet est à l'agent.
+ */
+async function networkHar(agent, { tabId, action = "status", requestId, urlPattern, limit, name, secrets, keep, label, saved }) {
+  if (action !== "saved") await assertOwned(agent, tabId);
+  const actions = ["status", "list", "body", "export", "keep", "clear", "saved"];
+  if (!actions.includes(action)) throw new Error(`action attendue : ${actions.join(", ")}.`);
+  if (action === "body" && !requestId) throw new Error("'requestId' requis pour action=\"body\" (colonne id de list).");
+  if (urlPattern) compileRegex(urlPattern);
+  return { content: [text("HAR persistant")], _har: { action, tabId, requestId, urlPattern, limit, name, secrets, keep, label, saved } };
+}
+
 // ---------------------------------------------------------------------------
 // Stockage : cookies, localStorage, sessionStorage
 // ---------------------------------------------------------------------------

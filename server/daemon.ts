@@ -12,6 +12,7 @@ import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } f
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
+import { appendEntry, bodyText, clearTab, closeTab, deleteSaved, exportHar, listText, purgeStale, readEntries, savedRecordings, setKeep, statusText, type HarEntry } from "./har.ts";
 
 const VERSION = "0.5.0";
 const CALL_TIMEOUT_MS = 90_000;
@@ -131,7 +132,7 @@ const server = createServer(async (req, res) => {
     const local = localTool(call);
     const result = local
       ? await local.catch((err) => errorResult(`${call.tool} : ${err instanceof Error ? err.message : err}`))
-      : await forward(call);
+      : harFallback(call, runAttachedHar(await forward(call)));
     log({ agent: call.agent, tool: call.tool, args: redact(call.args), ms: Date.now() - started, error: !!result.isError });
     return sendJson(res, 200, result);
   }
@@ -221,6 +222,74 @@ async function runAttachedMedia(result: CallResult): Promise<CallResult> {
 }
 
 /**
+ * network_har : l'extension a vérifié que l'onglet appartient à l'agent et renvoie la demande sous `_har` ;
+ * le démon, qui tient l'enregistrement sur disque, répond.
+ */
+function runAttachedHar(result: CallResult): CallResult {
+  const req = result._har as
+    | { action: string; tabId: number; requestId?: string; urlPattern?: string; limit?: number; name?: string; secrets?: boolean; keep?: boolean; label?: string; saved?: string }
+    | undefined;
+  if (!req) return result;
+  delete result._har;
+  const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
+  try {
+    const entries = () => readEntries(req.tabId, req.saved);
+    switch (req.action) {
+      case "status":
+        return reply(statusText(req.tabId));
+      case "list": {
+        const t = listText(entries(), req.urlPattern, req.limit ?? 100);
+        return reply(t ? untrusted(t) : `Aucune requête enregistrée${req.urlPattern ? " correspondante" : ""}.`);
+      }
+      case "body": {
+        const b = bodyText(entries(), String(req.requestId ?? ""));
+        if (!b) return reply(`Requête ${req.requestId} absente du HAR persistant.`, true);
+        return reply(typeof b === "string" ? b : `${b.header}\n${untrusted(b.body)}`);
+      }
+      case "export": {
+        const list = entries();
+        if (!list.length) return reply("Rien à exporter : aucune requête enregistrée.", true);
+        const path = exportHar(list, req.name ?? "", req.secrets === true);
+        return reply(`HAR exporté (${list.length} requêtes) : ${path}\n` + (req.secrets === true
+          ? "ATTENTION : il contient les cookies et jetons en clair (sessions actives). Ne pas le partager, le supprimer après usage."
+          : "Cookies, jetons et en-têtes d'authentification masqués (secrets: true pour les garder, à éviter)."));
+      }
+      case "keep":
+        return reply(setKeep(req.tabId, req.keep !== false, req.label));
+      case "clear":
+        return reply(req.saved ? deleteSaved(req.saved) : clearTab(req.tabId));
+      case "saved": {
+        const list = savedRecordings();
+        return reply(list.length ? `Enregistrements gardés (paramètre saved pour list, body, export) :\n${list.join("\n")}` : "Aucun enregistrement gardé.");
+      }
+    }
+    return reply(`Action inconnue : ${req.action}`, true);
+  } catch (err) {
+    return errorResult(`network_har : ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/**
+ * Après un rechargement de l'extension, sa mémoire réseau est vide : network_get_body et
+ * read_network_requests répondent alors depuis le HAR persistant, sans que l'agent ait à s'en soucier.
+ */
+function harFallback(call: CallRequest, result: CallResult): CallResult {
+  const args = call.args ?? {};
+  const tabId = Number(args.tabId);
+  if (!Number.isInteger(tabId)) return result;
+  const first = result.content.find((c) => c.type === "text")?.text ?? "";
+  if (call.tool === "network_get_body" && result.isError && /Corps indisponible/.test(first)) {
+    const b = bodyText(readEntries(tabId), String(args.requestId ?? ""));
+    if (b) return { content: [{ type: "text", text: typeof b === "string" ? b : `${b.header}\n${untrusted(b.body)}` }] };
+  }
+  if (call.tool === "read_network_requests" && /^Aucune requête capturée/.test(first)) {
+    const t = listText(readEntries(tabId), args.urlPattern as string | undefined, Number(args.limit) || 100);
+    if (t) return { content: [{ type: "text", text: untrusted(t) }] };
+  }
+  return result;
+}
+
+/**
  * L'extension peut joindre un fichier (ex. GIF) sous `_file` : le démon l'écrit dans
  * ~/Downloads/agent-browser-control/ et remplace `{path}` dans le texte par le chemin final.
  */
@@ -237,6 +306,16 @@ function saveAttachedFile(result: CallResult): CallResult {
   for (const item of result.content) if (item.type === "text") item.text = item.text.replace("{path}", path);
   return result;
 }
+
+// HAR abandonnés (navigateur fermé sans fermer l'onglet) : purgés au démarrage puis toutes les heures.
+try {
+  purgeStale();
+} catch {}
+setInterval(() => {
+  try {
+    purgeStale();
+  } catch {}
+}, 3600_000).unref();
 
 const wss = new WebSocketServer({ noServer: true });
 
@@ -256,13 +335,25 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   for (const w of [...extensionWaiters]) w();
 
   ws.on("message", (raw) => {
-    let msg: { id?: number; result?: CallResult; type?: string; settings?: { scriptsEnabled?: boolean } };
+    let msg: { id?: number; result?: CallResult; type?: string; settings?: { scriptsEnabled?: boolean }; tabId?: number; entry?: unknown };
     try {
       msg = JSON.parse(raw.toString());
     } catch {
       return;
     }
     if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong" }));
+    if (msg.type === "har") {
+      try {
+        appendEntry(Number(msg.tabId), msg.entry as HarEntry);
+      } catch {}
+      return;
+    }
+    if (msg.type === "har-close") {
+      try {
+        closeTab(Number(msg.tabId));
+      } catch {}
+      return;
+    }
     if (msg.type === "settings") {
       settings = { scriptsEnabled: msg.settings?.scriptsEnabled === true };
       try {
