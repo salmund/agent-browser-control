@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/banner.en.png" alt="Agent Browser Control, alias ABE" width="100%">
+  <img src="docs/assets/banner.en.png" alt="Agent Browser Control, alias ABC" width="100%">
 </p>
 
 <p align="center">
-  <b>Agent Browser Control</b> (ABE for short) gives any AI agent, whether it's Claude Code, Codex, Cursor or a
+  <b>Agent Browser Control</b> (ABC for short) gives any AI agent, whether it's Claude Code, Codex, Cursor or a
   homemade harness running on DeepSeek, the controls of <b>your real browser</b>:
   your tabs, your sessions, and everything the DevTools can see.<br>
   One Chrome extension, one MCP server, and that's it.

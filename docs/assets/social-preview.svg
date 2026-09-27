@@ -47,7 +47,7 @@
         fill="#ffffff" stroke="#10171c" stroke-width="6" stroke-linejoin="round" paint-order="stroke"/>
   </g>
   <text x="440" y="288" font-family="Segoe UI Variable Display, Segoe UI, Helvetica, Arial, sans-serif" font-size="70" font-weight="700" fill="#f1f4f2">Agent Browser Control</text>
-  <text x="446" y="338" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="28" font-weight="600" fill="#b9a4ff" letter-spacing="1">alias ABE</text>
+  <text x="446" y="338" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="28" font-weight="600" fill="#b9a4ff" letter-spacing="1">alias ABC</text>
   <text x="446" y="400" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="24" fill="#a7b4b8">The controls of your real browser, for any AI agent.</text>
   <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="600" fill="#d9e1de">
     <rect x="446" y="430" width="98" height="38" rx="19" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".14"/>

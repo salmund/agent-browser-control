@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/banner.png" alt="Agent Browser Control, alias ABE" width="100%">
+  <img src="docs/assets/banner.png" alt="Agent Browser Control, alias ABC" width="100%">
 </p>
 
 <p align="center">
-  <b>Agent Browser Control</b> (ABE pour les intimes) donne à n'importe quel agent IA, que ce soit Claude Code,
+  <b>Agent Browser Control</b> (ABC pour les intimes) donne à n'importe quel agent IA, que ce soit Claude Code,
   Codex, Cursor ou un harnais maison sur DeepSeek, les commandes de <b>votre vrai navigateur</b> :
   vos onglets, vos sessions, et tout ce que voient les DevTools.<br>
   Une extension Chrome, un serveur MCP, et c'est tout.
