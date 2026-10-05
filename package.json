@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "reload-extension": "node scripts/reload-extension.ts",
     "build-icons": "node scripts/build-icons.ts",
-    "build-docs": "node scripts/build-docs-assets.ts"
+    "build-docs": "node scripts/build-docs-assets.ts",
+    "build-readme": "node scripts/build-readme.ts"
   },
   "author": "salmund",
   "license": "MIT",

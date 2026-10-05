@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#the-tools">The 33 tools</a> ·
+  <a href="#the-tools">The 38 tools</a> ·
   <a href="#the-side-panel">The side panel</a> ·
   <a href="#security">Security</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Your real browser.** Not a headless Chromium running on the side: the agent works in your tabs, with the
   accounts you're already signed in to. It sees what you see.
 - **Any agent.** Everything goes through [MCP](https://modelcontextprotocol.io): one line of configuration and the
-  agent gets all 33 tools, whatever model runs behind it.
+  agent gets all 38 tools, whatever model runs behind it.
 - **Far more than a click driver.** Accessibility tree with stable references, iframes (even cross-origin),
   network, WebSocket, console, cookies, performance, mobile emulation, request interception, GIF or video
   recording… The agent gets the DevTools, not just a mouse.
@@ -90,14 +90,27 @@ With Claude Code: `claude mcp add agent-browser-control -- node /path/to/agent-b
 That's all: the local daemon starts by itself on the first call. The agent's name, which is also the name of its
 tab group, is the one announced by the MCP client; use `--agent-name my-agent` to pick your own.
 
+**Several agents in parallel.** Sub-agents of a workflow share their parent's connection, hence its name. Each one
+passes a short `label` to `tabs_context` and `tabs_create`: it gets its own "agent · label" group (distinct
+colour), its own chip in the panel and labelled lines in the log. Without `label`, nothing changes. Tabs still
+belong to the base agent: separation between sub-agents relies on discipline (each one only works on its own
+tabs), not on a prohibition.
+
+**Your browser stays yours.** By default, agents work in the background: they don't open their tabs in the foreground
+and don't change your active tab. But Chrome doesn't paint a hidden tab: virtualized lists (AngularJS Material, CDK,
+react-window…) stay empty there, and mouse events wait for their timeout (a click ~5 s, a scroll 60 s). For a click, a
+scroll or reading such a list, the agent's tab therefore comes to the front for the duration of the gesture (0.8 s
+hold so gestures can chain), then you get your tab back. Reading, keyboard typing, navigation and screenshots touch
+nothing. The "Foreground" switch in the panel restores the old behaviour (agent tab brought to the front on every action).
+
 ## The tools
 
 | | Tools |
 |---|---|
-| **Tabs** | `tabs_context` · `tabs_create` (incognito too) · `tabs_close` · `navigate` · `resize_window` |
-| **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `read_screen_text` (local OCR) · `save_image` · `downloads` (download a file with your session, follow a download) · `read_document` (PDF, even scanned, Word, PowerPoint, Excel) · `transcript` (the text of a YouTube video, without downloading anything) |
-| **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `file_upload` · `wait_for` · `handle_dialog` |
-| **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `network_get_body` · `network_intercept` · `read_websocket_messages` · `http_request` · `storage` · `performance_metrics` · `emulate` · `pdf` · `network_har` (persistent network recording, HAR export with secrets masked) |
+| **Tabs** | `tabs_context` (with each tab's age) · `tabs_create` (incognito too) · `tabs_close` · `tabs_cleanup` (closes idle tabs, `dryRun` to preview) · `history_search` (find a visited page) · `navigate` · `resize_window` |
+| **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `save_image` · `read_screen_text` (local OCR) · `transcript` (the text of a YouTube video, without downloading anything) · `downloads` (download a file with your session, follow a download) · `read_document` (PDF, even scanned, Word, PowerPoint, Excel) |
+| **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `credentials_fill` (fills logins / passwords without ever seeing them: encrypted vault, extension side panel Secrets section) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` |
+| **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `site_api` (per-site memory: routes + calls, replay fast without rediscovering) · `network_har` (persistent network recording, HAR export with secrets masked) · `network_intercept` · `network_get_body` · `storage` · `performance_metrics` · `emulate` · `pdf` · `read_websocket_messages` · `http_request` |
 | **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` · `download_media` (a page's video, audio or subtitles, with yt-dlp) |
 
 A few details that make all the difference on real websites:

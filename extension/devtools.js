@@ -182,6 +182,19 @@ async function networkHar(agent, { tabId, action = "status", requestId, urlPatte
   return { content: [text("HAR persistant")], _har: { action, tabId, requestId, urlPattern, limit, name, secrets, keep, label, saved } };
 }
 
+/**
+ * site_api, action save_call : mémorise une requête du HAR (méthode, chemin, params,
+ * jamais de valeurs) pour rejouer vite la prochaine fois. L'extension vérifie que
+ * l'onglet est à l'agent (sauf relecture d'un enregistrement gardé) ; le démon dérive
+ * et persiste. Les autres actions (list, save_route, delete) sont servies par le démon seul.
+ */
+async function siteApi(agent, { action = "list", tabId, requestId, name, saved }) {
+  if (action !== "save_call") throw new Error(`Action ${action} : servie par le démon, sans passer par l'extension.`);
+  if (!saved) await assertOwned(agent, tabId);
+  if (!requestId) throw new Error("'requestId' requis (colonne id de network_har action=\"list\").");
+  return { content: [text("Site API")], _siteApi: { action, tabId, requestId, name, saved } };
+}
+
 // ---------------------------------------------------------------------------
 // Stockage : cookies, localStorage, sessionStorage
 // ---------------------------------------------------------------------------

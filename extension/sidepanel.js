@@ -70,7 +70,9 @@ async function focusAgent({ group, tabs }) {
 }
 
 async function renderAgents() {
-  const agents = await agentGroups();
+  const all = await agentGroups();
+  // Un agent sans onglet dont les sous-agents (« agent · étiquette ») ont les leurs ne garde pas sa pastille.
+  const agents = all.filter((a) => a.tabs.length || !all.some((b) => b.agent.startsWith(`${a.agent} · `)));
   $("agent-chips").replaceChildren(...agents.map((a) => {
     const chip = el("button", "agent-chip");
     chip.type = "button";
@@ -178,6 +180,22 @@ $("block-form").onsubmit = (event) => {
   $("block-input").value = "";
 };
 
+// --- Premier plan ---------------------------------------------------------------------
+
+function renderFocus(enabled) {
+  $("focus-toggle").checked = enabled;
+  $("focus-hint").textContent = enabled
+    ? "Activé : l'onglet sur lequel un agent agit passe devant. Animations et menus fiables, mais votre onglet change."
+    : "Désactivé : les agents travaillent en arrière-plan. Leur onglet ne passe devant que le temps d'un clic ou d'un défilement, puis vous retrouvez le vôtre.";
+}
+
+$("focus-toggle").onchange = async (event) => {
+  await chrome.storage.local.set({ foregroundTabs: event.target.checked });
+  renderFocus(event.target.checked);
+};
+
+chrome.storage.local.get("foregroundTabs").then(({ foregroundTabs = false }) => renderFocus(foregroundTabs === true));
+
 // --- Scripts d'agent ------------------------------------------------------------------
 
 function renderScripts(enabled) {
@@ -209,3 +227,227 @@ chrome.storage.local.get("blocklist").then(({ blocklist: list = [] }) => {
   renderBlocklist();
 });
 refresh();
+
+// --- Secrets (credentials_fill) ----------------------------------------------------
+// Les valeurs en clair n'existent que chiffrées dans chrome.storage.local.
+// La phrase secrète ne sort jamais de ce panneau ; seule la clé dérivée (opaque)
+// est transmise au service worker pour la session navigateur.
+
+const CRED_FORMAT = "abc-credentials-v1";
+let credKey = null;
+let credStore = null;
+let credApprovals = [];
+
+const $s = (id) => document.getElementById(id);
+
+function credSlotIdOk(id) {
+  return typeof id === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id);
+}
+
+function normalizeHosts(input) {
+  return AbcSlotsCrypto.extractHosts(input).hosts;
+}
+
+function renderHostsPreview() {
+  const box = $s("slot-hosts-preview");
+  if (!box) return;
+  const { hosts, ignored } = AbcSlotsCrypto.extractHosts($s("slot-hosts").value);
+  box.replaceChildren();
+  for (const h of hosts) box.append(el("span", "slot-chip", h));
+  for (const bad of ignored) box.append(el("span", "slot-chip ignored", bad));
+}
+
+async function loadCredStore() {
+  const { credSlots } = await chrome.storage.local.get("credSlots");
+  credStore = credSlots?.format === CRED_FORMAT ? credSlots : null;
+  return credStore;
+}
+
+function renderSecrets() {
+  const locked = !credKey;
+  $s("secrets-state").dataset.locked = String(locked);
+  $s("secrets-state").textContent = locked ? "verrouillé" : "déverrouillé";
+  $s("unlock-form").hidden = !locked;
+  $s("secrets-open").hidden = locked;
+  if (locked) return;
+  const slots = Object.values(credStore?.slots ?? {});
+  $s("slots-empty").hidden = slots.length > 0;
+  $s("slots").replaceChildren(...slots.map((slot) => {
+    const li = el("li", "slot-item");
+    const top = el("div", "slot-top");
+    top.append(el("span", "slot-id", slot.id));
+    top.append(el("span", null, slot.label ?? ""));
+    const remove = el("button", null, "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Révoquer le secret ${slot.id}`);
+    remove.onclick = () => revokeSlot(slot.id);
+    top.append(remove);
+    li.append(top);
+    li.append(el("div", "slot-hosts", slot.hosts.join(" · ")));
+    const actions = el("div", "slot-actions");
+    const policy = document.createElement("select");
+    policy.setAttribute("aria-label", `Usage du secret ${slot.id}`);
+    for (const [value, label] of [["ask", "Demander à chaque fois"], ["always", "Toujours autoriser"]]) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      policy.append(opt);
+    }
+    policy.value = slot.policy === "always" ? "always" : "ask";
+    policy.onchange = () => setSlotPolicy(slot.id, policy.value);
+    actions.append(policy);
+    li.append(actions);
+    return li;
+  }));
+  $s("approvals").replaceChildren(...credApprovals.map((a) => {
+    const card = el("div", "approval");
+    const p = el("p", null, "");
+    p.append(el("strong", null, a.agent), document.createTextNode(` demande le secret « ${a.label} »`));
+    card.append(p);
+    card.append(el("div", "approval-site", `vers ${a.tabHost || "(site inconnu)"}`));
+    const actions = el("div", "approval-actions");
+    const allow = el("button", "allow", "Autoriser une fois");
+    allow.type = "button";
+    allow.onclick = () => decideApproval(a.id, "allow");
+    const deny = el("button", "deny", "Refuser");
+    deny.type = "button";
+    deny.onclick = () => decideApproval(a.id, "deny");
+    actions.append(allow, deny);
+    card.append(actions);
+    return card;
+  }));
+}
+
+async function decideApproval(id, decision) {
+  await chrome.runtime.sendMessage({ type: "credential-decision", id, decision }).catch(() => {});
+}
+
+$s("unlock-form").onsubmit = async (event) => {
+  event.preventDefault();
+  $s("unlock-error").hidden = true;
+  const pass = $s("unlock-input").value;
+  $s("unlock-input").value = "";
+  if (!pass) return;
+  try {
+    await loadCredStore();
+    let key;
+    if (!credStore) {
+      // Premier usage : la phrase choisie ici crée le coffre (elle n'est jamais stockée).
+      if (pass.length < 8) throw new Error("Phrase trop courte pour créer le coffre (8 caractères minimum).");
+      const salt = AbcSlotsCrypto.newSalt();
+      key = await AbcSlotsCrypto.deriveKey(pass, Uint8Array.from(atob(salt), (c) => c.charCodeAt(0)));
+      const verifier = await AbcSlotsCrypto.encryptWithKey(key, AbcSlotsCrypto.VERIFIER_TEXT);
+      credStore = { format: CRED_FORMAT, salt, verifier, slots: {} };
+      await chrome.storage.local.set({ credSlots: credStore });
+    } else {
+      const salt = Uint8Array.from(atob(credStore.salt), (c) => c.charCodeAt(0));
+      key = await AbcSlotsCrypto.deriveKey(pass, salt);
+      const check = await AbcSlotsCrypto.decryptWithKey(key, credStore.verifier.iv, credStore.verifier.data);
+      if (check !== AbcSlotsCrypto.VERIFIER_TEXT) throw new Error("Phrase secrète incorrecte.");
+    }
+    credKey = key;
+    await chrome.runtime.sendMessage({ type: "credentials-unlock", dek: await AbcSlotsCrypto.exportRawKey(key) });
+    renderSecrets();
+  } catch (err) {
+    credKey = null;
+    $s("unlock-error").textContent = err?.message ?? String(err);
+    $s("unlock-error").hidden = false;
+  }
+};
+
+$s("lock-button").onclick = async () => {
+  credKey = null;
+  await chrome.runtime.sendMessage({ type: "credentials-lock" }).catch(() => {});
+  renderSecrets();
+};
+
+$s("slot-form").onsubmit = async (event) => {
+  event.preventDefault();
+  $s("slot-error").hidden = true;
+  try {
+    if (!credKey) throw new Error("Coffre verrouillé.");
+    const id = $s("slot-id").value.trim().toLowerCase();
+    const label = $s("slot-label").value.trim() || id;
+    const hosts = normalizeHosts($s("slot-hosts").value);
+    const login = $s("slot-login").value.trim();
+    const secret = $s("slot-secret").value;
+    $s("slot-secret").value = "";
+    if (!credSlotIdOk(id)) throw new Error("Nom technique invalide : minuscules, chiffres, tirets (ex. sso-rouen-mdp).");
+    if (!hosts.length) throw new Error("Indiquer au moins un site autorisé (ex. univ-rouen.fr).");
+    if (!secret) throw new Error("Secret vide.");
+    const store = await loadCredStore();
+    if (!store) throw new Error("Coffre introuvable : déverrouillez d'abord (la phrase choisie crée le coffre).");
+    if (store.slots[id]) throw new Error(`Un secret "${id}" existe déjà (révoquez-le d'abord pour le remplacer).`);
+    const enc = await AbcSlotsCrypto.encryptWithKey(credKey, secret);
+    store.slots[id] = {
+      id, label, login: login || undefined, hosts, policy: $s("slot-policy").value === "always" ? "always" : "ask",
+      created: new Date().toISOString(), iv: enc.iv, data: enc.data,
+    };
+    await chrome.storage.local.set({ credSlots: store });
+    credStore = store;
+    $s("slot-id").value = "";
+    $s("slot-label").value = "";
+    $s("slot-hosts").value = "";
+    $s("slot-login").value = "";
+    renderHostsPreview();
+    renderSecrets();
+  } catch (err) {
+    $s("slot-error").textContent = err?.message ?? String(err);
+    $s("slot-error").hidden = false;
+  }
+};
+
+$s("slot-hosts").addEventListener("input", renderHostsPreview);
+
+$s("slot-current-site").onclick = async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const host = tab?.url?.startsWith("http") ? new URL(tab.url).hostname.toLowerCase() : "";
+    if (!host) return;
+    const field = $s("slot-hosts");
+    const cur = field.value.trim();
+    if (!AbcSlotsCrypto.extractHosts(cur).hosts.includes(host)) {
+      field.value = cur ? `${cur} ${host}` : host;
+    }
+    renderHostsPreview();
+    field.focus();
+  } catch { /* onglet illisible : saisie manuelle */ }
+};
+
+async function revokeSlot(id) {
+  for (const a of credApprovals.filter((x) => x.slotId === id)) {
+    await decideApproval(a.id, "deny");
+  }
+  const store = (await loadCredStore()) ?? credStore;
+  if (store?.slots[id]) {
+    delete store.slots[id];
+    await chrome.storage.local.set({ credSlots: store });
+    credStore = store;
+  }
+  renderSecrets();
+}
+
+async function setSlotPolicy(id, policy) {
+  const store = (await loadCredStore()) ?? credStore;
+  const slot = store?.slots[id];
+  if (!slot) return;
+  slot.policy = policy === "always" ? "always" : "ask";
+  await chrome.storage.local.set({ credSlots: store });
+  credStore = store;
+  renderSecrets();
+}
+
+// Demandes d'approbation : publiées par le service worker, affichées ici.
+async function refreshCredApprovals() {
+  const { credApprovals: list = [] } = await chrome.storage.session.get("credApprovals");
+  credApprovals = list;
+}
+
+chrome.storage.session.onChanged.addListener((changes, area) => {
+  if (area === "session" && changes.credApprovals) refreshCredApprovals().then(renderSecrets);
+});
+chrome.storage.local.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.credSlots) loadCredStore().then(renderSecrets);
+});
+
+loadCredStore().then(() => refreshCredApprovals().then(renderSecrets));

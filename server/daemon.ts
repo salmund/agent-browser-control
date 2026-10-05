@@ -6,9 +6,19 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
+import {
+  deleteSiteCall,
+  deleteSiteRoute,
+  deriveSiteCall,
+  loadSiteApi,
+  setSiteCall,
+  setSiteRoute,
+  siteApiPath,
+  type SiteEntry,
+} from "./analysis.ts";
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
@@ -132,18 +142,23 @@ const server = createServer(async (req, res) => {
     const local = localTool(call);
     const result = local
       ? await local.catch((err) => errorResult(`${call.tool} : ${err instanceof Error ? err.message : err}`))
-      : harFallback(call, runAttachedHar(await forward(call)));
-    log({ agent: call.agent, tool: call.tool, args: redact(call.args), ms: Date.now() - started, error: !!result.isError });
+      : harFallback(call, runAttachedSiteApi(runAttachedHar(await forward(call))));
+    log({ agent: call.agent, tool: call.tool, args: redact(call), ms: Date.now() - started, error: !!result.isError });
     return sendJson(res, 200, result);
   }
 
   sendJson(res, 404, { error: "not found" });
 });
 
-/** Évite d'écrire le texte saisi en clair dans le journal. */
-function redact(args: Record<string, unknown>) {
+/** Évite d'écrire le texte saisi et les query en clair dans le journal. */
+function redact(call: CallRequest) {
+  const args = call.args ?? {};
   if (typeof args?.text === "string" && args.action === "type") return { ...args, text: `<${args.text.length} car.>` };
   if (args?.value !== undefined) return { ...args, value: "<masqué>" };
+  if (call.tool === "site_api" && typeof args.url === "string") {
+    const q = args.url.indexOf("?");
+    return { ...args, url: q < 0 ? args.url : `${args.url.slice(0, q)}?<query masquée>` };
+  }
   return args;
 }
 
@@ -196,6 +211,9 @@ function localTool(call: CallRequest): Promise<CallResult> | null {
   const args = call.args ?? {};
   if (call.tool === "download_media" && args.action === "status") {
     return Promise.resolve().then(() => ({ content: [{ type: "text", text: mediaStatus(args.jobId as string | undefined) }] }));
+  }
+  if (call.tool === "site_api" && args.action !== "save_call") {
+    return Promise.resolve().then(() => siteApiLocal(args));
   }
   if (call.tool === "read_document") {
     // Le contenu d'un document vient de l'extérieur : non fiable, comme une page web.
@@ -273,6 +291,117 @@ function runAttachedHar(result: CallResult): CallResult {
  * Après un rechargement de l'extension, sa mémoire réseau est vide : network_get_body et
  * read_network_requests répondent alors depuis le HAR persistant, sans que l'agent ait à s'en soucier.
  */
+function siteApiFile(): string {
+  return siteApiPath(homedir());
+}
+
+function readSiteApi(): Record<string, SiteEntry> {
+  try {
+    return loadSiteApi(readFileSync(siteApiFile(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeSiteApi(api: Record<string, SiteEntry>): void {
+  mkdirSync(dirname(siteApiFile()), { recursive: true });
+  writeFileSync(siteApiFile(), JSON.stringify(api, null, 2) + "\n", { mode: 0o600 });
+}
+
+function siteApiListText(api: Record<string, SiteEntry>): string {
+  const sites = Object.keys(api).sort();
+  if (!sites.length) {
+    return (
+      "Site API vide : rien de capturé pour aller vite.\n" +
+      "Après un parcours coûteux, mémoriser l'utile : site_api save_call (tabId + requestId du HAR) pour un appel, " +
+      "save_route (nom + URL sans jeton) pour un deep link. Puis list, et rejouer au lieu de redécouvrir."
+    );
+  }
+  const lines: string[] = [];
+  for (const site of sites) {
+    lines.push(`${site} :`);
+    const entry = api[site];
+    const routes = Array.isArray(entry) ? {} : (entry.routes ?? {});
+    for (const [name, url] of Object.entries(routes)) lines.push(`  route « ${name} » → ${url}`);
+    const calls = Array.isArray(entry) ? entry : (entry.calls ?? []);
+    for (const c of calls) {
+      lines.push(`  appel « ${c.name} » — ${c.method} ${c.path}${c.params?.length ? ` (params : ${c.params.join(", ")})` : ""}`);
+    }
+  }
+  lines.push(
+    "Rejouer vite : navigate vers une route, http_request pour un appel. " +
+    "Si le site a changé : save_call/save_route sous le même nom écrase, delete retire le périmé.",
+  );
+  return lines.join("\n");
+}
+
+/** site_api sans le navigateur : list, save_route, delete. save_call passe par l'extension (onglet de l'agent). */
+function siteApiLocal(args: Record<string, unknown>): CallResult {
+  const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
+  const action = String(args.action ?? "list");
+  if (action === "list") return reply(siteApiListText(readSiteApi()));
+  if (action === "save_route") {
+    const name = String(args.name ?? "").trim();
+    const url = String(args.url ?? "").trim();
+    if (!name || !url) return reply("save_route : 'name' et 'url' requis (deep link sans jeton ni session).", true);
+    let site = String(args.site ?? "").trim();
+    if (!site) {
+      try {
+        site = new URL(url).hostname;
+      } catch {
+        return reply("save_route : URL invalide.", true);
+      }
+    }
+    writeSiteApi(setSiteRoute(readSiteApi(), site, name, url));
+    return reply(
+      `Route enregistrée pour ${site} : « ${name} » → ${url}\nProchaine fois : navigate directement vers elle au lieu de cliquer.`,
+    );
+  }
+  if (action === "delete") {
+    const site = String(args.site ?? "").trim();
+    const name = String(args.name ?? "").trim();
+    const kind = String(args.kind ?? "call");
+    if (!site || !name) return reply("delete : 'site' et 'name' requis.", true);
+    const before = readSiteApi();
+    const { api, removed } =
+      kind === "route" ? deleteSiteRoute(before, site, name) : deleteSiteCall(before, site, name);
+    if (!removed) return reply(`Rien à supprimer : ${kind} « ${name} » introuvable pour ${site}.`, true);
+    writeSiteApi(api);
+    return reply(`${kind === "route" ? "Route" : "Appel"} « ${name} » supprimé pour ${site}.`);
+  }
+  return reply(`Action inconnue : ${action} (list, save_call, save_route, delete).`, true);
+}
+
+/**
+ * site_api save_call : l'extension a vérifié l'onglet et renvoie la demande sous `_siteApi` ;
+ * le démon dérive le SiteCall (méthode, chemin, noms des params — jamais de valeurs) et le persiste.
+ * Réenregistrer sous le même nom met à jour quand le site change.
+ */
+function runAttachedSiteApi(result: CallResult): CallResult {
+  const req = result._siteApi as
+    | { action: string; tabId: number; requestId?: string; name?: string; saved?: string }
+    | undefined;
+  if (!req) return result;
+  delete result._siteApi;
+  const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
+  try {
+    if (req.action !== "save_call") return reply(`Action inconnue : ${req.action}`, true);
+    const entries = readEntries(req.tabId, req.saved);
+    const entry = [...entries].reverse().find((e) => e.id === req.requestId);
+    if (!entry) return reply(`Requête ${req.requestId} absente du HAR persistant. D'abord network_har action="list" pour l'id.`, true);
+    const derived = deriveSiteCall(entry, typeof req.name === "string" ? req.name : undefined);
+    if (!derived) return reply("URL invalide : appel non enregistré.", true);
+    writeSiteApi(setSiteCall(readSiteApi(), derived.site, derived.call));
+    const params = derived.call.params?.length ? ` (params : ${derived.call.params.join(", ")})` : "";
+    return reply(
+      `Appel enregistré pour ${derived.site} : « ${derived.call.name} » — ${derived.call.method} ${derived.call.path}${params}.\n` +
+        `Prochaine fois : site_api action="list", puis http_request pour rejouer au lieu de redécouvrir en cliquant.`,
+    );
+  } catch (err) {
+    return errorResult(`site_api : ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 function harFallback(call: CallRequest, result: CallResult): CallResult {
   const args = call.args ?? {};
   const tabId = Number(args.tabId);

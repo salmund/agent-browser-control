@@ -253,7 +253,17 @@
         [...removed, ...added].join("\n") + footer;
     }
     const note = diff ? "\n[Première lecture : les suivantes avec diff=true ne montreront que les changements.]" : "";
-    return `${header}\n\n${lines.join("\n") || "(aucun élément)"}${footer}${note}`;
+    let imagesBlock = "";
+    if (!frame) {
+      // Images générées ou intégrées, avec ref directe pour save_image : le cas qui
+      // manque quand l'arbre n'en montre aucune (canvas, svg, <img> sans nom).
+      const imgs = listImages(80, 10).map((img) => {
+        const label = img.alt ? ` ${JSON.stringify(img.alt)}` : "";
+        return `- image (${img.w}×${img.h}, ${img.srcType})${label} [${img.ref}]`;
+      });
+      if (imgs.length) imagesBlock = `\n\nImages à l'écran (${imgs.length}) :\n${imgs.join("\n")}`;
+    }
+    return `${header}\n\n${lines.join("\n") || "(aucun élément)"}${imagesBlock}${footer}${note}`;
   }
 
   /**
@@ -392,6 +402,33 @@
   }
 
   /** Pose un attribut temporaire pour retrouver l'élément depuis le monde principal (CDP). */
+  /**
+   * Remplit un champ avec un secret (outil credentials_fill) : même mécanisme que
+   * formInput, mais la valeur ne doit jamais être recopiée dans le retour.
+   */
+  function fillSecret({ ref, value }) {
+    const el = elementFor(ref);
+    if (el.tagName === "SELECT" || el.type === "checkbox" || el.type === "radio" || el.type === "file") {
+      throw new Error(`${ref} n'est pas un champ de saisie de secret (réservé aux identifiants / mots de passe).`);
+    }
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = String(value);
+    } else if ("value" in el) {
+      el.focus();
+      // Setter natif : contourne le suivi de valeur de React pour que l'événement 'input' soit pris en compte.
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set;
+      if (setter) setter.call(el, String(value));
+      else el.value = String(value);
+    } else {
+      throw new Error(`${ref} n'est pas un champ de formulaire.`);
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return `${ref} rempli.`;
+  }
+
   function markRef(ref) {
     elementFor(ref).setAttribute("data-abc-target", ref);
     return `[data-abc-target="${ref}"]`;
@@ -447,7 +484,24 @@
     const hosts = [...document.querySelectorAll("#abc-overlay")].filter((h) => h.style.display !== "none");
     if (!hosts.length) return;
     for (const h of hosts) h.style.display = "none";
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // Dans un onglet masqué, requestAnimationFrame ne se déclenche jamais : on n'attend pas plus de 150 ms.
+    await Promise.race([
+      new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+      new Promise((r) => setTimeout(r, 150)),
+    ]);
+  }
+
+  /**
+   * Page masquée dont une liste virtualisée n'a dessiné aucune ligne : ces listes (AngularJS Material, CDK,
+   * react-window…) n'affichent leurs lignes qu'au premier rendu, que Chrome ne fait pas dans un onglet masqué.
+   */
+  function needsRender() {
+    if (document.visibilityState !== "hidden") return false;
+    const selector = [
+      "md-virtual-repeat-container", "cdk-virtual-scroll-viewport", "[data-virtuoso-scroller]",
+      "[class*='virtual-scroll']", "[class*='virtual-list']", "[class*='virtualized']", "[class*='react-window']",
+    ].join(",");
+    return [...document.querySelectorAll(selector)].some((el) => el.clientHeight > 20 && !(el.innerText || "").trim());
   }
 
   const isFileInput = (ref) => {
@@ -467,6 +521,51 @@
   }
 
   /** La plus grande image (ou canvas) visible à l'écran, au moins 80 px de côté. */
+  /**
+   * Inventaire des images visibles à l'écran (img, canvas, svg ≥ 40 px) : sert au
+   * diagnostic de wait_for, à la condition image:true, à l'attente de save_image
+   * et à la section "Images à l'écran" de read_page. Triées par surface décroissante.
+   */
+  function imageKind(el) {
+    if (el.tagName === "CANVAS") return "canvas";
+    if (el instanceof SVGSVGElement) return "svg";
+    const src = el.currentSrc || el.src || "";
+    if (src.startsWith("blob:")) return "blob";
+    if (src.startsWith("data:")) return "data";
+    if (/^https?:/.test(src)) return "http";
+    if (!el.complete || !el.naturalWidth) return "incomplète";
+    return "http";
+  }
+
+  function listImages(minSize = 40, cap = 15) {
+    const out = [];
+    for (const el of document.querySelectorAll("img, canvas, svg")) {
+      if (el.closest("#abc-overlay")) continue;
+      if (!isVisible(el) || !inViewport(el)) continue;
+      const r = el.getBoundingClientRect();
+      const w = Math.round(r.width);
+      const h = Math.round(r.height);
+      if (w < minSize || h < minSize) continue;
+      const src = el.currentSrc || el.src || "";
+      out.push({
+        tag: el instanceof SVGSVGElement ? "svg" : el.tagName.toLowerCase(),
+        w, h,
+        srcType: imageKind(el),
+        src: String(src).slice(0, 80),
+        alt: (el.getAttribute("alt") || el.getAttribute("aria-label") || el.getAttribute("title") || "").slice(0, 80),
+        ref: refFor(el),
+      });
+    }
+    out.sort((a, b) => b.w * b.h - a.w * a.h);
+    return out.slice(0, cap);
+  }
+
+  /** Plus grande image sauvegardable (≥ 80 px), ou null : attente de save_image. */
+  function usableImage() {
+    const found = listImages(80, 1)[0];
+    return found ? { w: found.w, h: found.h, ref: found.ref } : null;
+  }
+
   function largestImage() {
     let best = null;
     let bestArea = 0;
@@ -681,5 +780,12 @@
     return new URL(url, location.href).href;
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, markRef, isFileInput, overlay, hideOverlay, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref };
+  function clickRef(ref) {
+    const el = elementFor(ref);
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    el.click();
+    return true;
+  }
+
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef };
 })();

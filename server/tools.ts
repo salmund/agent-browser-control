@@ -5,18 +5,30 @@ const tabId = {
   description: "Id de l'onglet ciblé (obtenu via tabs_context ou tabs_create).",
 } as const;
 
+const label = {
+  type: "string",
+  description:
+    "Sous-agent : nom court (« recherche-2 », « prix »). À donner quand plusieurs agents travaillent en parallèle " +
+    "avec la même connexion (sous-agents d'un workflow) : chacun a alors son groupe « agent · label », sa pastille " +
+    "et son fil dans le journal. Sans label, on travaille dans le groupe de l'agent.",
+} as const;
+
 /** Outils exposés aux agents. L'extension implémente chacun d'eux sous le même nom. */
 export const TOOLS: Tool[] = [
   {
     name: "tabs_context",
     description:
       "Liste les onglets du groupe de l'agent (id, titre, URL). À appeler en début de session. " +
-      "Si le groupe est vide, créer un onglet avec tabs_create.",
-    inputSchema: { type: "object", properties: {} },
+      "Si le groupe est vide, créer un onglet avec tabs_create. " +
+      "Sans label, liste aussi ceux des sous-agents (avec leur label entre crochets) ; avec label, seulement les siens. " +
+      "Chaque onglet indique son inactivité (inactif depuis X, épinglé, son en cours) ; tabs_cleanup ferme les inactifs.",
+    inputSchema: { type: "object", properties: { label } },
   },
   {
     name: "tabs_create",
-    description: "Ouvre un nouvel onglet dans le groupe de l'agent et renvoie son id.",
+    description:
+      "Ouvre un nouvel onglet dans le groupe de l'agent (ou de son sous-agent, avec label) et renvoie son id. " +
+      "Ne travailler que sur les onglets qu'on a soi-même créés.",
     inputSchema: {
       type: "object",
       properties: {
@@ -25,6 +37,7 @@ export const TOOLS: Tool[] = [
           type: "boolean",
           description: "Ouvrir en navigation privée (sans cookies ni session de l'utilisateur), dans un groupe « agent (privé) ».",
         },
+        label,
       },
     },
   },
@@ -32,6 +45,48 @@ export const TOOLS: Tool[] = [
     name: "tabs_close",
     description: "Ferme un onglet du groupe de l'agent.",
     inputSchema: { type: "object", properties: { tabId }, required: ["tabId"] },
+  },
+  {
+    name: "tabs_cleanup",
+    description:
+      "Ferme les onglets inactifs du groupe de l'agent (ou d'un sous-agent, avec label). Protégés par défaut : " +
+      "onglet actif, épinglé, avec du son, ou d'activité inconnue (on ne ferme jamais à l'aveugle). " +
+      "dryRun: true ne ferme rien, liste seulement ce qui serait fermé. " +
+      "Consulter tabs_context (âge de chaque onglet) pour choisir olderThanMinutes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        label,
+        olderThanMinutes: {
+          type: "number",
+          description: "Inactivité minimale en minutes pour fermer (défaut 60).",
+        },
+        keepActive: { type: "boolean", description: "Garder l'onglet actif (défaut true)." },
+        keepPinned: { type: "boolean", description: "Garder les onglets épinglés (défaut true)." },
+        keepAudible: { type: "boolean", description: "Garder les onglets avec du son (défaut true)." },
+        dryRun: {
+          type: "boolean",
+          description: "True : ne rien fermer, lister seulement ce qui serait fermé.",
+        },
+      },
+    },
+  },
+  {
+    name: "history_search",
+    description:
+      "Retrouve une page déjà visitée (titre, URL, âge, visites) au lieu de rouvrir un doublon : " +
+      "requête vide = pages récentes. Les sites interdits sont exclus (comptés, pas listés).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Texte cherché (titre / URL). Vide : les pages récentes.",
+        },
+        limit: { type: "number", description: "Résultats au plus (défaut 20, max 50)." },
+        days: { type: "number", description: "Fenêtre en jours (défaut 30, max 365)." },
+      },
+    },
   },
   {
     name: "navigate",
@@ -140,15 +195,80 @@ export const TOOLS: Tool[] = [
     name: "form_input",
     description:
       "Définit directement la valeur d'un champ par ref : texte, select (valeur ou libellé de l'option), " +
-      "checkbox / radio (true / false). Plus fiable que la saisie clavier pour les formulaires.",
+      "checkbox / radio (true / false). Permet aussi la saisie groupée via 'fields' (liste de {ref, value}) " +
+      "avec validation optionnelle par un clic sur 'submitRef' en un seul appel (ex. formulaire complet + validation).",
     inputSchema: {
       type: "object",
       properties: {
         tabId,
-        ref: { type: "string" },
-        value: { type: ["string", "number", "boolean"] },
+        ref: { type: "string", description: "Champ unique à renseigner (si fields n'est pas utilisé)." },
+        value: { type: ["string", "number", "boolean"], description: "Valeur pour le champ unique." },
+        fields: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              ref: { type: "string" },
+              value: { type: ["string", "number", "boolean"] },
+            },
+            required: ["ref", "value"],
+          },
+          description: "Liste de champs à renseigner d'un coup (ex. [{ref: 'ref_1', value: 'mon sujet'}, {ref: 'ref_2', value: 'mon message'}]).",
+        },
+        submitRef: {
+          type: "string",
+          description: "Ref du bouton de validation / soumission à cliquer automatiquement après avoir rempli les champs.",
+        },
       },
-      required: ["tabId", "ref", "value"],
+      required: ["tabId"],
+    },
+  },
+  {
+    name: "credentials_fill",
+    description:
+      "Remplit des champs d'authentification SANS connaître leurs valeurs : l'utilisateur a déposé ses secrets " +
+      "dans le coffre de l'extension (panneau latéral, section Secrets), et tu ne manipules que des références " +
+      "opaques (slot ids). La valeur ne transite jamais par MCP et n'est jamais recopiée dans le résultat. " +
+      "Chaque slot est limité à ses sites ; sauf slot « toujours autoriser », l'utilisateur approuve chaque " +
+      "utilisation dans le panneau (75 s, sinon refus). Ne jamais demander ni saisir un mot de passe " +
+      "directement : si aucun slot ne convient, demander à l'utilisateur en quoi remplir, pas la valeur.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        fills: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              ref: { type: "string", description: "Champ à remplir (ref issue de read_page / find)." },
+              slot: { type: "string", description: "Identifiant du secret (slot), ex. « sso-rouen »." },
+              use: { type: "string", enum: ["login"], description: "Si « login », remplit l'identifiant en clair du slot ; sinon remplit le secret (aveugle)." },
+            },
+            required: ["ref", "slot"],
+          },
+          description: "Champs à remplir (ex. [{ref: 'ref_3', slot: 'sso-user'}, {ref: 'ref_4', slot: 'sso-pass'}]).",
+        },
+        submitRef: {
+          type: "string",
+          description: "Ref du bouton de connexion à cliquer après remplissage.",
+        },
+      },
+      required: ["tabId", "fills"],
+    },
+  },
+  {
+    name: "credentials_list",
+    description:
+      "Liste les slots du coffre (métadonnées uniquement : identifiant, nom, sites autorisés, politique). " +
+      "Jamais de valeurs : fonctionne même coffre verrouillé. À appeler avant credentials_fill pour trouver " +
+      "seul le bon slot, sans demander à l'utilisateur.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+      },
+      required: [],
     },
   },
   {
@@ -163,7 +283,8 @@ export const TOOLS: Tool[] = [
     name: "javascript",
     description:
       "Évalue une expression JavaScript dans la page et renvoie le résultat sérialisé. " +
-      "Les promesses sont attendues. Utiliser 'return' n'est pas nécessaire : la dernière expression est renvoyée.",
+      "Les promesses sont attendues. Utiliser 'return' n'est pas nécessaire : la dernière expression est renvoyée. " +
+      "Un 'return' de premier niveau est accepté (le code est alors exécuté dans une fonction async).",
     inputSchema: {
       type: "object",
       properties: { tabId, code: { type: "string" } },
@@ -253,13 +374,42 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: "site_api",
+    description:
+      "Mémoire par site pour aller vite sans redécouvrir : 'list' montre les routes directes et les appels " +
+      "enregistrés (noms, méthode, chemin, params — jamais de secrets) ; 'save_call' mémorise une requête du HAR " +
+      "(tabId + requestId de network_har list, nom optionnel ; réenregistrer sous le même nom met à jour quand " +
+      "le site change) ; 'save_route' mémorise un deep link (nom + URL sans jeton) ; 'delete' (site, nom, kind) " +
+      "retire un appel ou une route périmée. Prochaine visite : list, puis navigate vers une route ou " +
+      "http_request pour rejouer un appel, au lieu de tout redécouvrir en cliquant.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "save_call", "save_route", "delete"],
+          description: "Défaut : list.",
+        },
+        tabId,
+        requestId: { type: "string", description: "save_call : l'id de la requête (colonne id de network_har list)." },
+        saved: { type: "string", description: "save_call : enregistrement gardé au lieu de l'onglet (nom de network_har saved)." },
+        name: { type: "string", description: "save_call/save_route/delete : nom mémorisé (défaut save_call : MÉTHODE chemin)." },
+        url: { type: "string", description: "save_route : deep link à mémoriser (sans jeton ni session)." },
+        site: { type: "string", description: "save_route/delete : site (défaut : hôte de l'URL ou de la requête)." },
+        kind: { type: "string", enum: ["call", "route"], description: "delete : appel ou route (défaut call)." },
+      },
+    },
+  },
+  {
     name: "network_har",
     description:
       "Enregistrement réseau persistant des onglets de l'agent (HAR) : chaque requête, avec ses en-têtes et le " +
       "corps des réponses de données (XHR, fetch, document ; 2 Mo max), est écrite sur disque par le démon. Il survit " +
       "au rechargement de l'extension et à la navigation : étudier un parcours de plusieurs pages après coup, " +
-      "retrouver un corps disparu, re-dériver un client quand un site change. action : 'status' (défaut), 'list' " +
-      "(urlPattern, limit), 'body' (requestId), 'export' (fichier HAR 1.2 dans Téléchargements, secrets masqués ; " +
+      "retrouver un corps disparu, re-dériver un client quand un site change. Une fois le bon appel identifié, " +
+      "site_api save_call le mémorise (méthode, chemin, params) pour rejouer vite la prochaine fois. " +
+      "action : 'status' (défaut), 'list' (urlPattern, limit), 'body' (requestId), 'export' (fichier HAR 1.2 " +
+      "dans Téléchargements, secrets masqués ; " +
       "secrets: true seulement si l'utilisateur le demande), 'keep' (garder après la fermeture de l'onglet, label), " +
       "'clear' (avec saved : supprime un enregistrement gardé), 'saved' (enregistrements gardés, à relire avec le " +
       "paramètre saved). Supprimé à la fermeture de " +
@@ -464,9 +614,11 @@ export const TOOLS: Tool[] = [
     name: "wait_for",
     description:
       "Attend qu'une condition soit remplie plutôt qu'un nombre fixe de secondes : un élément visible (selector CSS), " +
-      "un texte présent (text) ou disparu (textGone, ex. 'Chargement…'), une URL (urlContains), ou le réseau calme " +
-      "(networkIdle: true = 500 ms sans requête, ou un nombre de ms). Conditions combinables ; timeout en secondes " +
-      "(défaut 10, max 60). À utiliser après un envoi, un upload ou une navigation, avant l'action suivante.",
+      "un texte présent (text) ou disparu (textGone, ex. 'Chargement…'), une URL (urlContains), le réseau calme " +
+      "(networkIdle: true = 500 ms sans requête, ou un nombre de ms), le DOM stabilisé " +
+      "(domSettled: true = 800 ms sans mutation DOM, ou un nombre de ms pour attendre la fin d'un streaming ou d'une transition), " +
+      "ou la fin d'une authentification (authSettled: true attend la validation d'une connexion / redirection hors login). " +
+      "Conditions combinables ; timeout en secondes (défaut 10, max 60, jusqu'à 300 pour authSettled).",
     inputSchema: {
       type: "object",
       properties: {
@@ -476,6 +628,14 @@ export const TOOLS: Tool[] = [
         textGone: { type: "string" },
         urlContains: { type: "string" },
         networkIdle: { type: ["boolean", "number"] },
+        domSettled: {
+          type: ["boolean", "number"],
+          description: "Attendre que le DOM soit stable (aucune mutation) pendant N ms (défaut 800 si true). Idéal pour streaming d'IA ou formulaires dynamiques.",
+        },
+        authSettled: {
+          type: "boolean",
+          description: "Attendre que l'utilisateur ait fini de se connecter (redirection hors page de login / SSO / captcha).",
+        },
         timeout: { type: "number" },
       },
       required: ["tabId"],

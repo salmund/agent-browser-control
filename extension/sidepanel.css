@@ -328,3 +328,70 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 
 .activity { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+
+/* --- Secrets (credentials_fill) ------------------------------------------------ */
+
+.pill {
+  font-size: 12px; font-weight: 600;
+  padding: 2px 10px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.pill[data-locked="false"] { color: var(--ok); border-color: var(--ok); }
+
+.error { color: var(--danger); font-size: 13px; margin: 6px 0 0; }
+
+.slot-form { display: grid; gap: 8px; margin-top: 12px; }
+.slot-form label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.slot-form input, .slot-form select {
+  padding: 7px 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--ink);
+  font: 13px var(--mono);
+}
+.slot-form button {
+  padding: 7px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px; font-weight: 600;
+}
+.slot-form button:hover { border-color: var(--muted); }
+.slot-form .field-hint { font-size: 12px; color: var(--muted); }
+.slot-form .hosts-row { display: flex; gap: 6px; align-items: center; }
+.slot-form .hosts-row input { flex: 1; min-width: 0; }
+.slot-form .hosts-row .quiet-button { white-space: nowrap; }
+.slot-form .hosts-preview { display: flex; flex-wrap: wrap; gap: 4px; }
+.slot-form .hosts-preview:empty { display: none; }
+.slot-form .slot-chip {
+  font: 12px var(--mono); color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 20px;
+  padding: 1px 9px;
+}
+.slot-form .slot-chip.ignored { opacity: 0.55; text-decoration: line-through; }
+
+.slot-item { flex-direction: column; align-items: stretch !important; gap: 6px !important; }
+.slot-item .slot-top { display: flex; align-items: center; gap: 8px; }
+.slot-item .slot-id { font-weight: 600; color: var(--ink); }
+.slot-item .slot-hosts { color: var(--muted); font-size: 12px; }
+.slot-item .slot-actions { display: flex; gap: 6px; align-items: center; }
+.slot-item .slot-actions select {
+  font: 12px var(--font); color: var(--ink);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.approval {
+  border: 1px solid var(--estop-yellow);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  background: color-mix(in srgb, var(--estop-yellow) 8%, transparent);
+}
+.approval p { margin: 0 0 4px; font-size: 13px; }
+.approval .approval-site { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.approval .approval-actions { display: flex; gap: 8px; margin-top: 8px; }
+.approval button {
+  padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--line); background: var(--surface);
+}
+.approval button.allow { background: var(--ok); border-color: transparent; color: #fff; }
+.approval button.deny:hover { border-color: var(--danger); color: var(--danger); }

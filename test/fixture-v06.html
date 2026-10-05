@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture v0.6 ABC - Test Formulaires & Streaming</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+    .form-group { margin-bottom: 12px; }
+    label { display: block; margin-bottom: 4px; font-weight: bold; }
+    input[type="text"], select, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { padding: 10px 16px; background: #0066cc; color: white; border: none; cursor: pointer; border-radius: 4px; }
+    #result, #stream-result { margin-top: 16px; padding: 12px; background: #eef; border-radius: 4px; min-height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>Test Fixture v0.6</h1>
+
+  <section>
+    <h2>1. Formulaire de contact (Test Batch form_input)</h2>
+    <form id="contact-form" onsubmit="event.preventDefault(); handleSubmit();">
+      <div class="form-group">
+        <label for="f-subject">Objet</label>
+        <input type="text" id="f-subject" name="subject" placeholder="Sujet de votre demande">
+      </div>
+      <div class="form-group">
+        <label for="f-category">Rubrique</label>
+        <select id="f-category" name="category">
+          <option value="">-- Choisir une rubrique --</option>
+          <option value="technique">Support technique</option>
+          <option value="classement">Classement et ventes</option>
+          <option value="facturation">Facturation et redevances</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-message">Message</label>
+        <textarea id="f-message" name="message" rows="4" placeholder="Votre message détaillé"></textarea>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="f-urgent" name="urgent"> Demande urgente
+        </label>
+      </div>
+      <button type="submit" id="f-submit">Envoyer le message</button>
+    </form>
+    <div id="result">En attente de saisie...</div>
+  </section>
+
+  <section style="margin-top: 40px;">
+    <h2>2. Streaming DOM (Test wait_for domSettled)</h2>
+    <button id="start-stream" onclick="startStreaming()">Lancer réponse IA en streaming</button>
+    <div id="stream-result">Prêt</div>
+  </section>
+
+  <script>
+    function handleSubmit() {
+      const sub = document.getElementById("f-subject").value;
+      const cat = document.getElementById("f-category").value;
+      const msg = document.getElementById("f-message").value;
+      const urg = document.getElementById("f-urgent").checked;
+      document.getElementById("result").textContent = 
+        `Envoyé avec succès ! Objet: "${sub}" | Rubrique: "${cat}" | Urgent: ${urg} | Longueur message: ${msg.length} car.`;
+    }
+
+    function startStreaming() {
+      const el = document.getElementById("stream-result");
+      el.textContent = "";
+      const tokens = ["Bonjour", "Louis,", "voici", "l'analyse", "complète", "de", "vos", "ventes", "Monéa.", "Tout", "est", "parfaitement", "optimisé."];
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i < tokens.length) {
+          el.textContent += (i > 0 ? " " : "") + tokens[i];
+          i++;
+        } else {
+          clearInterval(timer);
+          const done = document.createElement("span");
+          done.style.color = "green";
+          done.textContent = " [STREAMING TERMINÉ]";
+          el.appendChild(done);
+        }
+      }, 90);
+    }
+  </script>
+</body>
+</html>

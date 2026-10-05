@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#les-outils">Les 33 outils</a> ·
+  <a href="#les-outils">Les 38 outils</a> ·
   <a href="#le-panneau">Le panneau</a> ·
   <a href="#sécurité">Sécurité</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Votre vrai navigateur.** Pas un Chromium headless lancé à côté : l'agent travaille dans vos onglets, avec vos
   comptes déjà connectés. Il voit ce que vous voyez.
 - **N'importe quel agent.** Tout passe par [MCP](https://modelcontextprotocol.io) : une ligne de configuration, et
-  l'agent dispose des 33 outils, quel que soit le modèle derrière.
+  l'agent dispose des 38 outils, quel que soit le modèle derrière.
 - **Bien plus qu'un pilote de clics.** Arbre d'accessibilité avec des références stables, iframes (même d'une autre
   origine), réseau, WebSocket, console, cookies, performance, émulation mobile, interception de requêtes,
   enregistrement GIF ou vidéo… L'agent a les DevTools, pas seulement une souris.
@@ -90,14 +90,28 @@ Avec Claude Code : `claude mcp add agent-browser-control -- node /chemin/vers/ag
 C'est tout : le démon local démarre de lui-même au premier appel. Le nom de l'agent, qui est aussi celui de son
 groupe d'onglets, est celui qu'annonce le client MCP ; `--agent-name mon-agent` permet de le choisir.
 
+**Plusieurs agents en parallèle.** Des sous-agents d'un workflow partagent la connexion de leur parent, donc son
+nom. Chacun passe alors un `label` court à `tabs_context` et `tabs_create` : il a son groupe « agent · label »
+(couleur distincte), sa pastille dans le panneau et ses lignes étiquetées dans le journal. Sans `label`, rien ne
+change. Les onglets restent à l'agent de base : le cloisonnement entre sous-agents repose sur la discipline
+(chacun ne travaille que sur ses onglets), pas sur une interdiction.
+
+**Votre navigateur reste à vous.** Par défaut, les agents travaillent en arrière-plan : ils n'ouvrent pas leurs onglets
+au premier plan et ne changent pas votre onglet actif. Mais Chrome ne dessine pas un onglet masqué : les listes
+virtualisées (AngularJS Material, CDK, react-window…) y restent vides, et les événements souris y attendent leur délai
+(un clic ~5 s, un défilement 60 s). Pour un clic, un défilement ou la lecture d'une telle liste, l'onglet de l'agent passe
+donc devant le temps du geste (0,8 s de garde pour enchaîner), puis vous retrouvez votre onglet. Lecture, saisie au
+clavier, navigation et captures se font sans rien toucher. L'interrupteur « Premier plan » du panneau redonne l'ancien
+comportement (onglet de l'agent devant à chaque action).
+
 ## Les outils
 
 | | Outils |
 |---|---|
-| **Onglets** | `tabs_context` · `tabs_create` (aussi en navigation privée) · `tabs_close` · `navigate` · `resize_window` |
-| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `read_screen_text` (OCR locale) · `save_image` · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) |
-| **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `file_upload` · `wait_for` · `handle_dialog` |
-| **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `network_get_body` · `network_intercept` · `read_websocket_messages` · `http_request` · `storage` · `performance_metrics` · `emulate` · `pdf` · `network_har` (enregistrement réseau persistant, export HAR aux secrets masqués) |
+| **Onglets** | `tabs_context` (avec l'âge de chaque onglet) · `tabs_create` (aussi en navigation privée) · `tabs_close` · `tabs_cleanup` (ferme les inactifs, `dryRun` pour prévisualiser) · `history_search` (retrouver une page visitée) · `navigate` · `resize_window` |
+| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `save_image` · `read_screen_text` (OCR locale) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) |
+| **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `credentials_fill` (remplit identifiants / mots de passe sans jamais les voir : coffre chiffré, section Secrets du panneau) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` |
+| **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `site_api` (mémoire par site : routes + appels, pour rejouer vite sans redécouvrir) · `network_har` (enregistrement réseau persistant, export HAR aux secrets masqués) · `network_intercept` · `network_get_body` · `storage` · `performance_metrics` · `emulate` · `pdf` · `read_websocket_messages` · `http_request` |
 | **Enregistrer, automatiser** | `gif_creator` (GIF haute qualité ou vidéo WebM) · `browser_script` · `download_media` (vidéo, audio ou sous-titres d'une page, avec yt-dlp) |
 
 Quelques détails qui changent tout sur les vrais sites :

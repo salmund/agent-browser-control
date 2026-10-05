@@ -48,6 +48,18 @@
     <p id="activity-empty" class="empty">Aucune action pour l'instant. Les actions des agents s'affichent ici en direct.</p>
   </section>
 
+  <section class="focus" aria-labelledby="focus-title">
+    <h2 id="focus-title">Premier plan</h2>
+    <label class="switch-row">
+      <span class="switch-text">
+        <span>Amener l'onglet de l'agent devant</span>
+        <span class="section-hint" id="focus-hint">Désactivé : les agents travaillent en arrière-plan. Leur onglet ne passe devant que le temps d'un clic ou d'un défilement, puis vous retrouvez le vôtre.</span>
+      </span>
+      <input id="focus-toggle" type="checkbox" role="switch">
+      <span class="switch" aria-hidden="true"></span>
+    </label>
+  </section>
+
   <section class="scripts" aria-labelledby="scripts-title">
     <h2 id="scripts-title">Scripts d'agent</h2>
     <label class="switch-row">
@@ -72,6 +84,52 @@
     <p id="blocked-empty" class="empty">Aucun site interdit : les agents peuvent ouvrir toutes les pages.</p>
   </section>
 
-  <script src="sidepanel.js"></script>
+  <section class="secrets" aria-labelledby="secrets-title">
+    <div class="section-head">
+      <h2 id="secrets-title">Secrets</h2>
+      <span id="secrets-state" class="pill" data-locked="true">verrouillé</span>
+    </div>
+    <p class="section-hint">Mots de passe que les agents peuvent utiliser sans jamais les voir (outil credentials_fill, par slot). Chiffrés dans ce navigateur, jamais envoyés nulle part. Première utilisation : la phrase choisie ci-dessous crée le coffre.</p>
+    <div id="approvals"></div>
+    <form id="unlock-form" class="block-form">
+      <label class="visually-hidden" for="unlock-input">Phrase secrète du coffre</label>
+      <input id="unlock-input" type="password" autocomplete="off" spellcheck="false" placeholder="Phrase secrète du coffre">
+      <button type="submit">Déverrouiller</button>
+    </form>
+    <p id="unlock-error" class="error" hidden></p>
+    <div id="secrets-open" hidden>
+      <button id="lock-button" class="quiet-button" type="button">Verrouiller</button>
+      <form id="slot-form" class="slot-form">
+        <label>Nom affiché <input id="slot-label" type="text" autocomplete="off" spellcheck="false" placeholder="SSO université"></label>
+        <label>Nom technique (sans espaces, ex. sso-rouen-login, sso-rouen-mdp) <input id="slot-id" type="text" autocomplete="off" spellcheck="false" placeholder="sso-rouen-mdp"></label>
+        <label>Sites autorisés
+          <span class="field-hint">Domaine ou URL complète, séparés par des espaces. « univ-rouen.fr » couvre aussi sso.univ-rouen.fr.</span>
+          <span class="hosts-row">
+            <input id="slot-hosts" type="text" autocomplete="off" spellcheck="false" placeholder="univ-rouen.fr (séparés par des espaces)">
+            <button id="slot-current-site" class="quiet-button" type="button" title="Ajouter le site de l'onglet actuel">Site actuel</button>
+          </span>
+          <span id="slot-hosts-preview" class="hosts-preview" aria-live="polite"></span>
+        </label>
+        <label>Identifiant (login, gardé en clair, optionnel)
+          <span class="field-hint">Rempli dans les champs non secrets. Seul le secret ci-dessous reste chiffré et aveugle.</span>
+          <input id="slot-login" type="text" autocomplete="off" spellcheck="false" placeholder="ex. dumonlo1">
+        </label>
+        <label>Secret (mot de passe, chiffré, jamais visible) <input id="slot-secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="Mot de passe"></label>
+        <label>Usage
+          <select id="slot-policy">
+            <option value="ask">Demander à chaque fois</option>
+            <option value="always">Toujours autoriser</option>
+          </select>
+        </label>
+        <button type="submit">Enregistrer le secret</button>
+      </form>
+      <p id="slot-error" class="error" hidden></p>
+      <ul id="slots" class="blocked"></ul>
+      <p id="slots-empty" class="empty">Aucun secret enregistré.</p>
+    </div>
+  </section>
+
+  <script src="slots-crypto.js"></script>
+  <script src="sidepanel.js"></script></script>
 </body>
 </html>

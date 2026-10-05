@@ -58,7 +58,10 @@ function makeApi(runId, initialTab, output) {
     click: async (t) => (await must("computer", withTab({ action: "left_click", ...target(t) }))).text,
     type: async (text, t) => (await must("computer", withTab({ action: "type", text, ...target(t) }))).text,
     key: async (keys) => (await must("computer", withTab({ action: "key", text: keys }))).text,
-    fill: async (ref, value) => (await must("form_input", withTab({ ref, value }))).text,
+    fill: async (refOrFields, value) => {
+      if (Array.isArray(refOrFields)) return (await must("form_input", withTab({ fields: refOrFields, submitRef: value }))).text;
+      return (await must("form_input", withTab({ ref: refOrFields, value }))).text;
+    },
     js: async (code) => {
       const { text } = await must("javascript", withTab({ code }));
       try {

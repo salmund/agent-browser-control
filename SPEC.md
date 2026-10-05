@@ -10,7 +10,7 @@ Donner à tout agent compatible MCP la même expérience que Claude in Chrome : 
 Principes :
 - **Agnostique de l'agent** : aucune dépendance à un fournisseur de modèle. Tout passe par MCP.
 - **Parité Claude in Chrome d'abord**, puis au-delà (DevTools complets via CDP).
-- **Un agent actif à la fois** en usage normal ; plusieurs agents simultanés possibles, mais pas une priorité.
+- **Un agent actif à la fois** en usage normal ; plusieurs agents simultanés possibles (sous-agents d'un workflow : `label` sur `tabs_context` / `tabs_create`, un groupe « agent · label » chacun).
 - **Simple et perso** : pas de système de permissions lourd, mais un bouton stop et une liste de sites interdits.
 
 ## 2. Architecture
@@ -41,14 +41,15 @@ Principes :
 
 | Outil | Rôle |
 |---|---|
-| `tabs_context` | Liste les onglets du groupe de l'agent (id, titre, URL) |
-| `tabs_create` / `tabs_close` | Ouvre / ferme un onglet dans le groupe de l'agent |
+| `tabs_context` | Liste les onglets du groupe de l'agent (id, titre, URL, inactivité) ; `label` : seulement ceux d'un sous-agent |
+| `tabs_create` / `tabs_close` | Ouvre / ferme un onglet dans le groupe de l'agent ; `label` : dans le groupe « agent · label » d'un sous-agent |
+| `tabs_cleanup` | Ferme les onglets inactifs (seuil `olderThanMinutes`, `dryRun` pour prévisualiser ; actif, épinglé, son et activité inconnue protégés) |
 | `navigate` | URL, `back`, `forward`, `reload` |
 | `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` |
 | `read_page` | Arbre d'accessibilité compact avec `ref` stables (`ref_12`) ; filtre `interactive` |
 | `find` | Recherche d'éléments par texte / rôle / sélecteur (sans LLM) |
 | `get_page_text` | Texte principal de la page (type Readability) |
-| `form_input` | Remplit un champ / select / checkbox par `ref` |
+| `form_input` | Remplit un champ / select / checkbox par `ref` ; saisie groupée (`fields`) et soumission (`submitRef`) en un appel |
 | `javascript` | Évalue du JS dans la page (via CDP `Runtime.evaluate`) |
 | `read_console_messages` | Logs console, filtre regex |
 | `read_network_requests` | Requêtes réseau, filtre regex |
@@ -67,7 +68,33 @@ Principes :
 | `emulate` | Device, réseau lent, géoloc, dark mode |
 | `pdf` | Export PDF de la page |
 | `downloads` | Liste / récupère les téléchargements |
+| `history_search` | Retrouve une page visitée (requête vide = récentes ; sites interdits exclus) |
+| `site_api` | Mémoire par site : routes + appels capturés du HAR, rejoués vite (list, save_call, save_route, delete) |
 | `cdp_send` | Appel CDP brut (désactivé par défaut) |
+
+## 3.3 Secrets d'authentification (`credentials_fill`)
+
+L'agent remplit identifiants et mots de passe **sans jamais les connaître** (connexions
+planifiées sans intervention). Références opaques de bout en bout :
+
+- **Coffre côté extension** : slots `{id, label, hosts, policy}` + charge chiffrée
+  (PBKDF2 210 000 itérations → AES-GCM-256, `extension/slots-crypto.js`, WebCrypto pur).
+  La phrase secrète est choisie dans le panneau latéral (section Secrets) : elle crée
+  le coffre, n'est jamais stockée, seule la clé dérivée vit en mémoire / session.
+- **Remplissage** : `credentials_fill(tabId, fills:[{ref, slot}], submitRef?)`.
+  L'extension vérifie le périmètre du slot (suffixe d'hôte), déchiffre à l'usage,
+  remplit via `fillSecret` (sans écho de valeur) et ne renvoie que des confirmations.
+- **Approbation** : politique par slot, `ask` (défaut, approbation unique dans le
+  panneau, 75 s puis refus) ou `always` (sans demander, pour les runs planifiés).
+  STOP, verrouillage et révocation refusent les demandes en attente.
+- **Non-fuite** : aucune valeur dans MCP, le journal (`redact()` + args sans valeur),
+  les résultats ni le HAR (corps non enregistrés 120 s après un remplissage sur l'onglet ;
+  valeurs `password` déjà masquées dans `read_page`). Tests : `test/credentials.ts`
+  (aller-retour, mauvaise phrase, falsification, périmètres, non-fuite des sorties).
+- **Limites honnêtes** : MFA interactif = présence humaine ; trousseau/navigateur
+  verrouillé = échec propre avec alerte ; un attaquant local avec les droits de
+  l'utilisateur et la phrase secrète peut tout lire (modèle de menace : fuites
+  accidentelles via logs et artefacts, pas poste compromis).
 
 ## 4. Expérience utilisateur
 
@@ -103,7 +130,7 @@ Cible ultérieure : extension migrée sous **WXT** en TypeScript quand elle gros
 
 ## 7. Feuille de route
 
-> État : v0.1 à v0.3 écrites. v0.1–v0.2 testées dans Comet (Wikipédia, Gemini, YouTube). Export WebM ajouté (les IA ne lisent que la 1re image d'un GIF). WebSocket (workers/iframes inclus via Target.setAutoAttach) et http_request ajoutés, testés sur Polymarket. v0.4 : browser_script (iframe sandbox, CSP sans réseau, relais via le document offscreen). v0.5 : wait_for, iframes (y compris d'une autre origine), boîtes de dialogue, lectures viewport / diff.
+> État : v0.1 à v0.3 écrites. v0.1–v0.2 testées dans Comet (Wikipédia, Gemini, YouTube). Export WebM ajouté (les IA ne lisent que la 1re image d'un GIF). WebSocket (workers/iframes inclus via Target.setAutoAttach) et http_request ajoutés, testés sur Polymarket. v0.4 : browser_script (iframe sandbox, CSP sans réseau, relais via le document offscreen). v0.5 : wait_for, iframes (y compris d'une autre origine), boîtes de dialogue, lectures viewport / diff. v0.6 : saisie groupée atomique (form_input fields + submitRef), stabilisation DOM (wait_for domSettled), détection automatique d'authentification (navigate + wait_for authSettled), et routage direct / deep links (site-api.json).
 
 1. **v0.1 : Faisabilité** : daemon + shim + extension ; `tabs_context`, `tabs_create`, `navigate`, `computer` (screenshot/click/type/key/scroll), `read_page`. Test dans **Comet**.
 2. **v0.2 : Parité Claude in Chrome** : reste du §3.1, groupes d'onglets par agent, side panel + STOP.

@@ -1,7 +1,7 @@
 // Service worker Agent Browser Control.
 // Se connecte au démon local et exécute les outils demandés par les agents.
 
-importScripts("gif.js", "annotate.js", "devtools.js");
+importScripts("gif.js", "annotate.js", "devtools.js", "wait-diag.js", "js-eval.js", "tab-hygiene.js", "history.js");
 
 const DAEMON_URL = "ws://127.0.0.1:7878/ext";
 const PING_MS = 20_000;
@@ -87,6 +87,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     stopAll();
   } else if (msg?.type === "resume") {
     resume();
+  } else if (msg?.type === "credential-decision") {
+    const p = credPending.get(msg.id);
+    if (!p) {
+      reply({ ok: false, error: "Demande inconnue ou expirée." });
+      return true;
+    }
+    clearTimeout(p.timer);
+    credPending.delete(msg.id);
+    credDropApproval(msg.id).catch(() => {});
+    p.resolve(msg.decision === "allow" ? { ok: true } : { ok: false, error: "Remplissage refusé par l'utilisateur dans le panneau latéral." });
+    reply({ ok: true });
+    return true;
+  } else if (msg?.type === "credentials-unlock") {
+    credUnlock(msg.dek).then(() => reply({ ok: true })).catch((err) => reply({ ok: false, error: String(err?.message ?? err) }));
+    return true;
+  } else if (msg?.type === "credentials-lock") {
+    credLock().then(() => credDenyPending("Coffre verrouillé par l'utilisateur.")).then(() => reply({ ok: true }));
+    return true;
   }
   reply({ ok: true });
 });
@@ -116,6 +134,7 @@ function createStopSignal() {
 async function stopAll() {
   paused = true;
   stopSignal.trigger();
+  credDenyPending("Arrêt d'urgence (bouton STOP).").catch(() => {});
   for (const runId of scriptRuns.keys()) {
     chrome.runtime.sendMessage({ target: "offscreen", type: "abort-script", runId }).catch(() => {});
   }
@@ -141,6 +160,13 @@ let activityId = 0;
 
 function summarize(tool, args) {
   const parts = [];
+  if (tool === "credentials_fill" && Array.isArray(args.fills)) {
+    // Références opaques uniquement : aucune valeur ne transite par cet outil.
+    parts.push(args.fills.map((f) => f.ref).join(", "));
+    parts.push(`[${[...new Set(args.fills.map((f) => f.slot))].join(", ")}]`);
+    if (args.submitRef) parts.push(`-> ${args.submitRef}`);
+    return parts.join(" ").slice(0, 120);
+  }
   if (args.action) parts.push(args.action);
   if (args.url) parts.push(args.url);
   if (args.ref) parts.push(args.ref);
@@ -172,12 +198,17 @@ const TOOLS = {
   tabs_context: tabsContext,
   tabs_create: tabsCreate,
   tabs_close: tabsClose,
+  tabs_cleanup: tabsCleanup,
+  history_search: historySearch,
+  site_api: siteApi,
   navigate,
-  computer,
-  read_page: readPage,
-  find,
+  computer: withFrontForMouse(computer),
+  read_page: withDrawnPage(readPage),
+  find: withDrawnPage(find),
   form_input: formInput,
-  get_page_text: getPageText,
+  credentials_fill: credentialsFill,
+  credentials_list: credentialsList,
+  get_page_text: withDrawnPage(getPageText),
   javascript,
   read_console_messages: readConsoleMessages,
   read_network_requests: readNetworkRequests,
@@ -209,8 +240,10 @@ async function runTool(agent, tool, args) {
   const fn = TOOLS[tool];
   if (!fn) return fail(`Outil inconnu : ${tool}`);
 
+  // Le journal attribue l'action au sous-agent (« agent · étiquette ») quand on peut le savoir, pas seulement à l'agent.
+  const actor = await actorOf(agent, tool, args).catch(() => agent);
   const entry = {
-    id: ++activityId, t: Date.now(), agent, color: colorFor(agent), tool, summary: summarize(tool, args), status: "running",
+    id: ++activityId, t: Date.now(), agent: actor, color: await actorColor(actor), tool, summary: summarize(tool, args), status: "running",
   };
   if (typeof args.tabId === "number") lastAgentAction.set(args.tabId, { agent, t: Date.now() });
   logActivity(entry);
@@ -220,6 +253,8 @@ async function runTool(agent, tool, args) {
   } catch (err) {
     result = fail(`${tool} : ${err?.message ?? err}`);
   }
+  // Le groupe d'un nouveau sous-agent vient d'être créé : sa couleur est maintenant connue.
+  if (tool === "tabs_create") entry.color = await actorColor(actor);
   entry.status = result.isError ? "error" : "ok";
   if (result.isError) entry.error = result.content.find((c) => c.type === "text")?.text.slice(0, 200);
   entry.ms = Date.now() - entry.t;
@@ -253,11 +288,35 @@ function colorFor(agent) {
   return GROUP_COLORS[h % GROUP_COLORS.length];
 }
 
-/** Chaque agent a un groupe normal (« agent ») et, s'il en ouvre, un groupe privé (« agent (privé) »). */
-const groupTitle = (agent, incognito = false) => (incognito ? `${agent} (privé)` : agent);
+/**
+ * Chaque agent a un groupe normal (« agent ») et, s'il en ouvre, un groupe privé (« agent (privé) »).
+ * Un agent qui en fait travailler plusieurs (sous-agents d'un workflow, qui partagent son nom) leur donne
+ * chacun une étiquette : « agent · étiquette », et « agent · étiquette (privé) » en navigation privée.
+ */
+const LABEL_SEP = " · ";
+const PRIVATE_SUFFIX = " (privé)";
+const groupTitle = (agent, incognito = false, label = "") =>
+  `${agent}${label ? LABEL_SEP + label : ""}${incognito ? PRIVATE_SUFFIX : ""}`;
 
-async function getGroupId(agent, incognito = false) {
-  const title = groupTitle(agent, incognito);
+/** Étiquette sur une ligne, sans ce qui structure un titre de groupe (séparateur, « (privé) ») ni les jokers de tabGroups.query. */
+function cleanLabel(label) {
+  if (typeof label !== "string") return "";
+  return label.replace(/\(privé\)/gi, " ").replace(/[·*?\s]+/g, " ").trim().slice(0, 40).trim();
+}
+
+const withoutPrivate = (title = "") => (title.endsWith(PRIVATE_SUFFIX) ? title.slice(0, -PRIVATE_SUFFIX.length) : title);
+
+/** Le groupe de ce titre est-il à l'agent : le sien, son groupe privé, ou celui d'un de ses sous-agents ? */
+const ownsTitle = (agent, title) => {
+  const base = withoutPrivate(title);
+  return base === agent || base.startsWith(agent + LABEL_SEP);
+};
+
+/** Étiquette du sous-agent d'un groupe, « » pour le groupe de l'agent lui-même. */
+const labelOfTitle = (agent, title) => withoutPrivate(title).slice(agent.length + LABEL_SEP.length) || "";
+
+async function getGroupId(agent, incognito = false, label = "") {
+  const title = groupTitle(agent, incognito, label);
   const { groups = {} } = await chrome.storage.session.get("groups");
   const groupId = groups[title];
   if (groupId !== undefined) {
@@ -267,7 +326,7 @@ async function getGroupId(agent, incognito = false) {
     } catch {}
   }
   // storage.session est vidé quand l'extension est rechargée : on retrouve le groupe par son titre.
-  const [existing] = await chrome.tabGroups.query({ title });
+  const existing = (await chrome.tabGroups.query({})).find((g) => g.title === title);
   if (!existing) return null;
   await setGroupId(title, existing.id);
   return existing.id;
@@ -279,13 +338,60 @@ async function setGroupId(title, groupId) {
   await chrome.storage.session.set({ groups });
 }
 
-async function agentGroupIds(agent) {
-  return (await Promise.all([getGroupId(agent), getGroupId(agent, true)])).filter((id) => id !== null);
+/**
+ * Groupes de l'agent et de ses sous-agents, existants. Un groupe que l'utilisateur a renommé reste à l'agent
+ * tant que l'extension n'a pas été rechargée : on garde aussi les identifiants mémorisés.
+ */
+async function agentGroups(agent) {
+  const live = await chrome.tabGroups.query({});
+  const { groups = {} } = await chrome.storage.session.get("groups");
+  const remembered = new Set(Object.entries(groups).filter(([title]) => ownsTitle(agent, title)).map(([, id]) => id));
+  return live.filter((g) => remembered.has(g.id) || ownsTitle(agent, g.title));
 }
 
-async function agentTabs(agent) {
-  const tabs = await Promise.all((await agentGroupIds(agent)).map((groupId) => chrome.tabs.query({ groupId })));
+async function agentGroupIds(agent) {
+  return (await agentGroups(agent)).map((g) => g.id);
+}
+
+/** Onglets de l'agent, tous sous-agents confondus, ou ceux d'un seul sous-agent si `label` est donné. */
+async function agentTabs(agent, label = "") {
+  const groups = (await agentGroups(agent)).filter((g) => !label || labelOfTitle(agent, g.title) === label);
+  const tabs = await Promise.all(groups.map((g) => chrome.tabs.query({ groupId: g.id })));
   return tabs.flat();
+}
+
+/**
+ * Couleur d'un nouveau groupe. Sans étiquette, celle du nom de l'agent. Avec une étiquette, celle de son nom, ou
+ * la première libre si elle est déjà prise : deux sous-agents restent ainsi distinguables. Le groupe privé
+ * reprend la couleur du groupe normal du même sous-agent.
+ */
+async function newGroupColor(agent, incognito, label) {
+  if (!label) return colorFor(agent);
+  const all = await chrome.tabGroups.query({});
+  const sibling = all.find((g) => g.title === groupTitle(agent, !incognito, label));
+  if (sibling) return sibling.color;
+  const used = new Set(all.map((g) => g.color));
+  const start = GROUP_COLORS.indexOf(colorFor(groupTitle(agent, false, label)));
+  for (let i = 0; i < GROUP_COLORS.length; i++) {
+    const color = GROUP_COLORS[(start + i) % GROUP_COLORS.length];
+    if (!used.has(color)) return color;
+  }
+  return GROUP_COLORS[start];
+}
+
+/** Qui agit, pour le journal : l'agent, ou son sous-agent (étiquette donnée, ou groupe de l'onglet visé). */
+async function actorOf(agent, tool, args) {
+  const label = tool === "tabs_create" || tool === "tabs_context" ? cleanLabel(args.label) : "";
+  if (label) return groupTitle(agent, false, label);
+  if (typeof args.tabId !== "number") return agent;
+  const tab = await chrome.tabs.get(args.tabId).catch(() => null);
+  const group = tab && tab.groupId >= 0 ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
+  return group && ownsTitle(agent, group.title) ? withoutPrivate(group.title) : agent;
+}
+
+async function actorColor(actor) {
+  const group = (await chrome.tabGroups.query({})).find((g) => g.title === actor);
+  return group?.color ?? colorFor(actor);
 }
 
 async function assertOwned(agent, tabId) {
@@ -299,20 +405,51 @@ async function assertOwned(agent, tabId) {
   return tab;
 }
 
-function formatTab(t) {
-  const flags = [t.active && "actif", t.incognito && "navigation privée"].filter(Boolean).join(", ");
-  return `- tabId ${t.id}${flags ? ` (${flags})` : ""} : ${t.title || "(sans titre)"} · ${t.url || t.pendingUrl || ""}`;
+function formatTab(t, label = "", meta = "") {
+  const flags = [t.active && "actif", t.incognito && "navigation privée", meta].filter(Boolean).join(", ");
+  return `- tabId ${t.id}${label ? ` [${label}]` : ""}${flags ? ` (${flags})` : ""} : ${t.title || "(sans titre)"} · ${t.url || t.pendingUrl || ""}`;
 }
 
-async function tabsContext(agent) {
-  const tabs = await agentTabs(agent);
-  if (!tabs.length) return ok(text(`Aucun onglet pour l'agent « ${agent} ». Créer un onglet avec tabs_create.`));
-  return ok(text(`Onglets de l'agent « ${agent} » :\n${tabs.map(formatTab).join("\n")}`));
+/** Âge et dernière activité d'un onglet pour tabs_context (« inactif depuis 3 h 12 », « épinglé »…). */
+function tabMeta(tab) {
+  const parts = [];
+  if (tab.pinned) parts.push("épinglé");
+  if (tab.audible) parts.push("son en cours");
+  if (!tab.active) {
+    const last = globalThis.AbcTabHygiene.lastActivityMs(tab, lastAgentAction.get(tab.id)?.t);
+    parts.push(last === null ? "activité inconnue" : `inactif depuis ${globalThis.AbcTabHygiene.formatDuration(Date.now() - last)}`);
+  }
+  return parts.join(", ");
 }
 
-async function tabsCreate(agent, { url, incognito = false }) {
-  if (url) await assertAllowed(normalizeUrl(url));
-  const groupId = await getGroupId(agent, incognito);
+async function tabsContext(agent, { label } = {}) {
+  const wanted = cleanLabel(label);
+  const groups = (await agentGroups(agent)).filter((g) => !wanted || labelOfTitle(agent, g.title) === wanted);
+  const lines = [];
+  for (const group of groups) {
+    const tag = labelOfTitle(agent, group.title);
+    for (const tab of await chrome.tabs.query({ groupId: group.id })) lines.push(formatTab(tab, wanted ? "" : tag, tabMeta(tab)));
+  }
+  const who = wanted ? groupTitle(agent, false, wanted) : agent;
+  if (!lines.length) {
+    return ok(text(`Aucun onglet pour l'agent « ${who} ». Créer un onglet avec tabs_create${wanted ? ` (label: "${wanted}")` : ""}.`));
+  }
+  const hint = lines.length >= 8 ? "\nAstuce : tabs_cleanup ferme les onglets inactifs (dryRun: true pour prévisualiser)." : "";
+  return ok(text(`Onglets de l'agent « ${who} » (${lines.length}) :\n${lines.join("\n")}${hint}`));
+}
+
+// La création d'un onglet et de son groupe est sérialisée : des sous-agents qui ouvrent leur premier onglet
+// en même temps ne doivent ni créer deux groupes du même titre, ni prendre la même couleur.
+let groupLock = Promise.resolve();
+function withGroupLock(fn) {
+  const run = groupLock.then(fn);
+  groupLock = run.catch(() => {});
+  return run;
+}
+
+async function createGroupedTab(agent, incognito, tag) {
+  const foreground = await foregroundTabs();
+  const groupId = await getGroupId(agent, incognito, tag);
   let windowId = groupId === null ? undefined : (await chrome.tabGroups.get(groupId)).windowId;
   let tab = null;
   if (incognito && windowId === undefined) {
@@ -326,20 +463,26 @@ async function tabsCreate(agent, { url, incognito = false }) {
     const existing = (await chrome.windows.getAll({ windowTypes: ["normal"] })).find((w) => w.incognito);
     if (existing) windowId = existing.id;
     else {
-      const win = await chrome.windows.create({ incognito: true, focused: true, url: "about:blank" });
+      const win = await chrome.windows.create({ incognito: true, focused: foreground, url: "about:blank" });
       windowId = win.id;
       tab = win.tabs[0];
     }
   }
-  tab ??= await chrome.tabs.create({ url: "about:blank", windowId, active: true });
+  tab ??= await chrome.tabs.create({ url: "about:blank", windowId, active: foreground });
   if (groupId === null) {
-    const title = groupTitle(agent, incognito);
+    const title = groupTitle(agent, incognito, tag);
     const newGroup = await chrome.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } });
-    await chrome.tabGroups.update(newGroup, { title, color: colorFor(agent) });
+    await chrome.tabGroups.update(newGroup, { title, color: await newGroupColor(agent, incognito, tag) });
     await setGroupId(title, newGroup);
   } else {
     await chrome.tabs.group({ groupId, tabIds: [tab.id] });
   }
+  return tab;
+}
+
+async function tabsCreate(agent, { url, incognito = false, label }) {
+  if (url) await assertAllowed(normalizeUrl(url));
+  const tab = await withGroupLock(() => createGroupedTab(agent, incognito, cleanLabel(label)));
   // Attacher le debugger avant de charger la page pour capturer console et réseau dès le début.
   await ensureAttached(tab.id).catch(() => {});
   if (url) {
@@ -353,8 +496,76 @@ async function tabsCreate(agent, { url, incognito = false }) {
 
 async function tabsClose(agent, { tabId }) {
   await assertOwned(agent, tabId);
+  await giveBack(tabId);
   await chrome.tabs.remove(tabId);
   return ok(text(`Onglet ${tabId} fermé.`));
+}
+
+/**
+ * Ferme les onglets inactifs de l'agent (tabs_context, enrichi de l'âge de chaque
+ * onglet, aide à choisir le seuil). Protégés par défaut : onglet actif, épinglé,
+ * avec du son, ou d'activité inconnue (on ne ferme jamais à l'aveugle).
+ * dryRun: true ne ferme rien, liste seulement ce qui serait fermé.
+ */
+async function tabsCleanup(agent, { label, olderThanMinutes = 60, keepActive = true, keepPinned = true, keepAudible = true, dryRun = false } = {}) {
+  const minutes = Number(olderThanMinutes);
+  if (!Number.isFinite(minutes) || minutes < 0) throw new Error("'olderThanMinutes' doit être un nombre de minutes positif.");
+  const tag = cleanLabel(label);
+  const tabs = await agentTabs(agent, tag);
+  const who = tag ? groupTitle(agent, false, tag) : agent;
+  if (!tabs.length) return ok(text(`Aucun onglet pour l'agent « ${who} ».`));
+  const { close, kept } = globalThis.AbcTabHygiene.pickCleanupCandidates(
+    tabs.map((t) => ({
+      id: t.id, active: t.active, pinned: t.pinned, audible: t.audible,
+      lastAccessed: t.lastAccessed, lastActionT: lastAgentAction.get(t.id)?.t,
+    })),
+    { olderThanMs: minutes * 60_000, keepActive, keepPinned, keepAudible },
+    Date.now(),
+  );
+  const byId = new Map(tabs.map((t) => [t.id, t]));
+  const short = (id) => {
+    const t = byId.get(id);
+    return `- tabId ${id} : ${t?.title || "(sans titre)"} · ${t?.url || t?.pendingUrl || ""}`;
+  };
+  const scope = `seuil ${minutes} min`;
+  if (dryRun) {
+    if (!close.length) return ok(text(`Nettoyage à blanc (${scope}) : rien à fermer, ${kept.length} onglet(s) gardé(s).`));
+    return ok(text(`Nettoyage à blanc (${scope}) : ${close.length} onglet(s) à fermer :\n${close.map(short).join("\n")}\n${kept.length} onglet(s) gardé(s). Relancer sans dryRun pour fermer.`));
+  }
+  const failed = [];
+  for (const id of close) {
+    try {
+      await giveBack(id);
+      await chrome.tabs.remove(id);
+      lastAgentAction.delete(id);
+    } catch (err) {
+      failed.push(`tabId ${id} (${err?.message ?? err})`);
+    }
+  }
+  const parts = [`Nettoyage (${scope}) : ${close.length - failed.length} onglet(s) fermé(s), ${kept.length} gardé(s).`];
+  if (failed.length) parts.push(`Échecs :\n${failed.map((f) => `- ${f}`).join("\n")}`);
+  return ok(text(parts.join("\n")));
+}
+
+/**
+ * Retrouve une page déjà visitée (titre / URL) au lieu de rouvrir un doublon :
+ * requête vide = pages récentes. Les sites interdits sont exclus (comptés, pas listés).
+ */
+async function historySearch(agent, { query = "", limit = 20, days = 30 } = {}) {
+  const n = Math.min(Math.max(Number(limit) || 20, 1), 50);
+  const d = Math.min(Math.max(Number(days) || 30, 1), 365);
+  const items = await chrome.history.search({
+    text: String(query ?? ""),
+    maxResults: n,
+    startTime: Date.now() - d * 86_400_000,
+  });
+  const { blocklist = [] } = await chrome.storage.local.get("blocklist");
+  const { lines, masked } = globalThis.AbcHistory.shapeHistory(items, blocklist, Date.now());
+  const tail = masked ? `\n${masked} résultat(s) masqué(s) : sites interdits.` : "";
+  if (!lines.length) {
+    return ok(text(masked ? `Historique : rien à montrer (${masked} résultat(s) masqué(s) : sites interdits).` : "Historique : aucun résultat."));
+  }
+  return ok(text(`Historique (${lines.length}) :\n${lines.join("\n")}${tail}`));
 }
 
 async function resizeWindow(agent, { tabId, width, height }) {
@@ -391,6 +602,31 @@ function waitForLoad(tabId) {
   });
 }
 
+/** Détecte si l'URL correspond à une mire d'authentification, SSO, MFA ou défi bot. */
+function isAuthChallenge(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    // Amazon & KDP
+    if (host.includes("amazon.") && (path.includes("/ap/signin") || path.includes("/ap/mfa") || path.includes("/ap/challenge"))) return true;
+    // Google Accounts
+    if (host === "accounts.google.com" && (path.includes("/signin") || path.includes("/servicelogin") || path.includes("/v3/signin"))) return true;
+    // Microsoft / Live / Office
+    if ((host === "login.microsoftonline.com" || host === "login.live.com") && !path.endsWith("/logout")) return true;
+    // GitHub
+    if (host === "github.com" && (path.startsWith("/login") || path.startsWith("/session"))) return true;
+    // Cloudflare Turnstile / Bot challenge
+    if (path.includes("/cdn-cgi/challenge") || host.includes("challenges.cloudflare.com")) return true;
+    // OAuth & SSO génériques
+    if (path.includes("/oauth2/authorize") || path.includes("/oauth/authorize") || path.includes("/auth/realms/")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function navigate(agent, { tabId, url }) {
   await assertOwned(agent, tabId);
   if (!url) throw new Error("url manquante.");
@@ -409,6 +645,12 @@ async function navigate(agent, { tabId, url }) {
   });
   const tab = await chrome.tabs.get(tabId);
   await recordFrame(tabId, `navigate ${tab.url}`);
+  if (isAuthChallenge(tab.url)) {
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    const w = await chrome.windows.get(tab.windowId).catch(() => null);
+    if (w && !w.focused) chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    note += `\n⚠ Authentification requise : la page demande une connexion (${tab.url}). L'onglet a été mis au premier plan pour que l'utilisateur puisse s'identifier. Tu peux appeler wait_for(tabId, { authSettled: true }) pour attendre sa validation sans fermer l'onglet.`;
+  }
   return ok(text(`${await overlayNotice(tabId)}Navigation terminée : ${tab.title} · ${tab.url}${note}`));
 }
 
@@ -427,6 +669,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId);
   consoleLogs.delete(tabId);
   networkLogs.delete(tabId);
+  lastAgentAction.delete(tabId);
   recordings.delete(tabId);
   stoppedRecordings.delete(tabId);
 });
@@ -655,6 +898,14 @@ async function harFinish(tabId, entry, params) {
 
 function harPush(tabId, entry) {
   const { ts, redirects, ...rest } = entry;
+  // Fenêtre de silence après un remplissage de secret : on ne garde pas les corps
+  // envoyés (formulaires de login) ni les corps reçus, pour ne jamais enregistrer
+  // un mot de passe dans le HAR persistant.
+  if ((harMutedUntil.get(tabId) ?? 0) > Date.now()) {
+    delete rest.postData;
+    delete rest.body;
+    rest.bodyTruncated = true;
+  }
   const msg = JSON.stringify({ type: "har", tabId, entry: rest });
   if (ws?.readyState === WebSocket.OPEN) {
     while (harQueue.length) ws.send(harQueue.shift());
@@ -837,15 +1088,38 @@ async function find(agent, { tabId, query, limit = 20 }) {
   return ok(text((await overlayNotice(tabId)) + untrusted(result)));
 }
 
-async function formInput(agent, { tabId, ref, value }) {
-  await bringToFront(await assertOwned(agent, tabId));
-  if (!ref) throw new Error("'ref' manquant.");
-  const target = parseRef(ref);
-  const result = prefixRefs(await inPage(tabId, "formInput", { ref: target.ref, value }, target.frameId), target.frameId)
-    .replace(/^ref_(\d+)/, target.frameId ? `f${target.frameId}:ref_$1` : "ref_$1");
+async function formInput(agent, { tabId, ref, value, fields, submitRef }) {
+  const tab = await assertOwned(agent, tabId);
+  await bringToFront(tab);
+  const items = Array.isArray(fields) && fields.length ? fields : (ref !== undefined ? [{ ref, value }] : []);
+  if (!items.length && !submitRef) throw new Error("Fournir 'fields' (liste de {ref, value}) ou 'ref' + 'value'.");
+
+  const results = [];
+  for (const item of items) {
+    if (!item.ref) continue;
+    const target = parseRef(item.ref);
+    const res = prefixRefs(await inPage(tabId, "formInput", { ref: target.ref, value: item.value }, target.frameId), target.frameId)
+      .replace(/^ref_(\d+)/, target.frameId ? `f${target.frameId}:ref_$1` : "ref_$1");
+    results.push(res);
+  }
+
+  let submitMsg = "";
+  if (submitRef) {
+    const target = parseRef(submitRef);
+    await inPage(tabId, "clickRef", target.ref, target.frameId).catch(() => {});
+    const point = await locateRef(tabId, submitRef).catch(() => null);
+    if (point) {
+      await showOverlay(tabId, point).catch(() => {});
+      await withForeground(tab, () => click(tabId, point, "left", 1, 0)).catch(() => {});
+    }
+    await sleep(200);
+    submitMsg = `\nSoumis via clic sur ${submitRef}.`;
+  }
+
   await showOverlay(tabId);
-  await recordFrame(tabId, `form_input ${ref}`);
-  return ok(text(result));
+  const summaryRefs = items.map((i) => i.ref).join(", ");
+  await recordFrame(tabId, `form_input ${summaryRefs}${submitRef ? ` -> ${submitRef}` : ""}`);
+  return ok(text((results.join("\n") + submitMsg).trim()));
 }
 
 async function getPageText(agent, { tabId }) {
@@ -920,7 +1194,7 @@ async function uploadViaFileChooser(tabId, ref, paths) {
     const opened = waitForCdpEvent(tabId, "Page.fileChooserOpened", 5000);
     const point = await locateRef(tabId, ref);
     await showOverlay(tabId, point);
-    await click(tabId, point, "left", 1, 0);
+    await withForeground(await chrome.tabs.get(tabId), () => click(tabId, point, "left", 1, 0));
     const { backendNodeId, mode } = await opened.catch(() => {
       throw new Error(`Le clic sur ${ref} n'a pas ouvert de sélecteur de fichiers. Cibler le bouton ou l'élément de menu qui l'ouvre.`);
     });
@@ -1130,14 +1404,122 @@ async function pressKeys(tabId, spec) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Par défaut les agents travaillent en arrière-plan : ils ne changent ni l'onglet actif ni la fenêtre de
+ * l'utilisateur, qui garde la main sur son navigateur (sauf le temps d'un geste à la souris, voir withForeground).
+ * L'option « premier plan » du panneau redonne l'ancien comportement (onglet visé devant à chaque action).
+ */
+async function foregroundTabs() {
+  const { foregroundTabs: on = false } = await chrome.storage.local.get("foregroundTabs");
+  return on === true;
+}
+
+/**
  * Chrome suspend les animations (requestAnimationFrame) des onglets masqués : menus et
- * transitions ne s'y exécutent pas. On met l'onglet au premier plan de sa fenêtre avant d'agir.
+ * transitions ne s'y exécutent pas. En mode premier plan, on met l'onglet devant avant d'agir.
  */
 async function bringToFront(tab) {
-  if (!tab.active) {
+  if (!tab.active && (await foregroundTabs())) {
     await chrome.tabs.update(tab.id, { active: true });
     await sleep(150);
   }
+}
+
+// Un onglet masqué ne dessine rien : pas de requestAnimationFrame (les listes virtualisées restent vides), et
+// Chrome y laisse les événements souris sans réponse jusqu'à leur délai (un clic y prend ~5 s, un défilement 60 s).
+// Dans ces cas seulement, l'onglet passe devant le temps du geste, puis l'utilisateur retrouve le sien.
+const FRONT_HOLD_MS = 800; // garde après le geste : des gestes enchaînés ne font pas d'allers-retours
+const fronts = new Map(); // tabId -> { windowId, previousId, uses, timer, ready }
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearTimeout(fronts.get(tabId)?.timer);
+  fronts.delete(tabId);
+});
+
+/** Attend que la page ait repris son rendu : visible, puis deux images dessinées (1,5 s au plus). */
+async function waitRendering(tabId) {
+  const probe = `document.visibilityState === "visible" && new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))`;
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline) {
+    const drawn = await Promise.race([
+      cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true, awaitPromise: true }).then((res) => res.result?.value === true),
+      sleep(400).then(() => false),
+    ]).catch(() => false);
+    if (drawn) return;
+    await sleep(50);
+  }
+}
+
+/** Met l'onglet devant s'il ne l'est pas ; renvoie le prêt à rendre avec releaseFront, ou null s'il n'y a rien à rendre. */
+async function takeFront(tab) {
+  let front = fronts.get(tab.id);
+  if (!front) {
+    const { active, windowId } = await chrome.tabs.get(tab.id);
+    if (active) return null; // l'utilisateur est déjà sur cet onglet
+    const [previous] = await chrome.tabs.query({ windowId, active: true });
+    front = { windowId, previousId: previous?.id, uses: 0, timer: null, ready: null };
+    fronts.set(tab.id, front);
+    front.ready = chrome.tabs.update(tab.id, { active: true }).then(() => waitRendering(tab.id));
+  }
+  clearTimeout(front.timer);
+  front.uses++;
+  try {
+    await front.ready;
+  } catch (err) {
+    fronts.delete(tab.id);
+    throw err;
+  }
+  return front;
+}
+
+function releaseFront(tabId, front) {
+  if (--front.uses > 0) return;
+  front.timer = setTimeout(() => giveBack(tabId), FRONT_HOLD_MS);
+}
+
+/** Rend à l'utilisateur l'onglet qu'il avait, s'il n'a pas changé d'onglet entre-temps. */
+async function giveBack(tabId) {
+  const front = fronts.get(tabId);
+  if (!front) return;
+  fronts.delete(tabId);
+  clearTimeout(front.timer);
+  const [current] = await chrome.tabs.query({ windowId: front.windowId, active: true }).catch(() => []);
+  if (current?.id !== tabId || front.previousId === undefined) return;
+  await chrome.tabs.update(front.previousId, { active: true }).catch(() => {});
+}
+
+async function withForeground(tab, fn) {
+  if (await foregroundTabs()) {
+    await bringToFront(tab);
+    return fn();
+  }
+  const front = await takeFront(tab);
+  try {
+    return await fn();
+  } finally {
+    if (front) releaseFront(tab.id, front);
+  }
+}
+
+const MOUSE_ACTIONS = new Set(["left_click", "right_click", "double_click", "triple_click", "left_click_drag", "hover", "scroll"]);
+
+/** Un geste à la souris se fait onglet devant. */
+function withFrontForMouse(tool) {
+  return async (agent, args) => {
+    if (!MOUSE_ACTIONS.has(args.action)) return tool(agent, args);
+    const tab = await assertOwned(agent, args.tabId);
+    return withForeground(tab, () => tool(agent, args));
+  };
+}
+
+/** Une page masquée dont les listes virtualisées ne sont pas dessinées se lit onglet devant. */
+function withDrawnPage(tool) {
+  return async (agent, args) => {
+    const tab = await assertOwned(agent, args.tabId);
+    if (tab.active || (await foregroundTabs()) || !(await inPage(args.tabId, "needsRender").catch(() => false))) {
+      return tool(agent, args);
+    }
+    return withForeground(tab, () => tool(agent, args));
+  };
 }
 
 async function computer(agent, args) {
@@ -1282,11 +1664,17 @@ async function javascript(agent, { tabId, code }) {
     userGesture: true,
     replMode: true,
   });
-  let res = await run(code);
-  // const/let d'un appel précédent déjà déclarés dans la page : on isole le code dans un bloc,
-  // dont la valeur de complétion reste celle de la dernière expression.
-  if (/has already been declared/.test(res.exceptionDetails?.exception?.description ?? "")) {
-    res = await run(`{\n${code}\n}`);
+  let expression = code;
+  let res = await run(expression);
+  // Code refusé mais récupérable (const/let redéclarés, return de premier niveau) : on rejoue
+  // une expression corrigée (voir js-eval.js). 2 essais max : le 2e couvre un code qui combine
+  // les deux erreurs. Une erreur de syntaxe ne produit aucun effet de bord, rejouer est sans risque.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const desc = res.exceptionDetails?.exception?.description ?? res.exceptionDetails?.text ?? "";
+    const retry = desc ? AbcJsEval.jsRetry(expression, desc) : null;
+    if (!retry) break;
+    expression = retry;
+    res = await run(expression);
   }
   // En mode REPL, une promesse renvoyée par l'expression (ex. fonction async) n'est pas attendue.
   if (!res.exceptionDetails && res.result.subtype === "promise") {
@@ -1529,16 +1917,45 @@ function trackInflight(tabId, method, params) {
 chrome.tabs.onRemoved.addListener((tabId) => inflight.delete(tabId));
 
 async function waitFor(agent, args) {
-  const { tabId, selector, text: expected, textGone, urlContains, networkIdle } = args;
+  const { tabId, selector, text: expected, textGone, urlContains, networkIdle, domSettled, authSettled, image } = args;
   await assertOwned(agent, tabId);
   await ensureAttached(tabId);
-  if (!selector && !expected && !textGone && !urlContains && !networkIdle) {
-    throw new Error("Préciser au moins une condition : selector, text, textGone, urlContains ou networkIdle.");
+  const wantImage = image === true;
+  if (!selector && !expected && !textGone && !urlContains && !networkIdle && !domSettled && !authSettled && !wantImage) {
+    throw new Error("Préciser au moins une condition : selector, text, textGone, urlContains, networkIdle, domSettled, image ou authSettled.");
   }
-  const limitMs = Math.min(Math.max(args.timeout ?? 10, 0.5), 60) * 1000;
+  const maxLimit = authSettled ? 300 : 60;
+  const defaultLimit = authSettled ? 120 : 10;
+  const limitMs = Math.min(Math.max(args.timeout ?? defaultLimit, 0.5), maxLimit) * 1000;
   const quietMs = networkIdle === true ? 500 : Number(networkIdle) || 0;
+  const settleMs = domSettled === true ? 800 : Number(domSettled) || 0;
   const started = Date.now();
+
+  let initialUrl = "";
+  try {
+    const t = await chrome.tabs.get(tabId);
+    initialUrl = t.url ?? "";
+  } catch {}
+  let enteredAuth = isAuthChallenge(initialUrl);
+  if (authSettled && enteredAuth) {
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  }
+
   const probe = `(() => {
+    if (!window.__abcObserver) {
+      window.__abcLastMutation = Date.now();
+      try {
+        window.__abcObserver = new MutationObserver(() => {
+          window.__abcLastMutation = Date.now();
+        });
+        window.__abcObserver.observe(document.documentElement || document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          characterData: true,
+        });
+      } catch {}
+    }
     const sel = ${JSON.stringify(selector ?? null)};
     const el = sel ? document.querySelector(sel) : null;
     const visible = !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
@@ -1548,6 +1965,50 @@ async function waitFor(agent, args) {
       text: ${JSON.stringify(expected ?? null)} === null || body.includes(${JSON.stringify(expected ?? "")}),
       gone: ${JSON.stringify(textGone ?? null)} === null || !body.includes(${JSON.stringify(textGone ?? "")}),
       url: location.href,
+      images: (() => {
+        const out = [];
+        for (const el of document.querySelectorAll("img, canvas, svg")) {
+          if (el.closest("#abc-overlay")) continue;
+          const cs = getComputedStyle(el);
+          if (cs.display === "none" || cs.visibility === "hidden") continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 40 || r.height < 40) continue;
+          if (r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) continue;
+          let srcType = "svg";
+          let src = "";
+          if (el.tagName === "CANVAS") srcType = "canvas";
+          else if (el.tagName === "IMG") {
+            src = el.currentSrc || el.src || "";
+            if (src.indexOf("blob:") === 0) srcType = "blob";
+            else if (src.indexOf("data:") === 0) srcType = "data";
+            else if (/^https?:/.test(src)) srcType = "http";
+            else srcType = (!el.complete || !el.naturalWidth) ? "incomplète" : "http";
+          }
+          out.push({ tag: el.tagName.toLowerCase(), w: Math.round(r.width), h: Math.round(r.height), srcType, src: String(src).slice(0, 40) });
+          if (out.length >= 12) break;
+        }
+        return out;
+      })(),
+      spinners: (() => {
+        const out = [];
+        const seen = {};
+        const cands = document.querySelectorAll('[role="progressbar"], [role="status"], [aria-busy="true"], [class*="spinner" i], [class*="loading" i], [class*="loader" i]');
+        for (const el of cands) {
+          if (out.length >= 3) break;
+          const r = el.getBoundingClientRect();
+          if (!r.width && !r.height) continue;
+          if (getComputedStyle(el).display === "none") continue;
+          const t = (el.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+          const key = t || el.tagName;
+          if (seen[key]) continue;
+          seen[key] = true;
+          out.push(t || "(sans texte)");
+        }
+        return out;
+      })(),
+      textSample: body.slice(0, 300),
+      bodyLen: body.length,
+      lastMutation: window.__abcLastMutation || 0,
     };
   })()`;
 
@@ -1559,18 +2020,37 @@ async function waitFor(agent, args) {
       if (err instanceof DialogOpenError) throw err;
       last = {}; // page en pleine navigation : on réessaie au tour suivant
     }
+    const currentUrl = last.url ?? "";
+    if (isAuthChallenge(currentUrl)) {
+      if (!enteredAuth) {
+        enteredAuth = true;
+        await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      }
+    }
+    const isAuth = isAuthChallenge(currentUrl);
+    const authOk = !authSettled || (!isAuth && (!enteredAuth || (Date.now() - started >= 500)));
+
     const net = inflight.get(tabId) ?? { ids: new Set(), last: started };
+    const timeSinceMutation = last.lastMutation ? (Date.now() - last.lastMutation) : (Date.now() - started);
+    const domSettledOk = !settleMs || (Date.now() - started >= Math.min(settleMs, 300) && timeSinceMutation >= settleMs);
+
     const checks = {
       selector: !selector || !!last.visible,
       text: !expected || !!last.text,
       textGone: !textGone || !!last.gone,
-      urlContains: !urlContains || (last.url ?? "").includes(urlContains),
+      urlContains: !urlContains || currentUrl.includes(urlContains),
       // Réseau calme : au plus 2 requêtes en cours (connexions longues) et rien de neuf depuis quietMs.
       networkIdle: !quietMs || (net.ids.size <= 2 && Date.now() - net.last >= quietMs),
+      domSettled: domSettledOk,
+      authSettled: authOk,
     };
     const elapsed = ((Date.now() - started) / 1000).toFixed(1).replace(".", ",");
     if (Object.values(checks).every(Boolean)) {
-      return ok(text(`Condition remplie en ${elapsed} s.${last.url ? ` URL : ${last.url}` : ""}`));
+      const details = [];
+      if (settleMs) details.push(`DOM stable depuis ${timeSinceMutation} ms`);
+      if (authSettled && enteredAuth) details.push("connexion validée");
+      const extra = details.length ? ` (${details.join(", ")})` : "";
+      return ok(text(`Condition remplie en ${elapsed} s.${extra}${last.url ? ` URL : ${last.url}` : ""}`));
     }
     if (Date.now() - started >= limitMs) {
       const pending = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k).join(", ");
@@ -1946,4 +2426,199 @@ async function downloads(agent, args) {
   }
 
   throw new Error("action attendue : download, wait ou list.");
+}
+
+// ---------------------------------------------------------------------------
+// Secrets d'authentification (outil credentials_fill)
+// ---------------------------------------------------------------------------
+// L'agent ne manipule que des références opaques (slot ids). Les valeurs en clair
+// n'existent que chiffrées dans chrome.storage.local, déchiffrées en mémoire le temps
+// du remplissage, et ne transitent jamais par MCP, le journal ou les résultats.
+
+const CRED_STORE_KEY = "credSlots";
+const CRED_DEK_KEY = "credDek";
+const CRED_APPROVALS_KEY = "credApprovals";
+const CRED_APPROVAL_MS = 75_000;
+const HAR_MUTE_MS = 120_000;
+const CRED_FORMAT = "abc-credentials-v1";
+
+/** Silence HAR par onglet (epoch ms) : voir harPush. */
+const harMutedUntil = new Map();
+
+/** Clé de déchiffrement en mémoire (perdue au redémarrage du navigateur). */
+let credDekB64 = null;
+
+/** Demandes d'approbation en attente : id -> { resolve, timer }. */
+const credPending = new Map();
+let credApprovalId = 0;
+
+function credSlotIdOk(id) {
+  return typeof id === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id);
+}
+
+function credHostCovered(host, scope) {
+  const h = String(host ?? "").trim().toLowerCase().replace(/\.$/, "");
+  const s = String(scope ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (!h || !s) return false;
+  return h === s || h.endsWith(`.${s}`);
+}
+
+async function credLoadStore() {
+  const { [CRED_STORE_KEY]: store } = await chrome.storage.local.get(CRED_STORE_KEY);
+  if (!store || store.format !== CRED_FORMAT) return null;
+  return store;
+}
+
+async function credDek() {
+  if (credDekB64) return credDekB64;
+  const { [CRED_DEK_KEY]: saved } = await chrome.storage.session.get(CRED_DEK_KEY);
+  if (saved) credDekB64 = saved;
+  return credDekB64;
+}
+
+/** Mémorise la clé (venue du panneau, jamais la phrase secrète) pour la session navigateur. */
+async function credUnlock(dekB64) {
+  if (typeof dekB64 !== "string" || !dekB64) throw new Error("Clé manquante.");
+  credDekB64 = dekB64;
+  await chrome.storage.session.set({ [CRED_DEK_KEY]: dekB64 });
+}
+
+async function credLock() {
+  credDekB64 = null;
+  await chrome.storage.session.remove(CRED_DEK_KEY);
+}
+
+async function credDecryptSlot(slot, dekB64) {
+  const raw = Uint8Array.from(atob(dekB64), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const iv = Uint8Array.from(atob(slot.iv), (c) => c.charCodeAt(0));
+  const data = Uint8Array.from(atob(slot.data), (c) => c.charCodeAt(0));
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+  return new TextDecoder().decode(plain);
+}
+
+async function credPublishApprovals(list) {
+  await chrome.storage.session.set({ [CRED_APPROVALS_KEY]: list });
+}
+
+async function credPushApproval(entry) {
+  const { [CRED_APPROVALS_KEY]: current = [] } = await chrome.storage.session.get(CRED_APPROVALS_KEY);
+  await credPublishApprovals([...current, entry]);
+}
+
+async function credDropApproval(id) {
+  const { [CRED_APPROVALS_KEY]: current = [] } = await chrome.storage.session.get(CRED_APPROVALS_KEY);
+  await credPublishApprovals(current.filter((a) => a.id !== id));
+}
+
+/** Toute demande en attente est refusée (STOP, verrouillage, révocation). */
+async function credDenyPending(reason) {
+  for (const [id, p] of [...credPending]) {
+    clearTimeout(p.timer);
+    credPending.delete(id);
+    await credDropApproval(id);
+    p.resolve({ ok: false, error: reason });
+  }
+}
+
+/** Attend la décision de l'utilisateur dans le panneau (approbation unique, jamais mémorisée ici). */
+function credWaitDecision(entry) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(async () => {
+      credPending.delete(entry.id);
+      await credDropApproval(entry.id);
+      resolve({ ok: false, error: "Approbation expirée (75 s) : l'utilisateur n'a pas répondu dans le panneau latéral." });
+    }, CRED_APPROVAL_MS);
+    credPending.set(entry.id, { resolve, timer });
+  });
+}
+
+/**
+ * Liste les slots du coffre (métadonnées uniquement : id, nom, sites, politique).
+ * Jamais de valeurs : fonctionne même coffre verrouillé. Avec tabId, ne renvoie
+ * que les slots autorisés pour le site de l'onglet.
+ */
+async function credentialsList(agent, { tabId } = {}) {
+  const store = await credLoadStore();
+  if (!store) return ok(text("Aucun coffre de secrets : l'utilisateur doit d'abord créer un slot dans le panneau latéral (section Secrets)."));
+  let tabHost = "";
+  if (tabId !== undefined) {
+    const tab = await assertOwned(agent, tabId);
+    try {
+      tabHost = new URL(tab.url).hostname.toLowerCase();
+    } catch {
+      tabHost = "";
+    }
+  }
+  const slots = Object.values(store.slots ?? {}).map((s) => ({ id: s.id, label: s.label ?? s.id, login: s.login, hosts: s.hosts ?? [], policy: s.policy }));
+  const list = tabHost ? slots.filter((s) => s.hosts.some((h) => credHostCovered(tabHost, h))) : slots;
+  if (!list.length) return ok(text(tabHost ? `Aucun slot autorisé pour ${tabHost}.` : "Aucun slot."));
+  return ok(text(list.map((s) => `- ${s.id} (« ${s.label} », identifiant : ${s.login ? `"${s.login}"` : "non renseigné"}, ${s.policy === "always" ? "toujours autoriser" : "demander à chaque fois"}, sites : ${s.hosts.join(", ")})`).join("\n")));
+}
+
+async function credentialsFill(agent, { tabId, fills, submitRef }) {
+  if (!Array.isArray(fills) || !fills.length) throw new Error("Fournir 'fills' (liste de {ref, slot}).");
+  for (const f of fills) {
+    if (!f?.ref) throw new Error("Chaque remplissage exige 'ref'.");
+    if (!credSlotIdOk(f?.slot)) throw new Error(`Slot invalide : ${JSON.stringify(f?.slot)}.`);
+    if (f?.use !== undefined && f.use !== "login") throw new Error(`Paramètre 'use' invalide : ${JSON.stringify(f?.use)} (seule valeur acceptée : "login", pour remplir l'identifiant en clair ; sans 'use', remplit le secret).`);
+  }
+  const tab = await assertOwned(agent, tabId);
+  const tabHost = (() => {
+    try {
+      return new URL(tab.url).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+  const store = await credLoadStore();
+  if (!store) throw new Error("Aucun coffre de secrets : l'utilisateur doit d'abord créer un slot dans le panneau latéral (section Secrets).");
+  const dek = await credDek();
+  if (!dek) throw new Error("Coffre verrouillé : l'utilisateur doit le déverrouiller dans le panneau latéral (section Secrets).");
+
+  const results = [];
+  await bringToFront(tab);
+  for (const item of fills) {
+    const slot = store.slots[item.slot];
+    if (!slot) throw new Error(`Slot inconnu ou révoqué : "${item.slot}".`);
+    if (!slot.hosts.some((h) => credHostCovered(tabHost, h))) {
+      throw new Error(`Slot "${item.slot}" : site ${tabHost || "(inconnu)"} hors périmètre (${slot.hosts.map((h) => `"${h}"`).join(", ")}). Remplissage refusé.`);
+    }
+    if (slot.policy !== "always") {
+      const entry = {
+        id: ++credApprovalId, agent, slotId: item.slot, label: slot.label ?? item.slot,
+        tabHost, t: Date.now(),
+      };
+      await credPushApproval(entry);
+      const decision = await credWaitDecision(entry);
+      if (!decision.ok) throw new Error(decision.error);
+    }
+    const target = parseRef(item.ref);
+    // Secret : valeur déchiffrée à l'usage, jamais stockée ni renvoyée (les chaînes JS sont
+    // immuables : on évite toute copie superflue et on ne la journalise nulle part).
+    const value = item.use === "login"
+      ? AbcJsEval.credentialLogin(slot)
+      : await credDecryptSlot(slot, dek);
+    await inPage(tabId, "fillSecret", { ref: target.ref, value }, target.frameId);
+    results.push(`${item.ref} rempli (slot "${item.slot}").`);
+  }
+
+  let submitMsg = "";
+  if (submitRef) {
+    const target = parseRef(submitRef);
+    await inPage(tabId, "clickRef", target.ref, target.frameId).catch(() => {});
+    const point = await locateRef(tabId, submitRef).catch(() => null);
+    if (point) {
+      await showOverlay(tabId, point).catch(() => {});
+      await withForeground(tab, () => click(tabId, point, "left", 1, 0)).catch(() => {});
+    }
+    await sleep(200);
+    submitMsg = `\nSoumis via clic sur ${submitRef}.`;
+  }
+
+  // Silence HAR : les corps envoyés juste après (login) ne sont pas enregistrés.
+  harMutedUntil.set(tabId, Date.now() + HAR_MUTE_MS);
+  await showOverlay(tabId);
+  await recordFrame(tabId, `credentials_fill ${fills.map((f) => f.ref).join(", ")} [${[...new Set(fills.map((f) => f.slot))].join(", ")}]${submitRef ? ` -> ${submitRef}` : ""}`);
+  return ok(text((results.join("\n") + submitMsg).trim()));
 }

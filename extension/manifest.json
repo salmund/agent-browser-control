@@ -13,7 +13,8 @@
     "alarms",
     "sidePanel",
     "offscreen",
-    "downloads"
+    "downloads",
+    "history"
   ],
   "host_permissions": [
     "<all_urls>"
