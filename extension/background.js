@@ -1251,9 +1251,22 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 
-async function screenshot(tabId, { scale, region } = {}) {
+/** Légende des pastilles : numéro = ref cliquable, avec libellé court. */
+function refLegend(marks, wanted) {
+  if (!marks.length) return wanted ? "\nAucun élément à numéroter sur cette vue." : "";
+  return `\nPastilles : ${marks.map((m) => `${m.n}=${m.ref}`).join(", ")}.\n` +
+    marks.map((m) => `${m.n} (${m.ref}) : ${m.label}`).join("\n");
+}
+
+async function screenshot(tabId, { scale, region, refs = false } = {}) {
   const s = Math.min(Math.max(Number(scale) || 1, 0.2), 1);
-  const { jpeg, w, h, outW, outH, src } = await captureViewport(tabId, { scale: s, region });
+  let marks = [];
+  if (refs && !region) {
+    marks = await inPage(tabId, "refMarks", { limit: 30 }).catch(() => []);
+    if (marks.length) await inPage(tabId, "showRefMarks", { marks }).catch(() => {});
+  }
+  const hideMarks = () => (marks.length ? inPage(tabId, "hideRefMarks").catch(() => {}) : Promise.resolve());
+  const { jpeg, w, h, outW, outH, src } = await captureViewport(tabId, { scale: s, region }).finally(hideMarks);
   let note = `Capture ${w}x${h} (pixels CSS du viewport).`;
   if (region) {
     note = `Zoom sur la zone (${src[0]}, ${src[1]}) → (${src[2]}, ${src[3]}), image ${outW}x${outH}. ` +
@@ -1263,7 +1276,7 @@ async function screenshot(tabId, { scale, region } = {}) {
   }
   return ok(
     { type: "image", data: await blobToBase64(jpeg), mimeType: "image/jpeg" },
-    text(`${await overlayNotice(tabId)}${note}`),
+    text(`${await overlayNotice(tabId)}${note}${refLegend(marks, refs)}`),
   );
 }
 

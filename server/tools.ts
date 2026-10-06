@@ -156,6 +156,10 @@ export const TOOLS: Tool[] = [
           type: "array", items: { type: "number" }, minItems: 4, maxItems: 4,
           description: "Pour 'screenshot' : [x0, y0, x1, y1] en pixels CSS, zoom net sur une zone (lire un petit texte, vérifier un détail).",
         },
+        refs: {
+          type: "boolean",
+          description: "Pour 'screenshot' : numérote les éléments interactifs (pastilles violettes = refs cliquables, légende fournie ; main frame, 30 au plus).",
+        },
       },
       required: ["tabId", "action"],
     },

@@ -429,6 +429,69 @@
     return formatMatches(matchAll(query), query, limit, structured);
   }
 
+  /**
+   * Éléments interactifs visibles à l'écran, avec position et ref : base des pastilles
+   * de la capture annotée. Main frame uniquement, borné (défaut 30).
+   * Seuls les éléments actionnables sont numérotés (pas les landmarks structurels) et les
+   * plus grands d'abord : sur une grille d'images, les pastilles tombent sur les visuels,
+   * pas sur l'en-tête.
+   */
+  function refMarks({ limit = 30 } = {}) {
+    const max = Math.min(Math.max(Number(limit) || 30, 1), 60);
+    const found = [];
+    // Pré-filtre par sélecteur natif (rapide) : seuls les candidats passent les tests
+    // coûteux (styles calculés). Les <div> cliquables sans rôle ni tabindex n'ont pas de
+    // pastille, ils restent accessibles via read_page / find.
+    const candidates = document.body.querySelectorAll(
+      "a[href],button,input,select,textarea,summary,[role],[onclick],[tabindex]",
+    );
+    for (const el of candidates) {
+      if (SKIP_TAGS.has(el.tagName.toUpperCase()) || el.closest("#abc-overlay") || el.closest("#abc-refmarks")) continue;
+      const role = roleOf(el);
+      if (!isInteractive(el, role)) continue;
+      if (!isVisible(el) || !inViewport(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      const line = describe(el, role);
+      const m = /\[ref_(\d+)\]/.exec(line);
+      if (!m) continue;
+      found.push({
+        ref: `ref_${m[1]}`,
+        x: Math.round(r.left),
+        y: Math.round(r.top),
+        area: r.width * r.height,
+        label: line.replace(/^-\s*/, "").replace(/\s*\[ref_\d+\]/, "").slice(0, 60),
+      });
+    }
+    found.sort((a, b) => b.area - a.area);
+    return found.slice(0, max).map((mk, i) => ({ n: i + 1, ref: mk.ref, x: mk.x, y: mk.y, label: mk.label }));
+  }
+
+  /** Affiche les pastilles numérotées (overlay dédié, retiré par hideRefMarks). */
+  function showRefMarks({ marks } = {}) {
+    for (const old of document.querySelectorAll("#abc-refmarks")) old.remove();
+    const host = document.createElement("div");
+    host.id = "abc-refmarks";
+    host.style.cssText = "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
+    const shadow = host.attachShadow({ mode: "closed" });
+    shadow.innerHTML =
+      "<style>.m{position:fixed;min-width:22px;height:22px;padding:0 5px;border-radius:11px;" +
+      "background:rgba(139,92,246,.92);color:#fff;font:bold 13px/22px sans-serif;text-align:center;" +
+      "box-shadow:0 0 0 2px #fff,0 1px 4px rgba(0,0,0,.4);}</style>" +
+      (marks ?? [])
+        .map(
+          (mk) =>
+            `<div class="m" style="left:${Math.max(0, mk.x - 4)}px;top:${Math.max(0, mk.y - 4)}px;">${mk.n}</div>`,
+        )
+        .join("");
+    document.documentElement.appendChild(host);
+    return (marks ?? []).length;
+  }
+
+  function hideRefMarks() {
+    for (const old of document.querySelectorAll("#abc-refmarks")) old.remove();
+  }
+
   /** Définit la valeur d'un champ de formulaire en déclenchant les événements attendus par les frameworks. */
   function formInput({ ref, value }) {
     const el = elementFor(ref);
@@ -845,5 +908,5 @@
     return true;
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef };
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef, refMarks, showRefMarks, hideRefMarks };
 })();
