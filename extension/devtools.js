@@ -175,7 +175,7 @@ async function networkGetBody(agent, { tabId, requestId }) {
  */
 async function networkHar(agent, { tabId, action = "status", requestId, urlPattern, limit, name, secrets, keep, label, saved }) {
   if (action !== "saved") await assertOwned(agent, tabId);
-  const actions = ["status", "list", "body", "export", "keep", "clear", "saved"];
+  const actions = ["status", "list", "body", "bodies", "export", "keep", "clear", "saved"];
   if (!actions.includes(action)) throw new Error(`action attendue : ${actions.join(", ")}.`);
   if (action === "body" && !requestId) throw new Error("'requestId' requis pour action=\"body\" (colonne id de list).");
   if (urlPattern) compileRegex(urlPattern);
@@ -188,7 +188,16 @@ async function networkHar(agent, { tabId, action = "status", requestId, urlPatte
  * l'onglet est à l'agent (sauf relecture d'un enregistrement gardé) ; le démon dérive
  * et persiste. Les autres actions (list, save_route, delete) sont servies par le démon seul.
  */
-async function siteApi(agent, { action = "list", tabId, requestId, name, saved }) {
+async function siteApi(agent, { action = "list", tabId, requestId, name, saved, site, text: note }) {
+  if (action === "note" && !site) {
+    const tab = await assertOwned(agent, tabId);
+    let host = "";
+    try {
+      host = new URL(tab.url ?? tab.pendingUrl ?? "").hostname;
+    } catch {}
+    if (!host) throw new Error("Site de l'onglet indéterminé : préciser 'site'.");
+    return { content: [text("Site API")], _siteApi: { action, tabId, site: host, text: note } };
+  }
   if (action !== "save_call") throw new Error(`Action ${action} : servie par le démon, sans passer par l'extension.`);
   if (!saved) await assertOwned(agent, tabId);
   if (!requestId) throw new Error("'requestId' requis (colonne id de network_har action=\"list\").");
@@ -479,7 +488,7 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
   if (tabId === undefined || !method.startsWith("Network.webSocket")) return;
   const state = wsState(tabId);
   if (method === "Network.webSocketCreated") {
-    state.sockets.set(params.requestId, { url: params.url, opened: Date.now(), closed: null, sent: 0, received: 0 });
+    state.sockets.set(params.requestId, { url: globalThis.AbcWsMask.maskPairs(params.url ?? ""), opened: Date.now(), closed: null, sent: 0, received: 0 });
   } else if (method === "Network.webSocketClosed") {
     wsSocket(state, params.requestId).closed = Date.now();
   } else if (method === "Network.webSocketFrameReceived" || method === "Network.webSocketFrameSent") {
@@ -493,7 +502,7 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
       dir,
       t: Date.now(),
       size: binary ? Math.round((payloadData.length * 3) / 4) : payloadData.length,
-      data: binary ? null : payloadData.slice(0, MAX_WS_PAYLOAD),
+      data: binary ? null : globalThis.AbcWsMask.maskBody(payloadData.slice(0, MAX_WS_PAYLOAD)),
     });
     if (state.frames.length > MAX_WS_FRAMES) state.frames.splice(0, state.frames.length - MAX_WS_FRAMES);
   }

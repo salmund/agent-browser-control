@@ -7,10 +7,13 @@ import {
   buildCurl,
   buildPython,
   decode,
+  addSiteNote,
   deleteSiteCall,
+  deleteSiteNote,
   deleteSiteRoute,
   deriveSiteCall,
   formFieldNames,
+  getSiteNotes,
   getSiteRoutes,
   inferSchema,
   isSensitiveKey,
@@ -20,6 +23,7 @@ import {
   safeHeaders,
   setSiteCall,
   setSiteRoute,
+  type SiteEntry,
 } from "../server/analysis.ts";
 
 // Paramètres observés : noms uniquement, jamais les valeurs.
@@ -127,4 +131,23 @@ assert.strictEqual(delRoute.removed, true);
 assert.deepStrictEqual(delRoute.api, {});
 assert.strictEqual(deleteSiteRoute(api2, "absent.fr", "home").removed, false);
 
-console.log("analysis : OK (masquage, exports, décodeurs, site_api, routes, dérivation, suppressions)");
+// Playbook : ajout (doublon ignoré, 280 car. max, 12 lignes max), lecture, suppression.
+assert.deepStrictEqual(getSiteNotes(undefined), []);
+assert.deepStrictEqual(getSiteNotes([{ name: "x", method: "GET", path: "/", updated: "2026-10-05" }]), []);
+let pb = addSiteNote({}, "discord.com", "Cliquer même origine, jamais navigate.");
+assert.strictEqual(pb.added, true);
+assert.deepStrictEqual(getSiteNotes(pb.api["discord.com"]), ["Cliquer même origine, jamais navigate."]);
+assert.strictEqual(addSiteNote(pb.api, "discord.com", "Cliquer même origine, jamais navigate.").added, false);
+assert.strictEqual(addSiteNote(pb.api, "discord.com", "   ").added, false);
+pb = addSiteNote(pb.api, "discord.com", "x".repeat(500));
+assert.strictEqual(getSiteNotes(pb.api["discord.com"])[1].length, 280);
+let many: Record<string, SiteEntry> = {};
+for (let i = 0; i < 14; i++) many = addSiteNote(many, "s.example", `note ${i}`).api;
+assert.strictEqual(getSiteNotes(many["s.example"]).length, 12);
+assert.strictEqual(getSiteNotes(many["s.example"])[0], "note 2");
+assert.strictEqual(deleteSiteNote(many, "s.example", "absente").removed, false);
+const delNote = deleteSiteNote(many, "s.example", "note 2");
+assert.strictEqual(delNote.removed, true);
+assert.ok(!getSiteNotes(delNote.api["s.example"]).includes("note 2"));
+
+console.log("analysis : OK (masquage, exports, décodeurs, site_api, routes, dérivation, suppressions, playbook)");

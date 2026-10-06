@@ -169,7 +169,7 @@ export interface SiteCall {
   updated: string;
 }
 
-export type SiteEntry = SiteCall[] | { calls?: SiteCall[]; routes?: Record<string, string> };
+export type SiteEntry = SiteCall[] | { calls?: SiteCall[]; routes?: Record<string, string>; notes?: string[] };
 
 export function siteApiPath(home: string): string {
   return `${home}/.agent-browser-control/site-api.json`;
@@ -284,6 +284,52 @@ export function deriveSiteCall(
       updated: today,
     },
   };
+}
+
+/** Playbook d'un site : lignes de conduite (1 à 3 par visite), servies à l'arrivée. */
+export function getSiteNotes(entry?: SiteEntry): string[] {
+  if (!entry || Array.isArray(entry)) return [];
+  return entry.notes ?? [];
+}
+
+const MAX_NOTES = 12;
+const MAX_NOTE_CHARS = 280;
+
+/** Ajoute une ligne au playbook (doublon exact ignoré, au-delà de 12 les plus anciennes sautent). */
+export function addSiteNote(
+  siteApi: Record<string, SiteEntry>,
+  site: string,
+  text: string,
+): { api: Record<string, SiteEntry>; added: boolean } {
+  const note = text.trim().slice(0, MAX_NOTE_CHARS);
+  if (!note) return { api: siteApi, added: false };
+  const current = siteApi[site];
+  const calls = Array.isArray(current) ? [...current] : [...(current?.calls ?? [])];
+  const routes = Array.isArray(current) ? {} : { ...(current?.routes ?? {}) };
+  const notes = Array.isArray(current) ? [] : [...(current?.notes ?? [])];
+  if (notes.includes(note)) return { api: siteApi, added: false };
+  notes.push(note);
+  while (notes.length > MAX_NOTES) notes.shift();
+  return { api: { ...siteApi, [site]: { calls, routes, notes } }, added: true };
+}
+
+/** Supprime une ligne du playbook (texte exact) ; removed=false si absente. */
+export function deleteSiteNote(
+  siteApi: Record<string, SiteEntry>,
+  site: string,
+  text: string,
+): { api: Record<string, SiteEntry>; removed: boolean } {
+  const current = siteApi[site];
+  if (Array.isArray(current) || !(current?.notes ?? []).includes(text)) return { api: siteApi, removed: false };
+  const calls = [...(current.calls ?? [])];
+  const routes = { ...(current.routes ?? {}) };
+  const notes = (current.notes ?? []).filter((n) => n !== text);
+  if (!calls.length && !Object.keys(routes).length && !notes.length) {
+    const rest = { ...siteApi };
+    delete rest[site];
+    return { api: rest, removed: true };
+  }
+  return { api: { ...siteApi, [site]: { calls, routes, notes } }, removed: true };
 }
 
 /** Supprime un appel enregistré ; removed=false s'il n'existait pas. */

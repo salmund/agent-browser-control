@@ -90,7 +90,10 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "navigate",
-    description: "Navigue vers une URL, ou 'back' / 'forward' / 'reload'. Attend la fin du chargement.",
+    description:
+      "Navigue vers une URL, ou 'back' / 'forward' / 'reload'. Attend la fin du chargement. " +
+      "Dans une SPA (Discord…) : naviguer par clic (find + ref) quand la cible est même origine, pas par URL — " +
+      "navigate recharge tout le client (auth, gateway) quand un clic ne fait qu'un appel XHR.",
     inputSchema: {
       type: "object",
       properties: { tabId, url: { type: "string", description: "URL, 'back', 'forward' ou 'reload'." } },
@@ -180,13 +183,16 @@ export const TOOLS: Tool[] = [
     name: "find",
     description:
       "Cherche des éléments de la page par texte (nom accessible, libellé, placeholder, valeur…) et renvoie " +
-      "leurs refs. Préfixer par 'css:' pour un sélecteur CSS (ex. 'css:button.primary').",
+      "leurs refs. Préfixer par 'css:' pour un sélecteur CSS (ex. 'css:button.primary'). " +
+      "scan: true balaye les conteneurs défilants (listes virtualisées : les lignes hors écran n'existent pas " +
+      "dans le DOM) avant de conclure ; plus lent, positions restaurées.",
     inputSchema: {
       type: "object",
       properties: {
         tabId,
         query: { type: "string", description: "Mots-clés (ex. 'bouton connexion') ou 'css:<sélecteur>'." },
         limit: { type: "number", description: "Nombre maximal de résultats (défaut 20)." },
+        scan: { type: "boolean", description: "True : balayer les listes virtualisées (plus lent)." },
       },
       required: ["tabId", "query"],
     },
@@ -380,14 +386,16 @@ export const TOOLS: Tool[] = [
       "enregistrés (noms, méthode, chemin, params — jamais de secrets) ; 'save_call' mémorise une requête du HAR " +
       "(tabId + requestId de network_har list, nom optionnel ; réenregistrer sous le même nom met à jour quand " +
       "le site change) ; 'save_route' mémorise un deep link (nom + URL sans jeton) ; 'delete' (site, nom, kind) " +
-      "retire un appel ou une route périmée. Prochaine visite : list, puis navigate vers une route ou " +
+      "retire un appel, une route ou une note périmée. 'note' ajoute une ligne au playbook du site " +
+      "(comment il se comporte ; servi automatiquement à l'arrivée : navigate, tabs_context). " +
+      "Prochaine visite : list, puis navigate vers une route ou " +
       "http_request pour rejouer un appel, au lieu de tout redécouvrir en cliquant.",
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "save_call", "save_route", "delete"],
+          enum: ["list", "save_call", "save_route", "note", "delete"],
           description: "Défaut : list.",
         },
         tabId,
@@ -396,7 +404,8 @@ export const TOOLS: Tool[] = [
         name: { type: "string", description: "save_call/save_route/delete : nom mémorisé (défaut save_call : MÉTHODE chemin)." },
         url: { type: "string", description: "save_route : deep link à mémoriser (sans jeton ni session)." },
         site: { type: "string", description: "save_route/delete : site (défaut : hôte de l'URL ou de la requête)." },
-        kind: { type: "string", enum: ["call", "route"], description: "delete : appel ou route (défaut call)." },
+        kind: { type: "string", enum: ["call", "route", "note"], description: "delete : appel, route ou note (défaut call)." },
+        text: { type: "string", description: "note : ligne du playbook (1 à 3 par visite ; site dérivé de l'onglet sans 'site')." },
       },
     },
   },
@@ -408,7 +417,8 @@ export const TOOLS: Tool[] = [
       "au rechargement de l'extension et à la navigation : étudier un parcours de plusieurs pages après coup, " +
       "retrouver un corps disparu, re-dériver un client quand un site change. Une fois le bon appel identifié, " +
       "site_api save_call le mémorise (méthode, chemin, params) pour rejouer vite la prochaine fois. " +
-      "action : 'status' (défaut), 'list' (urlPattern, limit), 'body' (requestId), 'export' (fichier HAR 1.2 " +
+      "action : 'status' (défaut), 'list' (urlPattern, limit), 'body' (requestId), 'bodies' (derniers corps par " +
+      "motif, résumés : la lecture des SPA dont le DOM ne montre rien), 'export' (fichier HAR 1.2 " +
       "dans Téléchargements, secrets masqués ; " +
       "secrets: true seulement si l'utilisateur le demande), 'keep' (garder après la fermeture de l'onglet, label), " +
       "'clear' (avec saved : supprime un enregistrement gardé), 'saved' (enregistrements gardés, à relire avec le " +
@@ -418,7 +428,7 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         tabId,
-        action: { type: "string", enum: ["status", "list", "body", "export", "keep", "clear", "saved"] },
+        action: { type: "string", enum: ["status", "list", "body", "bodies", "export", "keep", "clear", "saved"] },
         requestId: { type: "string", description: "body : l'id de la requête (colonne id de list)." },
         urlPattern: { type: "string", description: "list : expression régulière sur l'URL." },
         limit: { type: "number", description: "list : nombre maximum de requêtes (défaut 100, les plus récentes)." },
@@ -541,7 +551,8 @@ export const TOOLS: Tool[] = [
   {
     name: "read_websocket_messages",
     description:
-      "Connexions WebSocket de l'onglet et leurs messages (flux temps réel : prix, chat, notifications). " +
+      "Connexions WebSocket de l'onglet et leurs messages (flux temps réel : prix, chat, notifications ; " +
+      "jetons et secrets masqués comme dans le HAR). " +
       "La capture commence quand l'agent prend l'onglet en main ; recharger la page pour voir les sockets ouverts au chargement.",
     inputSchema: {
       type: "object",
@@ -616,7 +627,8 @@ export const TOOLS: Tool[] = [
       "Attend qu'une condition soit remplie plutôt qu'un nombre fixe de secondes : un élément visible (selector CSS), " +
       "un texte présent (text) ou disparu (textGone, ex. 'Chargement…'), une URL (urlContains), le réseau calme " +
       "(networkIdle: true = 500 ms sans requête, ou un nombre de ms), le DOM stabilisé " +
-      "(domSettled: true = 800 ms sans mutation DOM, ou un nombre de ms pour attendre la fin d'un streaming ou d'une transition), " +
+      "(domSettled: true = 800 ms sans mutation DOM, ou un nombre de ms pour attendre la fin d'un streaming ou d'une transition ; " +
+      "sans effet sur les applis temps réel aux mutations permanentes : préférer text / selector / networkIdle), " +
       "ou la fin d'une authentification (authSettled: true attend la validation d'une connexion / redirection hors login). " +
       "Conditions combinables ; timeout en secondes (défaut 10, max 60, jusqu'à 300 pour authSettled).",
     inputSchema: {

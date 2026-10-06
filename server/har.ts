@@ -13,6 +13,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./common.ts";
+import { inferSchema } from "./analysis.ts";
 
 export const HAR_DIR = join(CONFIG_DIR, "har");
 const KEPT_DIR = join(HAR_DIR, "gardes");
@@ -198,6 +199,32 @@ export function listText(entries: HarEntry[], urlPattern?: string, limit = 100) 
   });
   const header = `${shown.length < list.length ? `${shown.length} dernières sur ${list.length}` : `${list.length}`} requête(s) du HAR persistant`;
   return `${header} (id, méthode, statut, type, URL ; corps via network_har action="body") :\n${lines.join("\n")}`;
+}
+
+/**
+ * Derniers corps de réponse correspondant au motif : la lecture officielle des SPA,
+ * dont le DOM ne montre presque rien. Secrets masqués, schéma des JSON, tronqué à 4000 car.
+ */
+export function bodiesText(entries: HarEntry[], urlPattern?: string, limit = 5) {
+  const re = urlPattern ? new RegExp(urlPattern, "i") : null;
+  const list = entries.filter((e) => e.body && (!re || re.test(e.url)));
+  const shown = list.slice(-Math.max(1, Math.min(limit || 5, 20)));
+  if (!shown.length) return null;
+  const lines = shown.map((e) => {
+    let body = maskBody(e.body) ?? "";
+    let schema = "";
+    if (/json/i.test(e.mimeType ?? "")) {
+      try {
+        schema = `\nschéma : ${inferSchema(JSON.parse(e.body ?? ""))}`;
+      } catch {}
+      try {
+        body = JSON.stringify(JSON.parse(body), null, 1);
+      } catch {}
+    }
+    const cut = body.length > 4000;
+    return `--- ${e.id} ${e.method} ${e.status ?? ""} ${e.url.slice(0, 300)}${schema}\n${cut ? body.slice(0, 4000) + "\n[…tronqué…]" : body}`;
+  });
+  return `${shown.length} dernier(s) corps sur ${list.length} correspondant(s) (secrets masqués) :\n${lines.join("\n")}`;
 }
 
 export function bodyText(entries: HarEntry[], requestId: string) {

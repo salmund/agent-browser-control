@@ -326,8 +326,8 @@
     };
   }
 
-  /** Recherche d'éléments par texte (nom accessible, placeholder, valeur…) ou par sélecteur 'css:…'. */
-  function find({ query, limit = 20, structured = false }) {
+  /** Candidats bruts d'une recherche, triés par score (non tronqués). */
+  function matchAll(query) {
     if (!query) throw new Error("'query' manquant.");
     let matches;
     if (query.startsWith("css:")) {
@@ -357,6 +357,57 @@
       }
       matches.sort((a, b) => b.score - a.score);
     }
+    return matches;
+  }
+
+  /**
+   * Balaye les conteneurs défilants (listes virtualisées) en collectant les
+   * correspondances à chaque étape : les lignes hors écran n'existent pas dans
+   * le DOM, on ne peut les trouver qu'en les faisant apparaître. Positions
+   * restaurées à la fin. Borné : 4 conteneurs, 10 étapes, arrêt si stagnation.
+   */
+  async function findScan({ query, limit = 20, structured = false }) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const seen = new Map();
+    const collect = () => {
+      for (const m of matchAll(query)) {
+        const prev = seen.get(m.el);
+        if (!prev || m.score > prev.score) seen.set(m.el, m);
+      }
+    };
+    collect();
+    const doc = document.scrollingElement;
+    const scrollers = [];
+    if (doc && doc.scrollHeight - doc.clientHeight > 100) scrollers.push(doc);
+    for (const el of document.querySelectorAll('*')) {
+      if (scrollers.length >= 4) break;
+      if (el === doc || el.closest('#abc-overlay')) continue;
+      if (el.scrollHeight - el.clientHeight > 100 && el.clientHeight > 40) scrollers.push(el);
+    }
+    for (const sc of scrollers) {
+      const start = sc.scrollTop;
+      const max = sc.scrollHeight - sc.clientHeight;
+      if (max <= 0) continue;
+      const steps = Math.min(10, Math.max(2, Math.ceil(max / (sc.clientHeight || 600))));
+      let stagnant = 0;
+      try {
+        for (let i = 1; i <= steps; i++) {
+          sc.scrollTop = (max * i) / steps;
+          await sleep(250);
+          const before = seen.size;
+          collect();
+          stagnant = seen.size === before ? stagnant + 1 : 0;
+          if (stagnant >= 2 || seen.size >= limit * 3) break;
+        }
+      } finally {
+        sc.scrollTop = start;
+      }
+    }
+    const matches = [...seen.values()].sort((a, b) => b.score - a.score);
+    return formatMatches(matches, query, limit, structured);
+  }
+
+  function formatMatches(matches, query, limit = 20, structured = false) {
     const total = matches.length;
     const lines = matches.slice(0, limit).map(({ el, role }) => {
       let line = "- " + describe(el, role);
@@ -369,6 +420,13 @@
     if (structured) return { total, items: matches.slice(0, limit).map((m, i) => ({ line: lines[i], score: m.score })) };
     const more = total > limit ? `\n(${total - limit} autres résultats non affichés)` : "";
     return lines.length ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${lines.join("\n")}${more}` : `Aucun élément trouvé pour ${JSON.stringify(query)}.`;
+  }
+
+  /** Recherche d'éléments (texte ou 'css:…') ; scan=true balaye les listes virtualisées avant de conclure. */
+
+  function find({ query, limit = 20, structured = false, scan = false }) {
+    if (scan) return findScan({ query, limit, structured });
+    return formatMatches(matchAll(query), query, limit, structured);
   }
 
   /** Définit la valeur d'un champ de formulaire en déclenchant les événements attendus par les frameworks. */

@@ -10,9 +10,12 @@ import { basename, dirname, extname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
 import {
+  addSiteNote,
   deleteSiteCall,
+  deleteSiteNote,
   deleteSiteRoute,
   deriveSiteCall,
+  getSiteNotes,
   loadSiteApi,
   setSiteCall,
   setSiteRoute,
@@ -22,7 +25,7 @@ import {
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
-import { appendEntry, bodyText, clearTab, closeTab, deleteSaved, exportHar, listText, purgeStale, readEntries, savedRecordings, setKeep, statusText, type HarEntry } from "./har.ts";
+import { appendEntry, bodiesText, bodyText, clearTab, closeTab, deleteSaved, exportHar, listText, purgeStale, readEntries, savedRecordings, setKeep, statusText, type HarEntry } from "./har.ts";
 
 const VERSION = "0.5.0";
 const CALL_TIMEOUT_MS = 90_000;
@@ -142,7 +145,7 @@ const server = createServer(async (req, res) => {
     const local = localTool(call);
     const result = local
       ? await local.catch((err) => errorResult(`${call.tool} : ${err instanceof Error ? err.message : err}`))
-      : harFallback(call, runAttachedSiteApi(runAttachedHar(await forward(call))));
+      : attachSiteNotes(call, harFallback(call, runAttachedSiteApi(runAttachedHar(await forward(call)))));
     log({ agent: call.agent, tool: call.tool, args: redact(call), ms: Date.now() - started, error: !!result.isError });
     return sendJson(res, 200, result);
   }
@@ -212,7 +215,7 @@ function localTool(call: CallRequest): Promise<CallResult> | null {
   if (call.tool === "download_media" && args.action === "status") {
     return Promise.resolve().then(() => ({ content: [{ type: "text", text: mediaStatus(args.jobId as string | undefined) }] }));
   }
-  if (call.tool === "site_api" && args.action !== "save_call") {
+  if (call.tool === "site_api" && !siteApiNeedsExtension(call)) {
     return Promise.resolve().then(() => siteApiLocal(args));
   }
   if (call.tool === "read_document") {
@@ -263,6 +266,10 @@ function runAttachedHar(result: CallResult): CallResult {
         const b = bodyText(entries(), String(req.requestId ?? ""));
         if (!b) return reply(`Requête ${req.requestId} absente du HAR persistant.`, true);
         return reply(typeof b === "string" ? b : `${b.header}\n${untrusted(b.body)}`);
+      }
+      case "bodies": {
+        const t = bodiesText(entries(), req.urlPattern, req.limit ?? 5);
+        return reply(t ? untrusted(t) : `Aucun corps enregistré${req.urlPattern ? " correspondant" : ""}.`);
       }
       case "export": {
         const list = entries();
@@ -327,6 +334,7 @@ function siteApiListText(api: Record<string, SiteEntry>): string {
     for (const c of calls) {
       lines.push(`  appel « ${c.name} » — ${c.method} ${c.path}${c.params?.length ? ` (params : ${c.params.join(", ")})` : ""}`);
     }
+    for (const n of getSiteNotes(entry)) lines.push(`  playbook : ${n}`);
   }
   lines.push(
     "Rejouer vite : navigate vers une route, http_request pour un appel. " +
@@ -335,7 +343,17 @@ function siteApiListText(api: Record<string, SiteEntry>): string {
   return lines.join("\n");
 }
 
-/** site_api sans le navigateur : list, save_route, delete. save_call passe par l'extension (onglet de l'agent). */
+/**
+ * Actions servies par l'extension (propriété de l'onglet) : save_call toujours,
+ * note quand le site n'est pas donné (dérivé de l'onglet). Le reste est local au démon.
+ */
+function siteApiNeedsExtension(call: CallRequest): boolean {
+  if (call.tool !== "site_api") return false;
+  const args = call.args ?? {};
+  return args.action === "save_call" || (args.action === "note" && !args.site);
+}
+
+/** site_api sans le navigateur : list, save_route, delete, note avec site. */
 function siteApiLocal(args: Record<string, unknown>): CallResult {
   const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
   const action = String(args.action ?? "list");
@@ -357,6 +375,15 @@ function siteApiLocal(args: Record<string, unknown>): CallResult {
       `Route enregistrée pour ${site} : « ${name} » → ${url}\nProchaine fois : navigate directement vers elle au lieu de cliquer.`,
     );
   }
+  if (action === "note") {
+    const site = String(args.site ?? "").trim();
+    const text = String(args.text ?? "");
+    if (!site || !text.trim()) return reply("note : 'site' et 'text' requis (1 à 3 lignes par visite).", true);
+    const { api, added } = addSiteNote(readSiteApi(), site, text);
+    if (!added) return reply(`Déjà noté pour ${site} (doublon ignoré).`);
+    writeSiteApi(api);
+    return reply(`Noté pour ${site} : « ${text.trim().slice(0, 280)} »\nServi automatiquement à l'arrivée sur ce site (navigate, tabs_context).`);
+  }
   if (action === "delete") {
     const site = String(args.site ?? "").trim();
     const name = String(args.name ?? "").trim();
@@ -364,12 +391,16 @@ function siteApiLocal(args: Record<string, unknown>): CallResult {
     if (!site || !name) return reply("delete : 'site' et 'name' requis.", true);
     const before = readSiteApi();
     const { api, removed } =
-      kind === "route" ? deleteSiteRoute(before, site, name) : deleteSiteCall(before, site, name);
+      kind === "route"
+        ? deleteSiteRoute(before, site, name)
+        : kind === "note"
+          ? deleteSiteNote(before, site, name)
+          : deleteSiteCall(before, site, name);
     if (!removed) return reply(`Rien à supprimer : ${kind} « ${name} » introuvable pour ${site}.`, true);
     writeSiteApi(api);
-    return reply(`${kind === "route" ? "Route" : "Appel"} « ${name} » supprimé pour ${site}.`);
+    return reply(`${kind === "route" ? "Route" : kind === "note" ? "Note" : "Appel"} « ${name} » supprimé pour ${site}.`);
   }
-  return reply(`Action inconnue : ${action} (list, save_call, save_route, delete).`, true);
+  return reply(`Action inconnue : ${action} (list, save_call, save_route, note, delete).`, true);
 }
 
 /**
@@ -379,12 +410,21 @@ function siteApiLocal(args: Record<string, unknown>): CallResult {
  */
 function runAttachedSiteApi(result: CallResult): CallResult {
   const req = result._siteApi as
-    | { action: string; tabId: number; requestId?: string; name?: string; saved?: string }
+    | { action: string; tabId: number; requestId?: string; name?: string; saved?: string; site?: string; text?: string }
     | undefined;
   if (!req) return result;
   delete result._siteApi;
   const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
   try {
+    if (req.action === "note") {
+      const site = String(req.site ?? "").trim();
+      const note = String(req.text ?? "");
+      if (!site || !note.trim()) return reply("note : site et texte requis.", true);
+      const { api, added } = addSiteNote(readSiteApi(), site, note);
+      if (!added) return reply(`Déjà noté pour ${site} (doublon ignoré).`);
+      writeSiteApi(api);
+      return reply(`Noté pour ${site} : « ${note.trim().slice(0, 280)} »`);
+    }
     if (req.action !== "save_call") return reply(`Action inconnue : ${req.action}`, true);
     const entries = readEntries(req.tabId, req.saved);
     const entry = [...entries].reverse().find((e) => e.id === req.requestId);
@@ -400,6 +440,33 @@ function runAttachedSiteApi(result: CallResult): CallResult {
   } catch (err) {
     return errorResult(`site_api : ${err instanceof Error ? err.message : err}`);
   }
+}
+
+/**
+ * À l'arrivée sur un site connu (navigate, tabs_context), joint son playbook à la
+ * réponse : l'adaptation est servie, pas cherchée. Noms d'hôtes lus dans le texte.
+ */
+function attachSiteNotes(call: CallRequest, result: CallResult): CallResult {
+  if (call.tool !== "navigate" && call.tool !== "tabs_context") return result;
+  if (result.isError) return result;
+  const first = result.content.find((c) => c.type === "text");
+  if (!first || first.type !== "text") return result;
+  const hosts = new Set<string>();
+  for (const m of first.text.matchAll(/https?:\/\/([^/\s'")\]]+)/g)) {
+    try {
+      hosts.add(new URL(m[0]).hostname);
+    } catch {}
+  }
+  if (!hosts.size) return result;
+  const api = readSiteApi();
+  const blocks: string[] = [];
+  for (const h of [...hosts].sort().slice(0, 3)) {
+    const notes = getSiteNotes(api[h]);
+    if (notes.length) blocks.push(`Mémoire ${h} :\n${notes.slice(0, 4).map((n) => `- ${n}`).join("\n")}`);
+  }
+  if (!blocks.length) return result;
+  first.text += `\n\n${blocks.join("\n")}`;
+  return result;
 }
 
 function harFallback(call: CallRequest, result: CallResult): CallResult {

@@ -47,7 +47,7 @@ Principes :
 | `navigate` | URL, `back`, `forward`, `reload` |
 | `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` |
 | `read_page` | Arbre d'accessibilité compact avec `ref` stables (`ref_12`) ; filtre `interactive` |
-| `find` | Recherche d'éléments par texte / rôle / sélecteur (sans LLM) |
+| `find` | Recherche d'éléments par texte / rôle / sélecteur (sans LLM) ; `scan` balaye les listes virtualisées |
 | `get_page_text` | Texte principal de la page (type Readability) |
 | `form_input` | Remplit un champ / select / checkbox par `ref` ; saisie groupée (`fields`) et soumission (`submitRef`) en un appel |
 | `javascript` | Évalue du JS dans la page (via CDP `Runtime.evaluate`) |
@@ -69,7 +69,7 @@ Principes :
 | `pdf` | Export PDF de la page |
 | `downloads` | Liste / récupère les téléchargements |
 | `history_search` | Retrouve une page visitée (requête vide = récentes ; sites interdits exclus) |
-| `site_api` | Mémoire par site : routes + appels capturés du HAR, rejoués vite (list, save_call, save_route, delete) |
+| `site_api` | Mémoire par site : routes + appels capturés du HAR, rejoués vite (list, save_call, save_route, note, delete) + playbook servi à l'arrivée |
 | `cdp_send` | Appel CDP brut (désactivé par défaut) |
 
 ## 3.3 Secrets d'authentification (`credentials_fill`)

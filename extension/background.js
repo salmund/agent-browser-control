@@ -1,7 +1,7 @@
 // Service worker Agent Browser Control.
 // Se connecte au démon local et exécute les outils demandés par les agents.
 
-importScripts("gif.js", "annotate.js", "devtools.js", "wait-diag.js", "js-eval.js", "tab-hygiene.js", "history.js");
+importScripts("gif.js", "annotate.js", "devtools.js", "wait-diag.js", "js-eval.js", "tab-hygiene.js", "history.js", "ws-mask.js");
 
 const DAEMON_URL = "ws://127.0.0.1:7878/ext";
 const PING_MS = 20_000;
@@ -1068,9 +1068,9 @@ async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
   return ok(text((await overlayNotice(tabId)) + untrusted(out)));
 }
 
-async function find(agent, { tabId, query, limit = 20 }) {
+async function find(agent, { tabId, query, limit = 20, scan = false }) {
   await assertOwned(agent, tabId);
-  const frames = await inAllFrames(tabId, "find", { query, limit, structured: true });
+  const frames = await inAllFrames(tabId, "find", { query, limit, structured: true, scan });
   let total = 0;
   const items = [];
   for (const { frameId, value } of frames) {
@@ -1084,7 +1084,7 @@ async function find(agent, { tabId, query, limit = 20 }) {
   const more = total > shown.length ? `\n(${total - shown.length} autres résultats non affichés)` : "";
   const result = shown.length
     ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${shown.join("\n")}${more}`
-    : `Aucun élément trouvé pour ${JSON.stringify(query)}.`;
+    : `Aucun élément trouvé pour ${JSON.stringify(query)}.${scan ? " (balayage des listes virtualisées effectué)" : " (scan: true balaye les listes virtualisées)"}`;
   return ok(text((await overlayNotice(tabId)) + untrusted(result)));
 }
 
