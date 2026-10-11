@@ -274,9 +274,11 @@ export const TOOLS: Tool[] = [
       "Extrait TOUS les items d'une liste à chargement progressif en un seul appel : scroll répété du conteneur " +
       "(scroll infini, historique de chat, fil) + collecte à chaque étape, avec attente intelligente (pas de sleep fixe), " +
       "déduplication et position restaurée. 'item' : sélecteur CSS des lignes. 'container' : sélecteur du conteneur " +
-      "défilant (défaut : détecté automatiquement). 'direction' : down (défaut) ou up (remonter un historique). " +
+      "défilant (défaut : détecté automatiquement). 'direction' : down (défaut), up (remonter un historique), " +
+      "left/right (scroll horizontal). " +
       "'extract' : text (défaut), html, aria (aria-label) ou {attrs: [...]}. 'limit'/'offset' pour paginer, " +
-      "'maxRounds' (défaut 40) comme garde-fou. Gros volume : le complet part en fichier JSON (+ aperçu). " +
+      "'maxRounds' (défaut 40) comme garde-fou. 'loadMore' : sélecteur d'un bouton « charger plus », cliqué " +
+      "quand le scroll ne rapporte rien (listes à bouton). Gros volume : le complet part en fichier JSON (+ aperçu). " +
       "Arrière-plan si l'onglet peint, premier plan sinon (sans paint : pas de scroll events) ; " +
       "l'onglet de l'utilisateur est rendu après.",
     inputSchema: {
@@ -285,7 +287,7 @@ export const TOOLS: Tool[] = [
         tabId,
         item: { type: "string", description: "Sélecteur CSS des lignes à extraire (ex. '.message', 'li.row')." },
         container: { type: "string", description: "Sélecteur du conteneur défilant (défaut : détecté automatiquement)." },
-        direction: { type: "string", enum: ["down", "up"], description: "Sens du balayage (défaut down ; up pour remonter un historique)." },
+        direction: { type: "string", enum: ["down", "up", "left", "right"], description: "Sens du balayage (défaut down ; up pour remonter un historique, left/right pour un scroll horizontal ; bascule auto sur l'axe qui scrolle)." },
         extract: {
           description: "Ce qu'on lit par ligne : text (défaut), html, aria (aria-label) ou {attrs: [...]}.",
         },
@@ -294,6 +296,7 @@ export const TOOLS: Tool[] = [
         waitMs: { type: "number", description: "Attente max de nouveau contenu par tour, en ms (défaut 1200)." },
         limit: { type: "number", description: "Items renvoyés au plus (défaut 3000)." },
         offset: { type: "number", description: "Items sautés au début (défaut 0, pour paginer)." },
+        loadMore: { type: "string", description: "Sélecteur d'un bouton « charger plus », cliqué quand le scroll ne rapporte rien." },
       },
       required: ["tabId", "item"],
     },
@@ -771,7 +774,6 @@ export const TOOLS: Tool[] = [
   {
     name: "browser_script",
     description:
-      "(Disponible seulement si l'utilisateur l'a activé dans le panneau de l'extension.) " +
       "Exécute un programme JavaScript (async) qui enchaîne des actions dans le navigateur d'un seul tenant, " +
       "sans aller-retour avec le modèle : idéal pour les boucles et les vérifications en série (parcourir 20 pages, " +
       "relever un tableau sur chacune…). Le code tourne dans un bac à sable sans réseau ni API du navigateur : " +

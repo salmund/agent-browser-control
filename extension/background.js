@@ -1252,15 +1252,16 @@ async function find(agent, { tabId, query, limit = 20, scan = false }) {
  * Arrière-plan si l'onglet peint, premier plan sinon (sans paint : pas de scroll events,
  * l'extraction tournerait dans le vide). L'onglet de l'utilisateur est rendu après.
  */
-async function scrollExtract(agent, { tabId, item, container, direction, extract, maxRounds, stableRounds, waitMs, limit, offset }) {
+async function scrollExtract(agent, { tabId, item, container, direction, extract, maxRounds, stableRounds, waitMs, limit, offset, loadMore }) {
   const tab = await assertOwned(agent, tabId);
   if (!item || typeof item !== "string") throw new Error("'item' requis : sélecteur CSS des lignes à extraire.");
-  const run = () => inPage(tabId, "scrollExtract", { item, container, direction, extract, maxRounds, stableRounds, waitMs, limit, offset });
+  const run = () => inPage(tabId, "scrollExtract", { item, container, direction, extract, maxRounds, stableRounds, waitMs, limit, offset, loadMore });
   const probe = await inPage(tabId, "canPaint").catch(() => null);
   const foregrounded = !probe?.paints;
   const res = foregrounded ? await withForeground(tab, run) : await run();
   const head = `Liste extraite (${res.container}, ${res.direction}, ${res.rounds} tour(s)) : ${res.total} item(s) au total, ${res.count} renvoyé(s)` +
     (res.offset ? ` (à partir de ${res.offset})` : "") + "." +
+    (res.loadMoreClicks ? ` (${res.loadMoreClicks} clic(s) « charger plus »)` : "") +
     (foregrounded ? " (passage au premier plan : onglet non peint)" : "") +
     (res.hasMore ? " Fin atteinte par maxRounds avec du nouveau : relancer avec maxRounds plus grand." : "") +
     (res.truncatedByLimit ? " Tronqué par limit/offset : relancer avec un autre offset pour la suite." : "");
@@ -2376,10 +2377,10 @@ async function browserScript(agent, { code, tabId, timeoutMs }) {
 // Réglages choisis par l'utilisateur dans le panneau (hors de portée des agents)
 // ---------------------------------------------------------------------------
 
-/** browser_script est désactivé par défaut : seul l'utilisateur peut l'activer, dans le panneau. */
+/** browser_script est activé par défaut ; l'utilisateur peut le désactiver dans le panneau. */
 async function scriptsEnabled() {
-  const { scriptsEnabled: enabled = false } = await chrome.storage.local.get("scriptsEnabled");
-  return enabled === true;
+  const { scriptsEnabled: enabled = true } = await chrome.storage.local.get("scriptsEnabled");
+  return enabled !== false;
 }
 
 /** Le démon s'en sert pour retirer les outils désactivés de la liste que voient les agents. */

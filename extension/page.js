@@ -672,13 +672,16 @@
    * Déduplique par identité + contenu : un élément revu avec le même texte est sauté, un nœud
    * recyclé qui affiche un nouveau contenu est re-collecté. Les textes strictement identiques
    * portés par des éléments différents (cinq « Ok ») survivent tous.
+   * Attente réactive par MutationObserver (contenu stabilisé, pas sleep fixe) ; listes à bouton
+   * via loadMore (clic quand le scroll ne rapporte rien) ; axes down/up/left/right avec bascule
+   * automatique sur l'axe qui scrolle vraiment (direction réelle reportée).
    * Position de scroll restaurée à la fin. Appelé en arrière-plan quand l'onglet peint, au premier
    * plan sinon (décision côté background via canPaint : sans paint, pas de scroll events).
    */
-  async function scrollExtract({ item, container = null, direction = "down", extract = "text", maxRounds = 40, stableRounds = 2, waitMs = 1200, limit = 3000, offset = 0 } = {}) {
+  async function scrollExtract({ item, container = null, direction = "down", extract = "text", maxRounds = 40, stableRounds = 2, waitMs = 1200, limit = 3000, offset = 0, loadMore = null } = {}) {
     if (!item || typeof item !== "string") throw new Error("'item' requis : sélecteur CSS des lignes à extraire.");
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const dir = direction === "up" ? "up" : "down";
+    let dir = direction === "up" ? "up" : direction === "left" ? "left" : direction === "right" ? "right" : "down";
 
     const scopeOf = () => (container ? document.querySelector(container) : null);
     let scroller = scopeOf();
@@ -688,7 +691,10 @@
       const first = document.querySelector(item);
       if (!first) return { items: [], count: 0, total: 0, rounds: 0, hasMore: false, container: "aucun (sélecteur sans match)", direction: dir };
       scroller = first.parentElement;
-      while (scroller && !(scroller.scrollHeight - scroller.clientHeight > 40 && scroller.clientHeight > 40)) {
+      const scrollable = (el) =>
+        (el.scrollHeight - el.clientHeight > 40 && el.clientHeight > 40) ||
+        (el.scrollWidth - el.clientWidth > 40 && el.clientWidth > 40);
+      while (scroller && !scrollable(scroller)) {
         scroller = scroller.parentElement;
       }
       if (!scroller || scroller === document.body || scroller === document.documentElement) scroller = document.scrollingElement;
@@ -726,43 +732,100 @@
       return added;
     };
 
-    const startTop = scroller.scrollTop;
-    const atEnd = () => (dir === "down"
-      ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
-      : scroller.scrollTop <= 2);
+    // Axe effectif + bascule automatique : une direction verticale sur un conteneur à scroll
+    // horizontal (ou l'inverse) partirait dans le vide ; on bascule et on reporte la direction réelle.
+    const canV = scroller.scrollHeight - scroller.clientHeight > 2;
+    const canH = scroller.scrollWidth - scroller.clientWidth > 2;
+    const vertical = dir === "down" || dir === "up";
+    if (vertical && !canV && canH) dir = dir === "up" ? "left" : "right";
+    if (!vertical && !canH && canV) dir = dir === "left" ? "up" : "down";
+    const horiz = dir === "left" || dir === "right";
+    const forward = dir === "down" || dir === "right";
+    const pos = () => (horiz ? scroller.scrollLeft : scroller.scrollTop);
+    const span = () => (horiz ? scroller.clientWidth || 600 : scroller.clientHeight || 600);
+    const full = () => (horiz ? scroller.scrollWidth : scroller.scrollHeight);
+    const setPos = (v) => { if (horiz) scroller.scrollLeft = v; else scroller.scrollTop = v; };
+    const startPos = pos();
+    const atEnd = () => (forward ? pos() + span() >= full() - 2 : pos() <= 2);
     // Balayage déterministe : on part d'un bout pour tout couvrir en un appel.
-    scroller.scrollTop = dir === "down" ? 0 : scroller.scrollHeight;
+    setPos(forward ? 0 : full());
     await sleep(150);
+
+    // Attente réactive : un MutationObserver signale l'arrivée de contenu (dirty) au lieu d'un
+    // polling aveugle. On ne re-collecte (coûteux : innerText avec layout) que sur mutation ;
+    // les tranches calmes se contentent de la comparaison de taille (pas chère).
+    let dirty = true;
+    let lastMut = Date.now();
+    const observer = new MutationObserver(() => { dirty = true; lastMut = Date.now(); });
+    // Scroll natif vs fenêtres bridées : un scroll programmé ne déclenche son événement que si
+    // la page peint vraiment (onglet actif MAIS fenêtre occultée = bridé aussi). On écoute le
+    // scroll natif ; s'il ne vient pas sous 100 ms, on rejoue un événement scroll synthétique
+    // (atteint les listeners du monde principal : même DOM partagé). Sans ça, les listes ne
+    // chargent jamais et l'extraction s'arrête au premier écran dès que l'utilisateur travaille.
+    let nativeScroll = false;
+    const onScroll = () => { nativeScroll = true; };
+    const SETTLE_MS = 250; // calme après nouveauté avant de conclure le tour
+    const FAST_MS = 300; // hors du bout sans nouveauté : on avance vite
+    const settle = async (before, sizeBefore) => {
+      const t0 = Date.now();
+      let seen = false;
+      let syntheticDone = false;
+      for (;;) {
+        await sleep(50);
+        const now = Date.now();
+        if (!syntheticDone && !nativeScroll && now - t0 >= 100) {
+          syntheticDone = true;
+          try { scroller.dispatchEvent(new Event("scroll")); } catch {}
+        }
+        if (dirty) { dirty = false; collect(); }
+        if (items.length > before || full() !== sizeBefore) seen = true;
+        if (seen && now - lastMut >= SETTLE_MS) break; // contenu arrivé et stabilisé
+        if (!seen && !atEnd() && now - t0 >= FAST_MS) break; // rien ne vient : avance vite
+        if (now - t0 >= waitMs) break; // patience épuisée (mutations permanentes : borné)
+      }
+      collect();
+    };
 
     let rounds = 0;
     let endStable = 0; // tours sans nouveauté AU BOUT (le lazy-load a droit à stableRounds chances)
     let stuck = 0; // tours sans nouveauté ET sans avance du scroll (sécurité anti-boucle)
     let lastNew = 0;
+    let loadMoreClicks = 0;
+    let loadMoreDone = !loadMore;
+    const clickLoadMore = () => {
+      if (loadMoreDone || loadMoreClicks >= Math.max(1, maxRounds)) return false;
+      const btn = document.querySelector(loadMore);
+      const visible = !!btn && !!(btn.offsetWidth || btn.offsetHeight || (btn.getClientRects && btn.getClientRects().length));
+      const disabled = !btn || btn.disabled === true || (btn.getAttribute && btn.getAttribute("aria-disabled") === "true");
+      if (!btn || !visible || disabled) { loadMoreDone = true; return false; }
+      btn.click();
+      loadMoreClicks++;
+      return true;
+    };
     try {
+      observer.observe(root, { childList: true, subtree: true, characterData: true });
+      scroller.addEventListener("scroll", onScroll);
       for (let i = 0; i < maxRounds; i++) {
         rounds++;
         const before = items.length;
-        const shBefore = scroller.scrollHeight;
+        const sizeBefore = full();
         collect();
-        const step = Math.max(50, scroller.clientHeight || 600);
-        const topBefore = scroller.scrollTop;
-        scroller.scrollTop += dir === "down" ? step : -step;
-        // Attente intelligente, pas un sleep fixe : si ça charge (nouveaux items, hauteur changée),
-        // patience complète (waitMs) ; si rien ne bouge hors du bout, on avance vite (300 ms) ;
-        // au bout, patience complète (le lazy-load final peut être lent).
-        // Avancer vite ne perd rien sur les listes par ajout : les lignes ajoutées restent dans le
-        // DOM et sont collectées au tour suivant.
-        let moved = false;
-        const t0 = Date.now();
-        while (Date.now() - t0 < waitMs) {
-          await sleep(120);
-          collect();
-          if (items.length > before || scroller.scrollHeight !== shBefore) moved = true;
-          if (moved || atEnd()) continue;
-          if (Date.now() - t0 >= 300) break;
+        const step = Math.max(50, span());
+        const posBefore = pos();
+        nativeScroll = false;
+        setPos(pos() + (forward ? step : -step));
+        await settle(before, sizeBefore);
+        let fresh = items.length - before;
+        // Listes à bouton : quand le scroll ne rapporte rien, on clique « charger plus »
+        // puis on attend comme après un scroll (même settle réactif).
+        if (fresh === 0 && !loadMoreDone) {
+          const beforeClick = items.length;
+          const sizeBeforeClick = full();
+          if (clickLoadMore()) {
+            await settle(beforeClick, sizeBeforeClick);
+            fresh = items.length - before;
+          }
         }
-        collect();
-        const fresh = items.length - before;
         lastNew = fresh;
         if (atEnd()) {
           endStable = fresh === 0 ? endStable + 1 : 0;
@@ -772,11 +835,13 @@
         }
         // Pas de break sur « stable » hors du bout : au milieu de la liste, l'absence de nouveauté
         // veut juste dire qu'on n'a pas encore atteint le déclencheur de chargement.
-        stuck = scroller.scrollTop === topBefore && fresh === 0 ? stuck + 1 : 0;
+        stuck = pos() === posBefore && fresh === 0 ? stuck + 1 : 0;
         if (stuck >= Math.max(2, stableRounds)) break;
       }
     } finally {
-      scroller.scrollTop = startTop;
+      try { observer.disconnect(); } catch {}
+      try { scroller.removeEventListener("scroll", onScroll); } catch {}
+      setPos(startPos);
     }
     const total = items.length;
     const hasMore = rounds >= maxRounds && lastNew > 0;
@@ -784,7 +849,7 @@
     const page = items.slice(start, start + Math.max(0, limit));
     return {
       items: page, count: page.length, total, rounds, hasMore, offset: start, limit,
-      container: describeScroller, direction: dir,
+      container: describeScroller, direction: dir, loadMoreClicks,
       truncatedByLimit: total > start + page.length,
     };
   }

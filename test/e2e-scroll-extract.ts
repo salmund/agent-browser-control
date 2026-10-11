@@ -6,6 +6,9 @@
  * 3. extract html.
  * 4. direction up sur la même liste chargée.
  * 5. Gros volume (500 lignes longues) : contenu complet en fichier JSON + aperçu.
+ * 6. loadMore : liste à bouton « charger plus » (5 x 10 lignes), clics comptés.
+ * 7. Scroll horizontal (direction right) + bascule auto d'axe (down demandé).
+ * 8. direction up sur liste NON chargée (pré-chargement au remontage) : 60 lignes.
  *
  * Lancer avec : node test/e2e-scroll-extract.ts (extension + démon actifs, Comet ouvert)
  */
@@ -28,6 +31,9 @@ const textOf = (res: unknown): string => {
 
 const rowsOf = (out: string): string[] =>
   out.split("\n").filter((l) => l.startsWith("- Ligne ")).map((l) => l.slice(2).trim());
+
+const rowsOfPrefix = (out: string, prefix: string): string[] =>
+  out.split("\n").filter((l) => l.startsWith(`- ${prefix} `)).map((l) => l.slice(2).trim());
 
 const created: number[] = [];
 try {
@@ -127,6 +133,119 @@ try {
   assert.strictEqual(parsed.items.length, 500, "500 items dans le fichier");
   assert.ok(parsed.items[0].includes("Grosse ligne 1"), "premier item intact");
   assert.ok(parsed.items[499].includes("Grosse ligne 500"), "dernier item intact");
+
+  console.log("\n7. Fixtures bouton / horizontal / remontée...");
+  await client.callTool({
+    name: "javascript",
+    arguments: {
+      tabId,
+      code: `(() => {
+        // Liste à bouton : 10 lignes + « charger plus » (4 clics -> 50 lignes, puis le bouton disparaît).
+        const bl = document.createElement("div");
+        bl.id = "btnlist";
+        document.body.appendChild(bl);
+        let bpage = 0;
+        const bAppend = () => {
+          for (let i = 1; i <= 10; i++) {
+            const d = document.createElement("div");
+            d.className = "btnrow";
+            d.textContent = "Bligne " + (bpage * 10 + i);
+            bl.appendChild(d);
+          }
+          bpage++;
+        };
+        bAppend();
+        const more = document.createElement("button");
+        more.id = "morebtn";
+        more.textContent = "Charger plus";
+        document.body.appendChild(more);
+        more.addEventListener("click", () => {
+          if (bpage < 5) bAppend();
+          if (bpage >= 5) more.remove();
+        });
+        // Scroll horizontal : 5 pages de 10, déclenchées près du bord droit.
+        const hz = document.createElement("div");
+        hz.id = "hlist";
+        hz.style.cssText = "width:400px;overflow-x:auto;white-space:nowrap;margin-top:20px;";
+        document.body.appendChild(hz);
+        let hpage = 0, hpending = false;
+        const hAppend = () => {
+          for (let i = 1; i <= 10; i++) {
+            const d = document.createElement("div");
+            d.className = "hrow";
+            d.style.cssText = "display:inline-block;width:100px;height:40px;";
+            d.textContent = "Hligne " + (hpage * 10 + i);
+            hz.appendChild(d);
+          }
+          hpage++;
+          hpending = false;
+        };
+        hAppend();
+        hz.addEventListener("scroll", () => {
+          if (hpending || hpage >= 5) return;
+          if (hz.scrollLeft + hz.clientWidth < hz.scrollWidth - 40) return;
+          hpending = true;
+          hAppend();
+        });
+        // Remontée non chargée : 51..60 affichées, pré-chargement par 10 vers le haut (60 lignes).
+        const up = document.createElement("div");
+        up.id = "uplist";
+        up.style.cssText = "height:300px;overflow-y:auto;margin-top:20px;";
+        document.body.appendChild(up);
+        let upLow = 46, upPending = false;
+        const upBatch = (from, to) => {
+          const frag = document.createDocumentFragment();
+          for (let n = from; n <= to; n++) {
+            const d = document.createElement("div");
+            d.className = "uprow";
+            d.style.cssText = "height:30px;";
+            d.textContent = "Upligne " + n;
+            frag.appendChild(d);
+          }
+          return frag;
+        };
+        up.appendChild(upBatch(46, 60));
+        up.scrollTop = up.scrollHeight;
+        up.addEventListener("scroll", () => {
+          if (upPending || upLow <= 1) return;
+          if (up.scrollTop > 40) return;
+          upPending = true;
+          up.prepend(upBatch(Math.max(1, upLow - 10), upLow - 1));
+          upLow = Math.max(1, upLow - 10);
+          upPending = false;
+        });
+        return "fixtures2-ok";
+      })()`,
+    },
+  });
+
+  console.log("\n8. loadMore : liste à bouton en un appel...");
+  const btn = textOf(await client.callTool({ name: "scroll_extract", arguments: { tabId, item: ".btnrow", loadMore: "#morebtn" } }));
+  console.log(btn.split("\n").slice(0, 2).join("\n"));
+  assert.ok(btn.includes("50 item(s) au total"), "5 x 10 lignes via le bouton");
+  assert.ok(btn.includes("4 clic(s)"), "4 clics « charger plus » comptés");
+  const btnRows = rowsOfPrefix(btn, "Bligne");
+  assert.strictEqual(btnRows.length, 50, "50 lignes renvoyées");
+  assert.strictEqual(new Set(btnRows).size, 50, "aucun doublon");
+  assert.strictEqual(btnRows[0], "Bligne 1", "ordre : première");
+  assert.strictEqual(btnRows[49], "Bligne 50", "ordre : dernière");
+
+  console.log("\n9. Scroll horizontal + bascule auto d'axe...");
+  const hz = textOf(await client.callTool({ name: "scroll_extract", arguments: { tabId, item: ".hrow", direction: "right" } }));
+  console.log(hz.split("\n").slice(0, 2).join("\n"));
+  assert.ok(hz.includes("50 item(s) au total"), "5 x 10 lignes horizontales");
+  assert.ok(hz.includes("div#hlist"), "conteneur horizontal auto-détecté");
+  const hzSwitch = textOf(await client.callTool({ name: "scroll_extract", arguments: { tabId, item: ".hrow", direction: "down" } }));
+  assert.ok(hzSwitch.includes("50 item(s) au total"), "bascule auto : down -> axe horizontal");
+  assert.ok(hzSwitch.includes(", right,"), "direction réelle reportée");
+
+  console.log("\n10. direction up sur liste non chargée...");
+  const t0 = Date.now();
+  const upFresh = textOf(await client.callTool({ name: "scroll_extract", arguments: { tabId, item: ".uprow", direction: "up" } }));
+  console.log(`remontée non chargée en ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  assert.ok(upFresh.includes("60 item(s) au total"), "6 x 10 lignes remontées");
+  const upRows = rowsOfPrefix(upFresh, "Upligne");
+  assert.strictEqual(new Set(upRows).size, 60, "60 lignes distinctes");
 
   console.log("\n✅ TOUS LES TESTS E2E DE SCROLL_EXTRACT ONT RÉUSSI !");
 } finally {
