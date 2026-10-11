@@ -7,7 +7,7 @@
 import "../extension/js-eval.js";
 import assert from "node:assert";
 
-const J = globalThis.AbcJsEval;
+const J = (globalThis as Record<string, any>).AbcJsEval;
 assert.ok(J, "js-eval chargé");
 
 // const/let redéclarés -> isole dans un bloc (la complétion reste la dernière expression).

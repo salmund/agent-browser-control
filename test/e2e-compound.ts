@@ -87,13 +87,20 @@ try {
   console.log("Sortie scroll avec diff :\n" + scrollText.slice(0, 350) + "...\n");
   assert.ok(scrollText.includes("Défilement down"), "Confirmation du défilement");
 
-  // 4. waitDomSettle ne laisse aucune trace dans la page (observer déconnecté, globales supprimées)
+  // 4. waitDomSettle ne laisse aucune trace dans la page (observer déconnecté, globales supprimées).
+  // Sonde réessayée 4 fois : sous charge (suite complète, PC occupé), le nettoyage du scroll
+  // précédent peut ne pas être visible à la première lecture. Un résidu persistant échoue toujours.
   console.log("\n4. Test nettoyage waitDomSettle...");
-  const probeRes = await client.callTool({
-    name: "javascript",
-    arguments: { tabId: createdTabId, code: "typeof window.__abcObserver + '/' + typeof window.__abcLastMutation" },
-  });
-  const probeText = (probeRes.content as { type: string; text: string }[])[0].text;
+  let probeText = "";
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const probeRes = await client.callTool({
+      name: "javascript",
+      arguments: { tabId: createdTabId, code: "typeof window.__abcObserver + '/' + typeof window.__abcLastMutation" },
+    });
+    probeText = (probeRes.content as { type: string; text: string }[])[0].text;
+    if (probeText.includes("undefined/undefined")) break;
+    await new Promise((r) => setTimeout(r, 400));
+  }
   assert.ok(probeText.includes("undefined/undefined"), `Globales __abc* nettoyées (reçu : ${probeText.slice(0, 80)})`);
 
   // 5. inAllFrames multi-frame : iframe injectée, arbre principal + section iframe.

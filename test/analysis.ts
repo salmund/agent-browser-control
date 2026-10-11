@@ -92,7 +92,7 @@ api = setSiteRoute(api, "kdp.amazon.com", "contact", "https://kdp.amazon.com/fr_
 assert.strictEqual(getSiteRoutes(api["kdp.amazon.com"])["contact"], "https://kdp.amazon.com/fr_FR/contact-us/email");
 
 // Rétrocompatibilité si un site stocke un tableau simple de SiteCall[]
-let legacy = { "kdp.amazon.com": [{ name: "notes", method: "GET", path: "/notes", updated: "2026-10-03" }] };
+let legacy: Record<string, SiteEntry> = { "kdp.amazon.com": [{ name: "notes", method: "GET", path: "/notes", updated: "2026-10-03" }] };
 legacy = setSiteRoute(legacy, "kdp.amazon.com", "bookshelf", "https://kdp.amazon.com/fr_FR/bookshelf");
 assert.strictEqual(getSiteRoutes(legacy["kdp.amazon.com"])["bookshelf"], "https://kdp.amazon.com/fr_FR/bookshelf");
 
@@ -215,7 +215,8 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(getSiteCallsForHost(brief, "autre.fr"), []);
 const txt = formatSiteBrief(brief, "www.example.com");
-assert.ok(txt?.startsWith("Playbook www.example.com (1 route, 1 appel, 1 note) :"), "entête du brief");
+assert(txt, "brief présent");
+assert.ok(txt.startsWith("Playbook www.example.com (1 route, 1 appel, 1 note) :"), "entête du brief");
 assert.ok(txt.includes("« suivi »") && txt.includes("https://www.example.com/suivi"), "route citée");
 assert.ok(txt.includes("GET /notes"), "appel cité");
 assert.ok(txt.includes("Cliquer même origine."), "note citée");

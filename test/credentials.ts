@@ -18,7 +18,7 @@ import {
   validateFills,
 } from "../server/credentials.ts";
 
-const C = globalThis.AbcSlotsCrypto;
+const C = (globalThis as Record<string, any>).AbcSlotsCrypto;
 assert.ok(C, "slots-crypto chargé");
 
 // Chiffrement : aller-retour.
@@ -73,7 +73,7 @@ assert.ok(!hostCovered("", "univ-rouen.fr"));
 const slot = { hosts: ["univ-rouen.fr"] };
 assert.ok(scopeAllows("sso.univ-rouen.fr", slot));
 assert.ok(!scopeAllows("banque.fr", slot));
-assert.ok(scopeError("banque.fr", { id: "sso", hosts: ["univ-rouen.fr"] }).includes("hors périmètre"));
+assert.ok(scopeError("banque.fr", { id: "sso", label: "sso", hosts: ["univ-rouen.fr"], policy: "ask", created: "" }).includes("hors périmètre"));
 
 // Entrées.
 assert.ok(validateFills([{ ref: "ref_1", slot: "sso" }]).ok);
@@ -88,7 +88,7 @@ const outputs = [
   fillResult("ref_2", "sso"),
   activitySummary([{ ref: "ref_1", slot: "sso" }, { ref: "ref_2", slot: "sso" }], "ref_9"),
   JSON.stringify(auditLine("agent-test", [{ ref: "ref_1", slot: "sso" }])),
-  scopeError("banque.fr", { id: "sso", hosts: ["x.fr"], policy: "ask", created: "" }),
+  scopeError("banque.fr", { id: "sso", label: "sso", hosts: ["x.fr"], policy: "ask", created: "" }),
 ];
 assert.deepStrictEqual(leaksSecret(outputs, [secret]), [], "aucune sortie ne contient le secret");
 assert.ok(outputs.join(" ").includes('"sso"'), "le slot reste identifiable");

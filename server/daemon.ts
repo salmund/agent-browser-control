@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
-import { CONFIG_DIR, HOST, PORT, getToken, type CallRequest, type CallResult } from "./common.ts";
+import { CONFIG_DIR, HOST, PORT, getToken, normalizeSettings, type CallRequest, type CallResult, type UserSettings } from "./common.ts";
 import {
   addSiteNote,
   deleteSiteCall,
@@ -29,6 +29,7 @@ import {
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
+import { LOG_GENERATIONS, LOG_MAX_BYTES, OUTPUT_MAX_AGE_MS, purgeOlderThan, rotateFile } from "./housekeeping.ts";
 import { appendEntry, bodiesText, bodyText, clearTab, closeTab, deleteSaved, exportHar, listText, purgeStale, readEntries, savedRecordings, setKeep, statusText, type HarEntry } from "./har.ts";
 
 const VERSION = "0.5.0";
@@ -46,14 +47,13 @@ let extension: WebSocket | null = null;
  * démon, les agents voient le dernier réglage connu sans attendre que l'extension se reconnecte.
  */
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
-let settings: { scriptsEnabled: boolean } = loadSettings();
+let settings: UserSettings = loadSettings();
 
-function loadSettings() {
+function loadSettings(): UserSettings {
   try {
-    const saved = JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
-    return { scriptsEnabled: saved.scriptsEnabled === true };
+    return normalizeSettings(JSON.parse(readFileSync(SETTINGS_FILE, "utf8")));
   } catch {
-    return { scriptsEnabled: false };
+    return normalizeSettings(undefined);
   }
 }
 let nextId = 1;
@@ -573,13 +573,21 @@ function saveAttachedFile(result: CallResult): CallResult {
   return result;
 }
 
-// HAR abandonnés (navigateur fermé sans fermer l'onglet) : purgés au démarrage puis toutes les heures.
+// Ménage (HAR abandonnés, rotation du journal, sorties de plus de 30 jours) : au démarrage puis toutes les heures.
+function housekeep(): void {
+  try {
+    purgeStale();
+  } catch {}
+  if (rotateFile(LOG_FILE, LOG_MAX_BYTES, LOG_GENERATIONS)) log({ event: "log_rotated", file: LOG_FILE });
+  const purged = purgeOlderThan(OUTPUT_DIR, OUTPUT_MAX_AGE_MS);
+  if (purged.length) log({ event: "outputs_purged", count: purged.length });
+}
 try {
-  purgeStale();
+  housekeep();
 } catch {}
 setInterval(() => {
   try {
-    purgeStale();
+    housekeep();
   } catch {}
 }, 3600_000).unref();
 
@@ -621,7 +629,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     if (msg.type === "settings") {
-      settings = { scriptsEnabled: msg.settings?.scriptsEnabled === true };
+      settings = normalizeSettings(msg.settings);
       try {
         writeFileSync(SETTINGS_FILE, JSON.stringify(settings));
       } catch {}
