@@ -467,10 +467,17 @@
 
   /** Digest numérique compact de la page (auto-diff entre étapes batch) : URL, titre, volume de texte, interactifs. */
   function pageDigest() {
+    // formLen : innerText ignore les valeurs des champs ; sans lui, une saisie est « inchangée ».
+    // (Limite : cases à cocher et listes déroulantes ne sont pas vues ; leur effet passe par la soumission.)
+    let formLen = 0;
+    try {
+      for (const el of document.querySelectorAll("input,textarea")) formLen += (el.value || "").length;
+    } catch {}
     return {
       url: location.href,
       title: (document.title || "").slice(0, 80),
       textLen: document.body ? (document.body.innerText || "").length : 0,
+      formLen,
       interactive: document.querySelectorAll("a[href],button,input,select,textarea,option,[role=button],[onclick],[tabindex]").length,
     };
   }

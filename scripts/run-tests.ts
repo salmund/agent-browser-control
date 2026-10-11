@@ -30,6 +30,7 @@ const E2E = [
   "e2e-computer-steps",
   "e2e-replay",
   "e2e-site-brief",
+  "e2e-action-effect",
 ].map((t) => ({ name: `test/${t}`, cmd: process.execPath, args: [`test/${t}.ts`] }));
 
 const mode = process.argv[2] ?? "";

@@ -1383,6 +1383,7 @@ async function formInput(agent, args) {
   await bringToFront(tab);
   const items = Array.isArray(fields) && fields.length ? fields : (ref !== undefined ? [{ ref, value }] : []);
   if (!items.length && !submitRef) throw new Error("Fournir 'fields' (liste de {ref, value}) ou 'ref' + 'value'.");
+  const before = await inPage(tabId, "pageDigest").catch(() => null);
 
   const results = [];
   for (const item of items) {
@@ -1410,6 +1411,7 @@ async function formInput(agent, args) {
   const summaryRefs = items.map((i) => i.ref).join(", ");
   await recordFrame(tabId, `form_input ${summaryRefs}${submitRef ? ` -> ${submitRef}` : ""}`);
   const baseRes = ok(text((results.join("\n") + submitMsg).trim()));
+  await appendActionEffect(tabId, baseRes, before);
   if (args.snapshot || args.then || args.diff) {
     return attachActionSnapshot(agent, tabId, args, baseRes);
   }
@@ -1918,7 +1920,10 @@ async function computer(agent, args) {
   const { tabId } = args;
   const tab = await assertOwned(agent, tabId);
   if (Array.isArray(args.steps) && args.steps.length) return runSteps(agent, tab, args);
+  const wantEffect = args.action !== "screenshot"; // une lecture ne change rien : pas de constat
+  const before = wantEffect ? await inPage(tabId, "pageDigest").catch(() => null) : null;
   const res = await computerAction(agent, tab, args);
+  if (wantEffect) await appendActionEffect(tabId, res, before);
   if (args.snapshot || args.then || args.diff) {
     return attachActionSnapshot(agent, tabId, args, res);
   }
@@ -1975,9 +1980,35 @@ function formatDelta(a, b) {
   if (a.title !== b.title) parts.push(`titre → « ${(b.title || "").slice(0, 40)} »`);
   const dt = b.textLen - a.textLen;
   if (dt) parts.push(`${dt > 0 ? "+" : ""}${dt} car.`);
+  const df = (b.formLen || 0) - (a.formLen || 0);
+  if (df) parts.push(`champs ${df > 0 ? "+" : ""}${df} car.`);
   const di = b.interactive - a.interactive;
   if (di) parts.push(`${di > 0 ? "+" : ""}${di} interactifs`);
   return parts.length ? parts.join(", ") : "inchangé";
+}
+
+/**
+ * Effet constaté, gratuit : digest avant/après chaque action, sans tour LLM.
+ * L'agent n'a plus à relire la page « pour voir si ça a marché » : navigation,
+ * contenu apparu/disparu et interactifs sont constatés dans la réponse reçue.
+ * Inopérant si la réponse n'a pas de partie texte (captures : pas de constat).
+ */
+async function appendActionEffect(tabId, res, before) {
+  const first = res.content.find((c) => c.type === "text");
+  if (!first || first.type !== "text") return res;
+  // Navigation partie avec le clic : attendre la page prête pour constater le bon état
+  // (sinon le digest lit l'ancienne page). Sans navigation : une seule lecture, pas d'attente.
+  await sleep(120); // laisse aussi aux transitions le temps de s'amorcer (menus, accordéons)
+  try {
+    const tabNow = await chrome.tabs.get(tabId).catch(() => null);
+    if (tabNow && tabNow.status === "loading") {
+      await waitForReady(tabId, { assumeNavigated: true }).catch(() => {});
+    }
+  } catch {}
+  const after = await inPage(tabId, "pageDigest").catch(() => null);
+  const delta = formatDelta(before, after);
+  first.text += `\nEffet : ${delta}${delta.endsWith(".") ? "" : "."}`;
+  return res;
 }
 
 async function computerAction(agent, tab, args) {

@@ -45,11 +45,11 @@ Principes :
 | `tabs_create` / `tabs_close` | Ouvre / ferme un onglet dans le groupe de l'agent ; `snapshot: true` renvoie l'arbre interactif au chargement |
 | `tabs_cleanup` | Ferme les onglets inactifs (seuil `olderThanMinutes`, `dryRun` pour prévisualiser ; actif, épinglé, son et activité inconnue protégés) |
 | `navigate` | URL, `back`, `forward`, `reload` ; `snapshot: true` renvoie l'arbre dès le chargement |
-| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` ; `snapshot: true` ou `then: "diff"` pour enchaîner sans tour LLM |
+| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` ; `snapshot: true` ou `then: "diff"` pour enchaîner sans tour LLM ; effet constaté (digest avant/après) dans chaque réponse |
 | `read_page` | Arbre d'accessibilité compact avec `ref` stables (`ref_12`) ; filtre `interactive` |
 | `find` | Recherche d'éléments par texte / rôle / sélecteur (sans LLM) ; `scan` balaye les listes virtualisées |
 | `get_page_text` | Texte principal de la page (type Readability) |
-| `form_input` | Remplit un champ / select / checkbox par `ref` ; saisie groupée (`fields`) et soumission (`submitRef`) en un appel |
+| `form_input` | Remplit un champ / select / checkbox par `ref` ; saisie groupée (`fields`) et soumission (`submitRef`) en un appel ; effet constaté dans la réponse |
 | `javascript` | Évalue du JS dans la page (via CDP `Runtime.evaluate`) |
 | `read_console_messages` | Logs console, filtre regex |
 | `read_network_requests` | Requêtes réseau, filtre regex |

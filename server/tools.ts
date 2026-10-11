@@ -144,7 +144,9 @@ export const TOOLS: Tool[] = [
       "élément (modale, bannière) est refusé avec le diagnostic, au lieu de partir dans le vide.\n" +
       "steps : liste d'actions en un appel (ex. [{action: 'scroll_to', ref}, {action: 'wait', duration: 1}]) : " +
       "une seule prise d'onglet, digest numérique (URL, titre, volume, interactifs) avant/après chaque étape, " +
-      "arrêt à la première erreur. 'screenshot' interdit en étape ; snapshot/then/diff s'appliquent à la fin.",
+      "arrêt à la première erreur. 'screenshot' interdit en étape ; snapshot/then/diff s'appliquent à la fin.\n" +
+      "Chaque réponse embarque l'effet constaté (digest avant/après : navigation, contenu, champs, interactifs) : " +
+      "inutile de relire la page pour vérifier, sauf besoin du détail.",
     inputSchema: {
       type: "object",
       properties: {
@@ -367,7 +369,8 @@ export const TOOLS: Tool[] = [
     description:
       "Définit directement la valeur d'un champ par ref : texte, select (valeur ou libellé de l'option), " +
       "checkbox / radio (true / false). Permet aussi la saisie groupée via 'fields' (liste de {ref, value}) " +
-      "avec validation optionnelle par un clic sur 'submitRef' en un seul appel (ex. formulaire complet + validation).",
+      "avec validation optionnelle par un clic sur 'submitRef' en un seul appel (ex. formulaire complet + validation). " +
+      "La réponse embarque l'effet constaté (digest avant/après) : inutile de relire pour vérifier.",
     inputSchema: {
       type: "object",
       properties: {
