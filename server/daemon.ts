@@ -15,11 +15,14 @@ import {
   deleteSiteNote,
   deleteSiteRoute,
   deriveSiteCall,
+  formatMemorySuggestion,
+  formatSiteBrief,
   getSiteNotes,
-  getSiteNotesForHost,
+  hostHasMemory,
   loadSiteApi,
   setSiteCall,
   setSiteRoute,
+  shouldSuggestMemory,
   siteApiPath,
   type SiteEntry,
 } from "./analysis.ts";
@@ -146,7 +149,8 @@ const server = createServer(async (req, res) => {
     const local = localTool(call);
     const result = local
       ? await local.catch((err) => errorResult(`${call.tool} : ${err instanceof Error ? err.message : err}`))
-      : attachSiteNotes(call, harFallback(call, runAttachedSiteApi(runAttachedHar(await forward(call)))));
+      : maybeSuggestMemory(call, attachSiteBrief(call, harFallback(call, runAttachedSiteApi(runAttachedHar(await forward(call))))));
+    trackTabCall(call, result);
     log({ agent: call.agent, tool: call.tool, args: redact(call), ms: Date.now() - started, error: !!result.isError });
     return sendJson(res, 200, result);
   }
@@ -383,7 +387,7 @@ function siteApiLocal(args: Record<string, unknown>): CallResult {
     const { api, added } = addSiteNote(readSiteApi(), site, text);
     if (!added) return reply(`Déjà noté pour ${site} (doublon ignoré).`);
     writeSiteApi(api);
-    return reply(`Noté pour ${site} : « ${text.trim().slice(0, 280)} »\nServi automatiquement à l'arrivée sur ce site (navigate, tabs_context).`);
+    return reply(`Noté pour ${site} : « ${text.trim().slice(0, 280)} »\nServi automatiquement à l'arrivée sur ce site (navigate, tabs_create, tabs_context).`);
   }
   if (action === "delete") {
     const site = String(args.site ?? "").trim();
@@ -444,11 +448,13 @@ function runAttachedSiteApi(result: CallResult): CallResult {
 }
 
 /**
- * À l'arrivée sur un site connu (navigate, tabs_context), joint son playbook à la
- * réponse : l'adaptation est servie, pas cherchée. Noms d'hôtes lus dans le texte.
+ * À l'arrivée sur un site connu (navigate, tabs_create, tabs_context), sert son
+ * brief EN TÊTE de réponse : routes d'abord (l'action la plus rentable), puis
+ * appels, puis notes. La mémoire est servie, pas cherchée. Noms d'hôtes lus
+ * dans le texte.
  */
-function attachSiteNotes(call: CallRequest, result: CallResult): CallResult {
-  if (call.tool !== "navigate" && call.tool !== "tabs_context") return result;
+function attachSiteBrief(call: CallRequest, result: CallResult): CallResult {
+  if (call.tool !== "navigate" && call.tool !== "tabs_create" && call.tool !== "tabs_context") return result;
   if (result.isError) return result;
   const first = result.content.find((c) => c.type === "text");
   if (!first || first.type !== "text") return result;
@@ -462,11 +468,74 @@ function attachSiteNotes(call: CallRequest, result: CallResult): CallResult {
   const api = readSiteApi();
   const blocks: string[] = [];
   for (const h of [...hosts].sort().slice(0, 3)) {
-    const notes = getSiteNotesForHost(api, h);
-    if (notes.length) blocks.push(`Mémoire ${h} :\n${notes.slice(0, 4).map((n) => `- ${n}`).join("\n")}`);
+    const brief = formatSiteBrief(api, h);
+    if (brief) blocks.push(brief);
   }
   if (!blocks.length) return result;
-  first.text += `\n\n${blocks.join("\n")}`;
+  first.text = `${blocks.join("\n")}\n\n${first.text}`;
+  return result;
+}
+
+// Activité par onglet (compteur de session du démon) : sert la suggestion de
+// mémorisation à la fermeture. host = dernier hôte navigué (navigate/tabs_create).
+const tabActivity = new Map<number, { agent: string; count: number; host: string | null }>();
+const memorySuggested = new Set<string>(); // hôtes déjà suggérés (pas de harcèlement).
+
+function trackTabCall(call: CallRequest, result?: CallResult): void {
+  const fromArgs = Number(call.args?.tabId);
+  if (Number.isInteger(fromArgs)) {
+    noteTabCall(fromArgs, call);
+    return;
+  }
+  // tabs_create porte l'URL mais pas encore le tabId : il est lu dans la réponse.
+  if (call.tool === "tabs_create" && !result?.isError && typeof call.args?.url === "string") {
+    const first = result?.content.find((c) => c.type === "text");
+    const id = first && first.type === "text" ? Number(first.text.match(/tabId\s+(\d+)/)?.[1]) : NaN;
+    if (Number.isInteger(id)) noteTabCall(id, call);
+  }
+}
+
+function noteTabCall(tabId: number, call: CallRequest): void {
+  let entry = tabActivity.get(tabId);
+  if (!entry) {
+    entry = { agent: call.agent, count: 0, host: null };
+    tabActivity.set(tabId, entry);
+  }
+  entry.count++;
+  if ((call.tool === "navigate" || call.tool === "tabs_create") && typeof call.args?.url === "string") {
+    try {
+      const u = new URL(call.args.url);
+      if (u.protocol === "http:" || u.protocol === "https:") entry.host = u.hostname;
+    } catch {}
+  }
+}
+
+/**
+ * À la fermeture d'un onglet au parcours riche (>= 8 actions) sur un site sans
+ * mémoire, suggère de mémoriser (route + note), une fois par hôte. tabs_cleanup
+ * purge les compteurs de l'agent sans suggérer (fermetures en masse).
+ */
+function maybeSuggestMemory(call: CallRequest, result: CallResult): CallResult {
+  if (call.tool === "tabs_cleanup" && !result.isError && !call.args?.dryRun) {
+    for (const [id, entry] of tabActivity) {
+      if (entry.agent === call.agent) tabActivity.delete(id);
+    }
+    return result;
+  }
+  if (call.tool !== "tabs_close" || result.isError) return result;
+  const tabId = Number(call.args?.tabId);
+  const entry = Number.isInteger(tabId) ? tabActivity.get(tabId) : undefined;
+  if (Number.isInteger(tabId)) tabActivity.delete(tabId);
+  if (!entry || !entry.host) return result;
+  const host = entry.host;
+  const alreadySuggested = memorySuggested.has(host);
+  if (!shouldSuggestMemory({ actions: entry.count, host, hasMemory: hostHasMemory(readSiteApi(), host), alreadySuggested })) {
+    return result;
+  }
+  memorySuggested.add(host);
+  const first = result.content.find((c) => c.type === "text");
+  if (!first || first.type !== "text") return result;
+  first.text += `\n\n${formatMemorySuggestion(host, entry.count)}`;
   return result;
 }
 

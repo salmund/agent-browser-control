@@ -69,7 +69,7 @@ Principes :
 | `pdf` | Export PDF de la page |
 | `downloads` | Liste / récupère les téléchargements |
 | `history_search` | Retrouve une page visitée (requête vide = récentes ; sites interdits exclus) |
-| `site_api` | Mémoire par site : routes + appels capturés du HAR, rejoués vite (list, save_call, save_route, note, delete) + playbook servi à l'arrivée |
+| `site_api` | Mémoire par site : routes + appels capturés du HAR, rejoués vite (list, save_call, save_route, note, delete) + brief (routes, appels, notes) servi en tête à l'arrivée (navigate, tabs_create, tabs_context) + suggestion de mémorisation à la fermeture d'un onglet riche |
 | `cdp_send` | Appel CDP brut (désactivé par défaut) |
 | `scroll_extract` | Extrait tous les items d'une liste à chargement progressif en un appel (scroll + collecte + attente intelligente + déduplication ; `direction: up` pour les historiques ; gros volume en fichier) |
 | `query` | Extraction structurée sans scroll : sélecteur CSS + projection + filtre + pagination (`countOnly` pour compter sans renvoyer) |

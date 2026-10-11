@@ -568,8 +568,9 @@ export const TOOLS: Tool[] = [
       "(tabId + requestId de network_har list, nom optionnel ; réenregistrer sous le même nom met à jour quand " +
       "le site change) ; 'save_route' mémorise un deep link (nom + URL sans jeton) ; 'delete' (site, nom, kind) " +
       "retire un appel, une route ou une note périmée. 'note' ajoute une ligne au playbook du site " +
-      "(comment il se comporte ; servi automatiquement à l'arrivée : navigate, tabs_context ; " +
+      "(comment il se comporte ; brief servi automatiquement en tête de réponse à l'arrivée : navigate, tabs_create, tabs_context ; " +
       "une note sous le domaine nu couvre ses sous-domaines : pinterest.com vaut pour www.pinterest.com). " +
+      "À la fermeture d'un onglet au parcours riche (8 actions ou plus) sans mémoire, le démon suggère de mémoriser. " +
       "Prochaine visite : list, puis navigate vers une route ou " +
       "http_request pour rejouer un appel, au lieu de tout redécouvrir en cliquant.",
     inputSchema: {

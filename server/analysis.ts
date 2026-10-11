@@ -202,16 +202,18 @@ export function setSiteRoute(
   const current = siteApi[site];
   let calls: SiteCall[] = [];
   let routes: Record<string, string> = {};
+  let notes: string[] = [];
   if (Array.isArray(current)) {
     calls = current;
   } else if (current && typeof current === "object") {
     calls = current.calls ?? [];
     routes = { ...(current.routes ?? {}) };
+    notes = [...(current.notes ?? [])];
   }
   routes[name] = url;
   return {
     ...siteApi,
-    [site]: { calls, routes },
+    [site]: notes.length ? { calls, routes, notes } : { calls, routes },
   };
 }
 
@@ -313,18 +315,127 @@ export function siteKeyCovers(host: string, key: string): boolean {
  * domaines parents, sans doublons (l'exact gagne en cas de recouvrement).
  */
 export function getSiteNotesForHost(api: Record<string, SiteEntry>, host: string): string[] {
-  const h = normSiteHost(host);
-  if (!h) return [];
-  const keys = Object.keys(api)
-    .filter((k) => siteKeyCovers(h, k))
-    .sort((a, b) => b.length - a.length);
   const out: string[] = [];
-  for (const k of keys) {
+  for (const k of coveringKeys(api, host)) {
     for (const n of getSiteNotes(api[k])) {
       if (!out.includes(n)) out.push(n);
     }
   }
   return out;
+}
+
+/** Clés couvrant un hôte, hôte exact d'abord puis domaines parents. */
+function coveringKeys(api: Record<string, SiteEntry>, host: string): string[] {
+  const h = normSiteHost(host);
+  if (!h) return [];
+  return Object.keys(api)
+    .filter((k) => siteKeyCovers(h, k))
+    .sort((a, b) => b.length - a.length);
+}
+
+function siteCalls(entry?: SiteEntry): SiteCall[] {
+  if (!entry) return [];
+  return Array.isArray(entry) ? entry : (entry.calls ?? []);
+}
+
+/**
+ * Routes applicables à un hôte : hôte exact d'abord, puis domaines parents
+ * (l'exact gagne en cas de même nom).
+ */
+export function getSiteRoutesForHost(
+  api: Record<string, SiteEntry>,
+  host: string,
+): { name: string; url: string }[] {
+  const out: { name: string; url: string }[] = [];
+  const seen = new Set<string>();
+  for (const k of coveringKeys(api, host)) {
+    for (const [name, url] of Object.entries(getSiteRoutes(api[k]))) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, url });
+    }
+  }
+  return out;
+}
+
+/**
+ * Appels applicables à un hôte : hôte exact d'abord, puis domaines parents
+ * (l'exact gagne en cas de même nom).
+ */
+export function getSiteCallsForHost(api: Record<string, SiteEntry>, host: string): SiteCall[] {
+  const out: SiteCall[] = [];
+  const seen = new Set<string>();
+  for (const k of coveringKeys(api, host)) {
+    for (const c of siteCalls(api[k])) {
+      if (seen.has(c.name)) continue;
+      seen.add(c.name);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+/** L'hôte a-t-il une mémoire (route, appel ou note, hôte exact ou parent) ? */
+export function hostHasMemory(api: Record<string, SiteEntry>, host: string): boolean {
+  for (const k of coveringKeys(api, host)) {
+    const entry = api[k];
+    if (siteCalls(entry).length) return true;
+    if (Object.keys(getSiteRoutes(entry)).length) return true;
+    if (getSiteNotes(entry).length) return true;
+  }
+  return false;
+}
+
+const BRIEF_ROUTES = 3;
+const BRIEF_CALLS = 3;
+const BRIEF_NOTES = 3;
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+
+/**
+ * Brief servi à l'arrivée sur un site connu : routes d'abord (l'action la
+ * plus rentable), puis appels, puis notes. null sans mémoire. Entête avec
+ * les totaux, corps borné.
+ */
+export function formatSiteBrief(api: Record<string, SiteEntry>, host: string): string | null {
+  const routes = getSiteRoutesForHost(api, host);
+  const calls = getSiteCallsForHost(api, host);
+  const notes = getSiteNotesForHost(api, host);
+  if (!routes.length && !calls.length && !notes.length) return null;
+  const parts: string[] = [];
+  if (routes.length) parts.push(plural(routes.length, "route", "routes"));
+  if (calls.length) parts.push(plural(calls.length, "appel", "appels"));
+  if (notes.length) parts.push(plural(notes.length, "note", "notes"));
+  const lines = [`Playbook ${normSiteHost(host)} (${parts.join(", ")}) :`];
+  for (const r of routes.slice(0, BRIEF_ROUTES)) lines.push(`→ « ${r.name} » : ${r.url}`);
+  for (const c of calls.slice(0, BRIEF_CALLS)) lines.push(`→ « ${c.name} » : ${c.method} ${c.path}`);
+  for (const n of notes.slice(0, BRIEF_NOTES)) lines.push(`- ${n}`);
+  return lines.join("\n");
+}
+
+/** Actions sur un onglet à partir desquelles un parcours est jugé « riche ». */
+export const RICH_TAB_MIN_ACTIONS = 8;
+
+/**
+ * Faut-il suggérer de mémoriser le parcours à la fermeture de l'onglet ?
+ * Jamais sous le seuil, sans hôte attribué, si le site a déjà une mémoire,
+ * ou si on l'a déjà suggéré (pas de harcèlement).
+ */
+export function shouldSuggestMemory(o: {
+  actions: number;
+  host: string;
+  hasMemory: boolean;
+  alreadySuggested: boolean;
+}): boolean {
+  return o.actions >= RICH_TAB_MIN_ACTIONS && !!normSiteHost(o.host) && !o.hasMemory && !o.alreadySuggested;
+}
+
+/** Suggestion de mémorisation, chiffrée et actionnable, à ignorer si usage unique. */
+export function formatMemorySuggestion(host: string, actions: number): string {
+  return (
+    `Parcours riche sur ${host} (${actions} actions) sans mémoire site_api : mémoriser pour la prochaine visite ? ` +
+    `site_api save_route (deep link sans jeton) + note (1 à 3 lignes de playbook). Ignorer si le parcours était à usage unique.`
+  );
 }
 
 const MAX_NOTES = 12;
@@ -376,14 +487,15 @@ export function deleteSiteCall(
   const current = siteApi[site];
   const calls = Array.isArray(current) ? [...current] : [...(current?.calls ?? [])];
   const routes = Array.isArray(current) ? {} : { ...(current?.routes ?? {}) };
+  const notes = Array.isArray(current) ? [] : [...(current?.notes ?? [])];
   const kept = calls.filter((c) => c.name !== name);
   if (kept.length === calls.length) return { api: siteApi, removed: false };
-  if (!kept.length && !Object.keys(routes).length) {
+  if (!kept.length && !Object.keys(routes).length && !notes.length) {
     const rest = { ...siteApi };
     delete rest[site];
     return { api: rest, removed: true };
   }
-  return { api: { ...siteApi, [site]: { calls: kept, routes } }, removed: true };
+  return { api: { ...siteApi, [site]: notes.length ? { calls: kept, routes, notes } : { calls: kept, routes } }, removed: true };
 }
 
 /** Supprime une route enregistrée ; removed=false si elle n'existait pas. */
@@ -397,12 +509,13 @@ export function deleteSiteRoute(
   const calls = [...(current.calls ?? [])];
   const routes = { ...current.routes };
   delete routes[name];
-  if (!calls.length && !Object.keys(routes).length) {
+  const notes = [...(current.notes ?? [])];
+  if (!calls.length && !Object.keys(routes).length && !notes.length) {
     const rest = { ...siteApi };
     delete rest[site];
     return { api: rest, removed: true };
   }
-  return { api: { ...siteApi, [site]: { calls, routes } }, removed: true };
+  return { api: { ...siteApi, [site]: notes.length ? { calls, routes, notes } : { calls, routes } }, removed: true };
 }
 
 /** Enregistre ou met à jour un appel d'API pour un site. */
@@ -414,18 +527,20 @@ export function setSiteCall(
   const current = siteApi[site];
   let calls: SiteCall[] = [];
   let routes: Record<string, string> = {};
+  let notes: string[] = [];
   if (Array.isArray(current)) {
     calls = [...current];
   } else if (current && typeof current === "object") {
     calls = [...(current.calls ?? [])];
     routes = { ...(current.routes ?? {}) };
+    notes = [...(current.notes ?? [])];
   }
   const idx = calls.findIndex((c) => c.name === call.name);
   if (idx >= 0) calls[idx] = call;
   else calls.push(call);
   return {
     ...siteApi,
-    [site]: { calls, routes },
+    [site]: notes.length ? { calls, routes, notes } : { calls, routes },
   };
 }
 

@@ -13,9 +13,14 @@ import {
   deleteSiteRoute,
   deriveSiteCall,
   formFieldNames,
+  formatMemorySuggestion,
+  formatSiteBrief,
+  getSiteCallsForHost,
   getSiteNotes,
   getSiteNotesForHost,
   getSiteRoutes,
+  getSiteRoutesForHost,
+  hostHasMemory,
   inferSchema,
   isSensitiveKey,
   loadSiteApi,
@@ -24,6 +29,7 @@ import {
   safeHeaders,
   setSiteCall,
   setSiteRoute,
+  shouldSuggestMemory,
   siteKeyCovers,
   type SiteEntry,
 } from "../server/analysis.ts";
@@ -133,6 +139,21 @@ assert.strictEqual(delRoute.removed, true);
 assert.deepStrictEqual(delRoute.api, {});
 assert.strictEqual(deleteSiteRoute(api2, "absent.fr", "home").removed, false);
 
+// Setters et suppressions d'appels/routes préservent les notes (pas de perte croisée).
+let keep: Record<string, SiteEntry> = {};
+keep = addSiteNote(keep, "mixte.fr", "garder moi.").api;
+keep = setSiteRoute(keep, "mixte.fr", "accueil", "https://mixte.fr/");
+assert.deepStrictEqual(getSiteNotes(keep["mixte.fr"]), ["garder moi."]);
+keep = setSiteCall(keep, "mixte.fr", { name: "a", method: "GET", path: "/", updated: "2026-10-11" });
+assert.deepStrictEqual(getSiteNotes(keep["mixte.fr"]), ["garder moi."]);
+const keepDelCall = deleteSiteCall(keep, "mixte.fr", "a");
+assert.strictEqual(keepDelCall.removed, true);
+assert.deepStrictEqual(getSiteNotes(keepDelCall.api["mixte.fr"]), ["garder moi."]);
+const keepDelRoute = deleteSiteRoute(keepDelCall.api, "mixte.fr", "accueil");
+assert.strictEqual(keepDelRoute.removed, true);
+assert.deepStrictEqual(getSiteNotes(keepDelRoute.api["mixte.fr"]), ["garder moi."]);
+assert.ok("mixte.fr" in keepDelRoute.api, "site avec notes seules survit");
+
 // Playbook : ajout (doublon ignoré, 280 car. max, 12 lignes max), lecture, suppression.
 assert.deepStrictEqual(getSiteNotes(undefined), []);
 assert.deepStrictEqual(getSiteNotes([{ name: "x", method: "GET", path: "/", updated: "2026-10-05" }]), []);
@@ -175,4 +196,62 @@ assert.deepStrictEqual(getSiteNotesForHost(wild, "www.pinterest.com"), [
   "Un seul chargement par session.",
 ]);
 
-console.log("analysis : OK (masquage, exports, décodeurs, site_api, routes, dérivation, suppressions, playbook)");
+// Brief site (point 1) : routes + appels + notes fusionnés (hôte exact puis parents, l'exact gagne).
+let brief: Record<string, SiteEntry> = {};
+brief = setSiteRoute(brief, "example.com", "suivi", "https://example.com/suivi");
+brief = setSiteRoute(brief, "www.example.com", "suivi", "https://www.example.com/suivi");
+brief = setSiteCall(brief, "example.com", { name: "notes", method: "GET", path: "/notes", updated: "2026-10-11" });
+brief = addSiteNote(brief, "example.com", "Cliquer même origine.").api;
+assert.deepStrictEqual(getSiteRoutesForHost(brief, "www.example.com"), [
+  { name: "suivi", url: "https://www.example.com/suivi" },
+]);
+assert.deepStrictEqual(getSiteRoutesForHost(brief, "fr.example.com"), [
+  { name: "suivi", url: "https://example.com/suivi" },
+]);
+assert.deepStrictEqual(getSiteRoutesForHost(brief, "autre.fr"), []);
+assert.deepStrictEqual(
+  getSiteCallsForHost(brief, "www.example.com").map((c) => c.name),
+  ["notes"],
+);
+assert.deepStrictEqual(getSiteCallsForHost(brief, "autre.fr"), []);
+const txt = formatSiteBrief(brief, "www.example.com");
+assert.ok(txt?.startsWith("Playbook www.example.com (1 route, 1 appel, 1 note) :"), "entête du brief");
+assert.ok(txt.includes("« suivi »") && txt.includes("https://www.example.com/suivi"), "route citée");
+assert.ok(txt.includes("GET /notes"), "appel cité");
+assert.ok(txt.includes("Cliquer même origine."), "note citée");
+assert.ok(txt.indexOf("« suivi »") < txt.indexOf("Cliquer même origine."), "routes avant notes");
+assert.strictEqual(formatSiteBrief(brief, "autre.fr"), null, "pas de brief sans mémoire");
+// Caps : totaux dans l'entête, corps borné.
+let big: Record<string, SiteEntry> = {};
+for (let i = 0; i < 5; i++) big = addSiteNote(big, "gros.fr", `note ${i}`).api;
+const bigTxt = formatSiteBrief(big, "gros.fr") ?? "";
+assert.ok(bigTxt.startsWith("Playbook gros.fr (5 notes) :"), "entête au pluriel sans partie vide");
+assert.ok(bigTxt.includes("note 0") && !bigTxt.includes("note 4"), "3 premières notes seulement");
+assert.strictEqual(hostHasMemory(brief, "www.example.com"), true);
+assert.strictEqual(hostHasMemory(brief, "autre.fr"), false);
+// Suggestion de mémorisation (point 2) : seuil, hôte requis, mémoire existante, déjà suggéré.
+assert.strictEqual(
+  shouldSuggestMemory({ actions: 8, host: "x.fr", hasMemory: false, alreadySuggested: false }),
+  true,
+);
+assert.strictEqual(
+  shouldSuggestMemory({ actions: 7, host: "x.fr", hasMemory: false, alreadySuggested: false }),
+  false,
+);
+assert.strictEqual(
+  shouldSuggestMemory({ actions: 20, host: "x.fr", hasMemory: true, alreadySuggested: false }),
+  false,
+);
+assert.strictEqual(
+  shouldSuggestMemory({ actions: 20, host: "x.fr", hasMemory: false, alreadySuggested: true }),
+  false,
+);
+assert.strictEqual(
+  shouldSuggestMemory({ actions: 20, host: "", hasMemory: false, alreadySuggested: false }),
+  false,
+);
+const sug = formatMemorySuggestion("x.fr", 12);
+assert.ok(sug.includes("x.fr") && sug.includes("12 actions"), "suggestion chiffrée");
+assert.ok(sug.includes("save_route") && sug.includes("note"), "suggestion actionnable");
+
+console.log("analysis : OK (masquage, exports, décodeurs, site_api, routes, dérivation, suppressions, playbook, brief, suggestion)");
