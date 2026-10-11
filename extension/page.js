@@ -146,6 +146,7 @@
     if (el.disabled || el.getAttribute("aria-disabled") === "true") parts.push("disabled");
     if (el.getAttribute("aria-expanded")) parts.push(`expanded=${el.getAttribute("aria-expanded")}`);
     if (el.getAttribute("aria-selected") === "true") parts.push("selected");
+    if (unreachableReason(el)) parts.push("(hors écran)");
     return parts.join(" ");
   }
 
@@ -158,17 +159,54 @@
   }
 
   /**
+   * Élément que même un scroll ne peut pas amener à l'écran : position fixe (le scroll ne déplace
+   * pas les fixes) avec le rectangle hors du viewport. Typique des boutons « charger plus » dont
+   * l'animation de sortie les gare à left:-9999px : cliquer dessus part dans le vide.
+   * Renvoie null, ou la raison lisible.
+   */
+  function unreachableReason(el) {
+    if (!(el instanceof Element)) return null;
+    const style = getComputedStyle(el);
+    if (style.display === "contents") return null;
+    if (style.position !== "fixed") return null;
+    const r = el.getBoundingClientRect();
+    const outside = r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight;
+    if (!outside) return null;
+    return `fixe hors écran (left: ${style.left}, top: ${style.top}, rect ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}×${Math.round(r.height)}, viewport ${innerWidth}×${innerHeight})`;
+  }
+
+  /** Diagnostic compact d'un élément pour expliquer un clic impossible. */
+  function clickDiagnostics(el) {
+    const style = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    const id = el.id ? `#${el.id}` : "";
+    const cls = typeof el.className === "string" && el.className.trim() ? `.${el.className.trim().split(/\s+/).slice(0, 2).join(".")}` : "";
+    return `${el.tagName.toLowerCase()}${id}${cls} (position: ${style.position}, display: ${style.display}, ` +
+      `visibility: ${style.visibility}, opacity: ${style.opacity}, ` +
+      `rect ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}×${Math.round(r.height)}, viewport ${innerWidth}×${innerHeight})`;
+  }
+
+  /**
    * viewport : seulement ce qui est à l'écran. diff : seulement ce qui a changé depuis la lecture
    * précédente avec les mêmes options. frame : lecture d'une iframe (null si minuscule ou vide).
    */
-  function readPage({ filter = "all", ref, viewport = false, diff = false, frame = false } = {}) {
+  function readPage({ filter = "all", ref, viewport = false, diff = false, frame = false, labels = false, include = null } = {}) {
     if (frame && (innerWidth < 30 || innerHeight < 30)) return null; // pixels de suivi, iframes cachées
     const interactiveOnly = filter === "interactive";
+    let includeSet = null;
+    if (include) {
+      try {
+        includeSet = new Set(document.querySelectorAll(include));
+      } catch {
+        throw new Error(`Sélecteur include invalide : ${JSON.stringify(include)}.`);
+      }
+    }
     const lines = [];
     let size = 0;
     let truncated = false;
 
     let lastText = null; // { depth, text } si la dernière ligne émise est du texte
+    let textChars = 0; // caractères de texte visibles rencontrés (distingue « vide » de « masqué »)
 
     function emitText(depth, t) {
       // Fusionne les fragments de texte consécutifs (ex. <p>un <strong>mot</strong> clé</p>).
@@ -197,6 +235,7 @@
       if (truncated) return;
       for (const child of node.childNodes) {
         if (child.nodeType === Node.TEXT_NODE) {
+          if (child.textContent) textChars += child.textContent.trim().length;
           if (!interactiveOnly) {
             const text = clean(child.textContent, 300);
             if (text) emitText(depth, text);
@@ -231,9 +270,15 @@
       const interactive = isInteractive(el, role);
       // Les images décoratives (sans nom) sont du bruit.
       const decorative = role === "img" && !interactive && !nameOf(el, role);
-      const shown = interactiveOnly ? interactive : (role !== null && !decorative) || interactive;
+      // labels:true : les éléments informatifs non interactifs porteurs d'un aria-label
+      // (messages de chat, tuiles riches) sont montrés avec leur nom ; include force une liste.
+      const labeled = !!labels && !interactive && !!el.getAttribute("aria-label")?.trim();
+      const included = !!includeSet?.has(el);
+      const shown = interactiveOnly
+        ? interactive || labeled || included
+        : (role !== null && !decorative) || interactive || labeled || included;
       if (shown) {
-        emit(depth, describe(el, role ?? "generic"));
+        emit(depth, describe(el, role ?? (labeled || included ? "labeled" : "generic")));
         if (!LEAF_ROLES.has(role)) walk(el, depth + 1);
       } else {
         walk(el, depth);
@@ -251,14 +296,9 @@
       ? "\n[Tronqué : utiliser filter='interactive', viewport=true ou ref pour cibler un sous-arbre.]"
       : "";
 
-    const key = JSON.stringify([filter, ref ?? null, viewport]);
+    const key = JSON.stringify([filter, ref ?? null, viewport, !!labels, include ?? null]);
     const previous = lastReads.get(key);
     lastReads.set(key, lines);
-    // En lecture interactive complète, cadrer ce que l'agent voit (et ce qui est masqué).
-    // Hors de `lines` pour ne pas polluer les diffs ; absent en mode diff (déjà résumé par +/-).
-    const hint = interactiveOnly && window.top === window && !(diff && previous)
-      ? `\nÉléments interactifs : ${lines.length}${truncated ? "+" : ""} (texte statique masqué, relire avec filter="all" pour tout voir)`
-      : "";
     if (diff && previous) {
       // Les refs sont stables d'une lecture à l'autre : une ligne identique = élément inchangé.
       const before = new Set(previous);
@@ -283,7 +323,25 @@
       });
       if (imgs.length) imagesBlock = `\n\nImages à l'écran (${imgs.length}) :\n${imgs.join("\n")}`;
     }
-    return `${header}${hint}\n\n${lines.join("\n") || "(aucun élément)"}${imagesBlock}${footer}${note}`;
+    // Constat, sans interprétation : rien n'a été rendu alors que le DOM est riche.
+    // Cas typique : page à squelette (conteneurs posés, contenu pas encore injecté).
+    let emptyNotice = "";
+    if (!frame && !ref && !lines.length && !imagesBlock && textChars < 20) {
+      const nodeCount = document.body ? document.body.querySelectorAll("*").length : 0;
+      if (nodeCount >= 150) {
+        emptyNotice =
+          `\n\nRien à lire : aucun élément et presque pas de texte visibles, alors que la page compte ${nodeCount} nœuds. ` +
+          `Le contenu est masqué, pas encore rendu (squelette), ou dessiné hors DOM (canvas/WebGL). ` +
+          `Attendre (wait_for) ou vérifier la console.`;
+      }
+    }
+    // En lecture interactive complète, cadrer ce que l'agent voit (et ce qui est masqué).
+    // Hors de `lines` pour ne pas polluer les diffs ; absent en mode diff (déjà résumé par +/-).
+    // Retiré quand l'arbre est vide à tort (emptyNotice) : « texte statique masqué » serait faux.
+    const hint = interactiveOnly && window.top === window && !(diff && previous) && !emptyNotice
+      ? `\nÉléments interactifs : ${lines.length}${truncated ? "+" : ""} (texte statique masqué, relire avec filter="all" pour tout voir)`
+      : "";
+    return `${header}${hint}\n\n${lines.join("\n") || "(aucun élément)"}${emptyNotice}${imagesBlock}${footer}${note}`;
   }
 
   /**
@@ -294,9 +352,37 @@
     const el = elementFor(ref);
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     const r = el.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) throw new Error(`Élément ${ref} sans dimensions (invisible ?).`);
+    if (r.width === 0 && r.height === 0) throw new Error(`Élément ${ref} sans dimensions (invisible ?). ${clickDiagnostics(el)}`);
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    // scrollIntoView ne déplace pas les éléments fixes : si le centre reste hors du viewport
+    // après le scroll, cliquer partirait dans le vide. Refuser avec un diagnostic net.
+    if (cx < -2 || cy < -2 || cx > innerWidth + 2 || cy > innerHeight + 2) {
+      const why = unreachableReason(el);
+      throw new Error(
+        `Élément ${ref} hors écran après scroll, clic impossible` +
+        (why ? ` (${why})` : ` (${clickDiagnostics(el)})`) +
+        " : la cible est masquée par la page (animation de sortie, onglet caché). Chercher un autre moyen (bouton visible, scroll de la liste).",
+      );
+    }
     const offset = await frameOffset();
-    return { x: Math.round(offset.x + r.left + r.width / 2), y: Math.round(offset.y + r.top + r.height / 2) };
+    return { x: Math.round(offset.x + cx), y: Math.round(offset.y + cy) };
+  }
+
+  /**
+   * Vérifie qu'un clic au point (x, y) atteindrait bien l'élément `ref` : l'élément sous le point
+   * doit être la cible, un de ses descendants ou un de ses ancêtres (clic qui remonte).
+   * L'overlay ABC (pointer-events:none) est invisible pour elementFromPoint : le test reste fiable
+   * même après le surlignage. Coordonnées du viewport de CETTE frame (refs principales uniquement).
+   */
+  function hitTest({ x, y, ref }) {
+    const el = elementFor(ref);
+    const hit = deepElementFromPoint(Math.round(x), Math.round(y));
+    if (hit && (hit === el || el.contains(hit) || hit.contains(el))) return { ok: true };
+    const cover = hit
+      ? `${clickDiagnostics(hit)}${(() => { try { const known = ids.get(hit); return known ? ` [${known}]` : ""; } catch { return ""; } })()}« ${(hit.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80)} »`
+      : "aucun (point hors page ?)";
+    return { ok: false, cover };
   }
 
   // --- Position d'une iframe dans la page principale ------------------------------------
@@ -346,16 +432,64 @@
     };
   }
 
-  /** Candidats bruts d'une recherche, triés par score (non tronqués). */
+  /** Mots vides retirés des requêtes : ils matchent partout (« de ») et noient le signal. */
+  const STOP_WORDS = new Set([
+    "de", "du", "des", "le", "la", "les", "un", "une", "et", "est", "en", "au", "aux",
+    "ce", "ces", "dans", "pour", "par", "sur", "pas", "ne", "que", "qui", "quoi", "dont",
+    "ou", "il", "elle", "ils", "elles", "je", "tu", "nous", "vous", "on", "se", "sa", "son",
+    "ses", "leur", "leurs", "mon", "ma", "mes", "ton", "ta", "tes", "votre", "vos", "notre",
+    "nos", "avec", "sans", "sous", "tout", "tous", "toute", "toutes",
+    "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are", "it", "its",
+  ]);
+
+  /**
+   * Candidats bruts d'une recherche, triés par score (non tronqués).
+   * Mots vides retirés de la requête + plancher de pertinence 0,6 : les matchs partiels non
+   * interactifs sont du bruit quasi certain ; les éléments interactifs (bonus +0,5) ne sont en
+   * pratique jamais écartés. Les écartés sont comptés, pas tus.
+   */
+  /**
+   * GET JSON rejoué dans la page (même session : cookies inclus). Réservé à replay_paginated :
+   * même origine que la page uniquement (deuxième garde après celle du background).
+   */
+  async function fetchJson({ url }) {
+    let parsed;
+    try {
+      parsed = new URL(url, location.href);
+    } catch {
+      throw new Error(`URL invalide : ${String(url).slice(0, 200)}.`);
+    }
+    if (parsed.origin !== location.origin) throw new Error(`Refusé : ${parsed.origin} n'est pas l'origine de la page.`);
+    const res = await fetch(parsed.toString(), { credentials: "same-origin", signal: AbortSignal.timeout(15000) });
+    const body = await res.text();
+    return { status: res.status, ok: res.ok, contentType: res.headers.get("content-type") || "", body: body.slice(0, 500_000), bodyTruncated: body.length > 500_000 };
+  }
+
+  /** Digest numérique compact de la page (auto-diff entre étapes batch) : URL, titre, volume de texte, interactifs. */
+  function pageDigest() {
+    return {
+      url: location.href,
+      title: (document.title || "").slice(0, 80),
+      textLen: document.body ? (document.body.innerText || "").length : 0,
+      interactive: document.querySelectorAll("a[href],button,input,select,textarea,option,[role=button],[onclick],[tabindex]").length,
+    };
+  }
+
   function matchAll(query) {
     if (!query) throw new Error("'query' manquant.");
     let matches;
+    let masked = 0;
+    let dropped = 0;
     if (query.startsWith("css:")) {
+      // Sélecteur explicite = intention explicite : on garde tout (y compris les <input type=file>
+      // visuellement masqués), locate() refusera avec diagnostic si vraiment impossible.
       matches = [...document.querySelectorAll(query.slice(4))]
         .filter((el) => !el.closest("#abc-overlay") && isVisible(el))
         .map((el) => ({ el, role: roleOf(el) ?? "generic", score: 1 }));
     } else {
-      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const raw = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const kept = raw.filter((t) => !STOP_WORDS.has(t));
+      const terms = kept.length ? kept : raw; // requête que de mots vides : comportement inchangé
       matches = [];
       for (const el of document.body.querySelectorAll("*")) {
         if (SKIP_TAGS.has(el.tagName.toUpperCase()) || el.closest("#abc-overlay")) continue;
@@ -372,12 +506,14 @@
         ].join(" ").toLowerCase();
         const hits = terms.filter((t) => haystack.includes(t)).length;
         if (hits < Math.ceil(terms.length / 2) || !isVisible(el)) continue;
+        if (unreachableReason(el)) { masked++; continue; }
         const score = hits / terms.length + (isInteractive(el, role) ? 0.5 : 0);
+        if (score < 0.6) { dropped++; continue; }
         matches.push({ el, role: role ?? "text", score });
       }
       matches.sort((a, b) => b.score - a.score);
     }
-    return matches;
+    return { matches, masked, dropped };
   }
 
   /**
@@ -389,8 +525,13 @@
   async function findScan({ query, limit = 20, structured = false }) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const seen = new Map();
+    let masked = 0;
+    let dropped = 0;
     const collect = () => {
-      for (const m of matchAll(query)) {
+      const { matches, masked: roundMasked, dropped: roundDropped } = matchAll(query);
+      masked = Math.max(masked, roundMasked);
+      dropped = Math.max(dropped, roundDropped);
+      for (const m of matches) {
         const prev = seen.get(m.el);
         if (!prev || m.score > prev.score) seen.set(m.el, m);
       }
@@ -424,10 +565,10 @@
       }
     }
     const matches = [...seen.values()].sort((a, b) => b.score - a.score);
-    return formatMatches(matches, query, limit, structured);
+    return formatMatches(matches, query, limit, structured, masked, dropped);
   }
 
-  function formatMatches(matches, query, limit = 20, structured = false) {
+  function formatMatches(matches, query, limit = 20, structured = false, masked = 0, dropped = 0) {
     const total = matches.length;
     const lines = matches.slice(0, limit).map(({ el, role }) => {
       let line = "- " + describe(el, role);
@@ -437,16 +578,215 @@
       }
       return line;
     });
-    if (structured) return { total, items: matches.slice(0, limit).map((m, i) => ({ line: lines[i], score: m.score })) };
+    const maskedNote = masked ? `\n(${masked} élément(s) masqué(s) ignoré(s) : fixes hors écran, non cliquables)` : "";
+    const droppedNote = dropped ? `\n(${dropped} match(s) partiel(s) écarté(s) : sous le plancher de pertinence)` : "";
+    if (structured) {
+      return { total, masked, dropped, items: matches.slice(0, limit).map((m, i) => ({ line: lines[i], score: m.score })) };
+    }
     const more = total > limit ? `\n(${total - limit} autres résultats non affichés)` : "";
-    return lines.length ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${lines.join("\n")}${more}` : `Aucun élément trouvé pour ${JSON.stringify(query)}.`;
+    return lines.length
+      ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${lines.join("\n")}${more}${maskedNote}${droppedNote}`
+      : `Aucun élément trouvé pour ${JSON.stringify(query)}.${maskedNote}${droppedNote}`;
   }
 
   /** Recherche d'éléments (texte ou 'css:…') ; scan=true balaye les listes virtualisées avant de conclure. */
 
   function find({ query, limit = 20, structured = false, scan = false }) {
     if (scan) return findScan({ query, limit, structured });
-    return formatMatches(matchAll(query), query, limit, structured);
+    const { matches, masked, dropped } = matchAll(query);
+    return formatMatches(matches, query, limit, structured, masked, dropped);
+  }
+
+  /**
+   * Extraction structurée sans scroll : sélecteur CSS + projection (text/html/aria/attrs) +
+   * filtre (contains/regex) + pagination + countOnly. Le comptage et le filtrage se font dans
+   * la page : compter 2000 lignes coûte une ligne de réponse, pas 2000.
+   */
+  function query({ selector, extract = "text", filter = null, limit = 200, offset = 0, countOnly = false } = {}) {
+    if (!selector || typeof selector !== "string") throw new Error("'selector' requis : sélecteur CSS.");
+    let els;
+    try {
+      els = [...document.querySelectorAll(selector)].filter((el) => !el.closest("#abc-overlay"));
+    } catch {
+      throw new Error(`Sélecteur invalide : ${JSON.stringify(selector)}.`);
+    }
+    const readOne = (el) => {
+      if (extract === "html") return (el.outerHTML || "").slice(0, 2000);
+      if (extract === "aria") return (el.getAttribute("aria-label") || "").trim().slice(0, 2000);
+      if (extract && typeof extract === "object" && Array.isArray(extract.attrs)) {
+        const o = {};
+        for (const name of extract.attrs) o[name] = el.getAttribute(name);
+        return JSON.stringify(o);
+      }
+      return clean(el.innerText || el.textContent || "", 2000);
+    };
+    let re = null;
+    if (filter && typeof filter === "object" && filter.regex) {
+      try {
+        re = new RegExp(filter.regex, "i");
+      } catch {
+        throw new Error(`Regex invalide : ${JSON.stringify(filter.regex)}.`);
+      }
+    }
+    const contains = filter && typeof filter === "object" && typeof filter.contains === "string"
+      ? filter.contains.toLowerCase()
+      : null;
+    const all = [];
+    for (const el of els) {
+      const t = readOne(el);
+      if (contains && !t.toLowerCase().includes(contains)) continue;
+      if (re && !re.test(t)) continue;
+      all.push(t);
+    }
+    const total = all.length;
+    const start = Math.max(0, offset);
+    const page = countOnly ? [] : all.slice(start, start + Math.max(0, limit));
+    return {
+      items: page, count: page.length, total, offset: start, limit,
+      truncatedByLimit: !countOnly && total > start + page.length,
+    };
+  }
+
+  /**
+   * L'onglet peint-il vraiment (RAF qui part) ? Sans paint, ni les scroll events (listes à
+   * chargement progressif) ni l'IntersectionObserver ne se déclenchent : scroll_extract doit
+   * passer au premier plan au lieu de tourner dans le vide en arrière-plan.
+   */
+  function canPaint() {
+    return new Promise((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (!done) { done = true; resolve({ paints: false, visibility: document.visibilityState }); }
+      }, 350);
+      requestAnimationFrame(() => {
+        if (!done) { done = true; clearTimeout(timer); resolve({ paints: true, visibility: document.visibilityState }); }
+      });
+    });
+  }
+
+  /**
+   * Extrait tous les items d'une liste à chargement progressif en un appel : scroll répété du
+   * conteneur + collecte à chaque étape (le motif « scroll, attendre, recompter » codé à la main
+   * sinon). Couvre les listes qui ajoutent au DOM (scroll infini) et les virtualisées (les lignes
+   * hors écran n'existent pas dans le DOM : extraction incrémentale, jamais de relecture finale).
+   * Déduplique par identité + contenu : un élément revu avec le même texte est sauté, un nœud
+   * recyclé qui affiche un nouveau contenu est re-collecté. Les textes strictement identiques
+   * portés par des éléments différents (cinq « Ok ») survivent tous.
+   * Position de scroll restaurée à la fin. Appelé en arrière-plan quand l'onglet peint, au premier
+   * plan sinon (décision côté background via canPaint : sans paint, pas de scroll events).
+   */
+  async function scrollExtract({ item, container = null, direction = "down", extract = "text", maxRounds = 40, stableRounds = 2, waitMs = 1200, limit = 3000, offset = 0 } = {}) {
+    if (!item || typeof item !== "string") throw new Error("'item' requis : sélecteur CSS des lignes à extraire.");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dir = direction === "up" ? "up" : "down";
+
+    const scopeOf = () => (container ? document.querySelector(container) : null);
+    let scroller = scopeOf();
+    if (container && !scroller) throw new Error(`Conteneur ${JSON.stringify(container)} introuvable.`);
+    if (!scroller) {
+      // Auto : le plus proche ancêtre scrollable du premier item, sinon la page.
+      const first = document.querySelector(item);
+      if (!first) return { items: [], count: 0, total: 0, rounds: 0, hasMore: false, container: "aucun (sélecteur sans match)", direction: dir };
+      scroller = first.parentElement;
+      while (scroller && !(scroller.scrollHeight - scroller.clientHeight > 40 && scroller.clientHeight > 40)) {
+        scroller = scroller.parentElement;
+      }
+      if (!scroller || scroller === document.body || scroller === document.documentElement) scroller = document.scrollingElement;
+    }
+    const describeScroller = scroller === document.scrollingElement
+      ? "page"
+      : `${scroller.tagName.toLowerCase()}${scroller.id ? `#${scroller.id}` : ""}${typeof scroller.className === "string" && scroller.className.trim() ? `.${scroller.className.trim().split(/\s+/)[0]}` : ""}`;
+
+    const readOne = (el) => {
+      if (extract === "html") return (el.outerHTML || "").slice(0, 2000);
+      if (extract === "aria") return (el.getAttribute("aria-label") || "").trim().slice(0, 2000);
+      if (extract && typeof extract === "object" && Array.isArray(extract.attrs)) {
+        const o = {};
+        for (const name of extract.attrs) o[name] = el.getAttribute(name);
+        return JSON.stringify(o);
+      }
+      return clean(el.innerText || el.textContent || "", 2000);
+    };
+    // Déduplique par IDENTITÉ + contenu : un élément déjà vu avec le même texte est sauté
+    // (listes par ajout : pas de doublon aux frontières de pages) ; un élément vu dont le texte a
+    // changé est re-collecté (listes virtualisées à recyclage de nœuds : même objet, nouveau contenu).
+    const seen = new Map(); // Element -> dernier texte collecté
+    const items = []; // ordre d'apparition conservé
+    const root = scroller === document.scrollingElement ? document : scroller;
+    const collect = () => {
+      let added = 0;
+      for (const el of root.querySelectorAll(item)) {
+        if (el.closest("#abc-overlay")) continue;
+        const t = readOne(el);
+        if (seen.get(el) === t) continue;
+        seen.set(el, t);
+        items.push(t);
+        added++;
+      }
+      return added;
+    };
+
+    const startTop = scroller.scrollTop;
+    const atEnd = () => (dir === "down"
+      ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
+      : scroller.scrollTop <= 2);
+    // Balayage déterministe : on part d'un bout pour tout couvrir en un appel.
+    scroller.scrollTop = dir === "down" ? 0 : scroller.scrollHeight;
+    await sleep(150);
+
+    let rounds = 0;
+    let endStable = 0; // tours sans nouveauté AU BOUT (le lazy-load a droit à stableRounds chances)
+    let stuck = 0; // tours sans nouveauté ET sans avance du scroll (sécurité anti-boucle)
+    let lastNew = 0;
+    try {
+      for (let i = 0; i < maxRounds; i++) {
+        rounds++;
+        const before = items.length;
+        const shBefore = scroller.scrollHeight;
+        collect();
+        const step = Math.max(50, scroller.clientHeight || 600);
+        const topBefore = scroller.scrollTop;
+        scroller.scrollTop += dir === "down" ? step : -step;
+        // Attente intelligente, pas un sleep fixe : si ça charge (nouveaux items, hauteur changée),
+        // patience complète (waitMs) ; si rien ne bouge hors du bout, on avance vite (300 ms) ;
+        // au bout, patience complète (le lazy-load final peut être lent).
+        // Avancer vite ne perd rien sur les listes par ajout : les lignes ajoutées restent dans le
+        // DOM et sont collectées au tour suivant.
+        let moved = false;
+        const t0 = Date.now();
+        while (Date.now() - t0 < waitMs) {
+          await sleep(120);
+          collect();
+          if (items.length > before || scroller.scrollHeight !== shBefore) moved = true;
+          if (moved || atEnd()) continue;
+          if (Date.now() - t0 >= 300) break;
+        }
+        collect();
+        const fresh = items.length - before;
+        lastNew = fresh;
+        if (atEnd()) {
+          endStable = fresh === 0 ? endStable + 1 : 0;
+          if (endStable >= Math.max(1, stableRounds)) break;
+        } else {
+          endStable = 0;
+        }
+        // Pas de break sur « stable » hors du bout : au milieu de la liste, l'absence de nouveauté
+        // veut juste dire qu'on n'a pas encore atteint le déclencheur de chargement.
+        stuck = scroller.scrollTop === topBefore && fresh === 0 ? stuck + 1 : 0;
+        if (stuck >= Math.max(2, stableRounds)) break;
+      }
+    } finally {
+      scroller.scrollTop = startTop;
+    }
+    const total = items.length;
+    const hasMore = rounds >= maxRounds && lastNew > 0;
+    const start = Math.max(0, offset);
+    const page = items.slice(start, start + Math.max(0, limit));
+    return {
+      items: page, count: page.length, total, rounds, hasMore, offset: start, limit,
+      container: describeScroller, direction: dir,
+      truncatedByLimit: total > start + page.length,
+    };
   }
 
   /**
@@ -964,5 +1304,5 @@
     return true;
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, hoverEvents, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef, refMarks, showRefMarks, hideRefMarks };
+  globalThis.__abc = { readPage, locate, hitTest, pageText, find, scrollExtract, canPaint, query, pageDigest, fetchJson, formInput, hoverEvents, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef, refMarks, showRefMarks, hideRefMarks };
 })();

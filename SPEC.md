@@ -71,6 +71,9 @@ Principes :
 | `history_search` | Retrouve une page visitée (requête vide = récentes ; sites interdits exclus) |
 | `site_api` | Mémoire par site : routes + appels capturés du HAR, rejoués vite (list, save_call, save_route, note, delete) + playbook servi à l'arrivée |
 | `cdp_send` | Appel CDP brut (désactivé par défaut) |
+| `scroll_extract` | Extrait tous les items d'une liste à chargement progressif en un appel (scroll + collecte + attente intelligente + déduplication ; `direction: up` pour les historiques ; gros volume en fichier) |
+| `query` | Extraction structurée sans scroll : sélecteur CSS + projection + filtre + pagination (`countOnly` pour compter sans renvoyer) |
+| `replay_paginated` | Rejoue un appel API paginé capturé dans le HAR (GET même origine, curseur query-only) sans toucher au DOM |
 
 ## 3.3 Secrets d'authentification (`credentials_fill`)
 

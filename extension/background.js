@@ -172,6 +172,9 @@ function summarize(tool, args) {
   if (args.ref) parts.push(args.ref);
   if (args.coordinate) parts.push(`(${args.coordinate.join(", ")})`);
   if (args.query) parts.push(JSON.stringify(args.query));
+  if (args.item) parts.push(args.item);
+  if (args.selector) parts.push(args.selector);
+  if (args.urlPattern) parts.push(args.urlPattern);
   if (tool === "computer" && args.action === "key" && args.text) parts.push(args.text);
   return parts.join(" ").slice(0, 120);
 }
@@ -205,6 +208,9 @@ const TOOLS = {
   computer: withFrontForMouse(computer),
   read_page: withDrawnPage(readPage),
   find: withDrawnPage(find),
+  scroll_extract: scrollExtract,
+  query: querySelect,
+  replay_paginated: replayPaginated,
   form_input: formInput,
   credentials_fill: credentialsFill,
   credentials_list: credentialsList,
@@ -1193,17 +1199,17 @@ async function overlayNotice(tabId) {
   return `⚠ ${what} recouvre la page. ${advice}${where}\n${untrusted(details.join("\n"))}\n\n`;
 }
 
-async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
+async function readPage(agent, { tabId, filter, ref, viewport, diff, labels, include }) {
   await assertOwned(agent, tabId);
   if (ref) {
     const target = parseRef(ref);
-    const tree = await inPage(tabId, "readPage", { filter, ref: target.ref, viewport, diff }, target.frameId);
+    const tree = await inPage(tabId, "readPage", { filter, ref: target.ref, viewport, diff, labels, include }, target.frameId);
     return ok(text(untrusted(prefixRefs(tree, target.frameId))));
   }
   // Une seule passe dans toutes les frames : la page principale lit avec frame=false.
   const noticeP = overlayNotice(tabId); // indépendant de l'arbre : en parallèle (ne rejette jamais).
-  const frames = await inAllFrames(tabId, "readPage", { filter, viewport, diff, frame: true });
-  const main = frames.find((f) => f.frameId === 0)?.value ?? (await inPage(tabId, "readPage", { filter, viewport, diff }));
+  const frames = await inAllFrames(tabId, "readPage", { filter, viewport, diff, labels, include, frame: true });
+  const main = frames.find((f) => f.frameId === 0)?.value ?? (await inPage(tabId, "readPage", { filter, viewport, diff, labels, include }));
   const parts = [main];
   for (const { frameId, value } of frames) {
     if (frameId === 0 || !value) continue;
@@ -1219,20 +1225,155 @@ async function find(agent, { tabId, query, limit = 20, scan = false }) {
   const noticeP = overlayNotice(tabId); // indépendant de la recherche : en parallèle (ne rejette jamais).
   const frames = await inAllFrames(tabId, "find", { query, limit, structured: true, scan });
   let total = 0;
+  let masked = 0;
+  let dropped = 0;
   const items = [];
   for (const { frameId, value } of frames) {
     if (!value) continue;
     total += value.total;
+    masked += value.masked ?? 0;
+    dropped += value.dropped ?? 0;
     const suffix = frameId ? `  (iframe ${frameId})` : "";
     items.push(...value.items.map((it) => ({ line: prefixRefs(it.line, frameId) + suffix, score: it.score })));
   }
   // Classement global par pertinence, toutes frames confondues.
   const shown = items.sort((a, b) => b.score - a.score).slice(0, limit).map((it) => it.line);
   const more = total > shown.length ? `\n(${total - shown.length} autres résultats non affichés)` : "";
+  const maskedNote = masked ? `\n(${masked} élément(s) masqué(s) ignoré(s) : fixes hors écran, non cliquables)` : "";
+  const droppedNote = dropped ? `\n(${dropped} match(s) partiel(s) écarté(s) : sous le plancher de pertinence)` : "";
   const result = shown.length
-    ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${shown.join("\n")}${more}`
-    : `Aucun élément trouvé pour ${JSON.stringify(query)}.${scan ? " (balayage des listes virtualisées effectué)" : " (scan: true balaye les listes virtualisées)"}`;
+    ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${shown.join("\n")}${more}${maskedNote}${droppedNote}`
+    : `Aucun élément trouvé pour ${JSON.stringify(query)}.${maskedNote}${droppedNote}${scan ? " (balayage des listes virtualisées effectué)" : " (scan: true balaye les listes virtualisées)"}`;
   return ok(text((await noticeP) + untrusted(result)));
+}
+
+/**
+ * Extraction complète d'une liste à chargement progressif en un appel (page principale).
+ * Arrière-plan si l'onglet peint, premier plan sinon (sans paint : pas de scroll events,
+ * l'extraction tournerait dans le vide). L'onglet de l'utilisateur est rendu après.
+ */
+async function scrollExtract(agent, { tabId, item, container, direction, extract, maxRounds, stableRounds, waitMs, limit, offset }) {
+  const tab = await assertOwned(agent, tabId);
+  if (!item || typeof item !== "string") throw new Error("'item' requis : sélecteur CSS des lignes à extraire.");
+  const run = () => inPage(tabId, "scrollExtract", { item, container, direction, extract, maxRounds, stableRounds, waitMs, limit, offset });
+  const probe = await inPage(tabId, "canPaint").catch(() => null);
+  const foregrounded = !probe?.paints;
+  const res = foregrounded ? await withForeground(tab, run) : await run();
+  const head = `Liste extraite (${res.container}, ${res.direction}, ${res.rounds} tour(s)) : ${res.total} item(s) au total, ${res.count} renvoyé(s)` +
+    (res.offset ? ` (à partir de ${res.offset})` : "") + "." +
+    (foregrounded ? " (passage au premier plan : onglet non peint)" : "") +
+    (res.hasMore ? " Fin atteinte par maxRounds avec du nouveau : relancer avec maxRounds plus grand." : "") +
+    (res.truncatedByLimit ? " Tronqué par limit/offset : relancer avec un autre offset pour la suite." : "");
+  const lines = res.items.map((t) => `- ${String(t).split("\n").join(" ")}`);
+  const body = `${head}\n${lines.join("\n")}`;
+  if (body.length <= BIG_TEXT_CHARS) return ok(text(untrusted(body)));
+  const full = JSON.stringify({ meta: { ...res, items: undefined }, items: res.items }, null, 2);
+  const preview = `${head}\nAperçu (15 premiers) :\n${lines.slice(0, 15).join("\n")}\n…\nContenu complet (${res.count} items) dans le fichier : {path} (relire avec read_document)`;
+  return attachBigFile(full, "scroll-extract", "json", untrusted(preview));
+}
+
+/** Extraction structurée sans scroll (page principale) : sélecteur + projection + filtre + pagination. */
+async function querySelect(agent, { tabId, selector, extract, filter, limit, offset, countOnly }) {
+  await assertOwned(agent, tabId);
+  if (!selector || typeof selector !== "string") throw new Error("'selector' requis : sélecteur CSS.");
+  const res = await inPage(tabId, "query", { selector, extract, filter, limit, offset, countOnly });
+  const head = `Requête ${JSON.stringify(selector)} : ${res.total} correspondance(s)` +
+    (countOnly ? "." : `, ${res.count} renvoyée(s)${res.offset ? ` (à partir de ${res.offset})` : ""}.`) +
+    (res.truncatedByLimit ? " Tronqué par limit/offset : relancer avec un autre offset pour la suite." : "");
+  if (countOnly) return ok(text(head));
+  const lines = res.items.map((t) => `- ${String(t).split("\n").join(" ")}`);
+  const body = `${head}\n${lines.join("\n")}`;
+  if (body.length <= BIG_TEXT_CHARS) return ok(text(untrusted(body)));
+  const full = JSON.stringify({ meta: { ...res, items: undefined }, items: res.items }, null, 2);
+  const preview = `${head}\nAperçu (15 premiers) :\n${lines.slice(0, 15).join("\n")}\n…\nContenu complet (${res.count} items) dans le fichier : {path} (relire avec read_document)`;
+  return attachBigFile(full, "query", "json", untrusted(preview));
+}
+
+/** Chemin JSON pointé (« a.b.0.c ») ; undefined si absent. */
+function jsonPath(obj, path) {
+  let cur = obj;
+  for (const part of String(path).split(".")) {
+    if (cur === null || cur === undefined) return undefined;
+    cur = Array.isArray(cur) && /^\d+$/.test(part) ? cur[Number(part)] : cur[part];
+  }
+  return cur;
+}
+
+/**
+ * Rejoue une pagination d'API observée dans le trafic de l'onglet : on retrouve le dernier appel
+ * GET qui matche urlPattern, puis on suit le curseur (query) de page en page, dans la page
+ * (même session, cookies inclus). Court-circuite le scroll quand les données viennent d'une API.
+ * Gardes : GET uniquement, même origine que l'onglet, maxPages plafonné, 15 s par page.
+ * v1 : curseur en query uniquement (cursor.in "query:param"), réponses JSON.
+ */
+async function replayPaginated(agent, { tabId, urlPattern, cursor, itemsPath, maxPages = 10, limit = 2000 }) {
+  const tab = await assertOwned(agent, tabId);
+  await ensureAttached(tabId);
+  if (!urlPattern || typeof urlPattern !== "string") throw new Error("'urlPattern' requis : regex sur l'URL (ex. '/api/items').");
+  const inParam = typeof cursor?.in === "string" && cursor.in.startsWith("query:") ? cursor.in.slice("query:".length) : null;
+  if (!inParam) throw new Error("'cursor.in' requis, format \"query:<param>\" (v1 : curseur en query uniquement).");
+  const outPath = typeof cursor?.out === "string" && cursor.out.startsWith("json:") ? cursor.out.slice("json:".length) : null;
+  if (!outPath) throw new Error("'cursor.out' requis, format \"json:<chemin>\" (ex. \"json:next\").");
+  const itemsP = typeof itemsPath === "string" && itemsPath.startsWith("json:") ? itemsPath.slice("json:".length) : null;
+  if (!itemsP) throw new Error("'itemsPath' requis, format \"json:<chemin>\" (ex. \"json:items\").");
+  const pagesCap = Math.max(1, Math.min(Number(maxPages) || 10, 50));
+  const itemsCap = Math.max(1, Math.min(Number(limit) || 2000, 20000));
+
+  const re = compileRegex(urlPattern);
+  const all = [...(networkLogs.get(tabId)?.values() ?? [])];
+  const matching = all.filter((r) => re.test(r.url));
+  const seeds = matching.filter((r) => r.method === "GET" && r.status === 200);
+  if (!seeds.length) {
+    throw new Error(
+      matching.length
+        ? `Aucun appel GET 200 pour ${JSON.stringify(urlPattern)} (${matching.length} appel(s) matché(s), autres méthodes/statuts).`
+        : `Aucun appel capturé pour ${JSON.stringify(urlPattern)} (${all.length} requête(s) au total). ` +
+          "La capture commence à l'attachement : recharger la page ou refaire l'action qui appelle l'API, puis relancer.",
+    );
+  }
+  const seed = seeds[seeds.length - 1];
+  const tabOrigin = new URL(tab.url).origin;
+  const template = new URL(seed.url);
+  if (template.origin !== tabOrigin) throw new Error(`Refusé : ${template.origin} n'est pas l'origine de l'onglet (${tabOrigin}).`);
+
+  const items = [];
+  let pages = 0;
+  let stoppedBy = "curseur épuisé";
+  let nextCursor = "";
+  let first = true; // page 1 = URL d'origine rejouée telle quelle, curseur ensuite
+  while (pages < pagesCap && items.length < itemsCap) {
+    const url = new URL(template.toString());
+    if (!first) url.searchParams.set(inParam, nextCursor);
+    first = false;
+    const fetched = await inPage(tabId, "fetchJson", { url: url.toString() });
+    if (!fetched.ok) throw new Error(`Page ${pages + 1} : HTTP ${fetched.status} sur ${url.pathname}${url.search}.`);
+    let json;
+    try {
+      json = JSON.parse(fetched.body);
+    } catch {
+      throw new Error(`Page ${pages + 1} : réponse non JSON (${fetched.contentType || "sans content-type"}).`);
+    }
+    const pageItems = jsonPath(json, itemsP);
+    if (!Array.isArray(pageItems)) throw new Error(`Page ${pages + 1} : itemsPath ${JSON.stringify(itemsP)} ne donne pas un tableau.`);
+    for (const it of pageItems) {
+      if (items.length >= itemsCap) break;
+      items.push(it);
+    }
+    pages++;
+    const next = jsonPath(json, outPath);
+    if (next === null || next === undefined || next === "") break;
+    nextCursor = String(next);
+    if (items.length >= itemsCap) { stoppedBy = "plafond limit atteint"; break; }
+  }
+  if (pages >= pagesCap) stoppedBy = "plafond maxPages atteint";
+
+  const head = `Pagination rejouée (${seed.method} ${template.pathname}) : ${pages} page(s), ${items.length} item(s) (${stoppedBy}).`;
+  const lines = items.map((it) => `- ${typeof it === "string" ? it : JSON.stringify(it)}`.slice(0, 500));
+  const body = `${head}\n${lines.join("\n")}`;
+  if (body.length <= BIG_TEXT_CHARS) return ok(text(untrusted(body)));
+  const full = JSON.stringify({ meta: { seed: `${seed.method} ${seed.url}`, pages, total: items.length, stoppedBy }, items }, null, 2);
+  const preview = `${head}\nAperçu (15 premiers) :\n${lines.slice(0, 15).join("\n")}\n…\nContenu complet (${items.length} items) dans le fichier : {path} (relire avec read_document)`;
+  return attachBigFile(full, "replay", "json", untrusted(preview));
 }
 
 async function formInput(agent, args) {
@@ -1454,6 +1595,18 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 
+/**
+ * Gros résultat textuel (>40 000 car.) : le complet part en fichier (le démon l'écrit dans
+ * Téléchargements et remplace {path}), l'agent reçoit l'aperçu + les comptes. Le plafond 50k
+ * reste un garde-fou, plus un mur : scroll_extract, query et javascript s'en servent.
+ */
+const BIG_TEXT_CHARS = 40_000;
+async function attachBigFile(fullText, stem, ext, preview) {
+  const base64 = await blobToBase64(new Blob([fullText], { type: "application/json;charset=utf-8" }));
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return { content: [text(preview)], _file: { name: `${stem}-${stamp}.${ext}`, base64 } };
+}
+
 /** Légende des pastilles : numéro = ref cliquable, avec libellé court. */
 function refLegend(marks, wanted) {
   if (!marks.length) return wanted ? "\nAucun élément à numéroter sur cette vue." : "";
@@ -1529,6 +1682,24 @@ async function targetPoint(tabId, { coordinate, ref }) {
   if (ref) return locateRef(tabId, ref);
   if (Array.isArray(coordinate) && coordinate.length === 2) return { x: coordinate[0], y: coordinate[1] };
   throw new Error("Fournir 'coordinate' [x, y] ou 'ref'.");
+}
+
+/**
+ * Garde anti-clic-dans-le-vide : vérifie que le point calculé pour `ref` atteint bien sa cible
+ * (pas une modale, une bannière ou un élément déplacé entre-temps). Refs d'iframes exclues :
+ * hitTest parle en coordonnées du viewport de sa frame, locate() en coordonnées page.
+ */
+async function assertHit(tabId, ref, point) {
+  if (!ref) return;
+  const target = parseRef(ref);
+  if (target.frameId) return;
+  const res = await inPage(tabId, "hitTest", { x: point.x, y: point.y, ref: target.ref }).catch(() => null);
+  if (res && !res.ok) {
+    throw new Error(
+      `Clic refusé : ${ref} est recouvert au point (${point.x}, ${point.y}) par ${res.cover}. ` +
+      "Fermer la fenêtre qui recouvre (bannière, modale), ou cliquer sur l'élément visible.",
+    );
+  }
 }
 
 async function click(tabId, { x, y }, button, count, modifiers) {
@@ -1723,7 +1894,8 @@ const MOUSE_ACTIONS = new Set(["left_click", "right_click", "double_click", "tri
 function withFrontForMouse(tool) {
   return async (agent, args) => {
     // type avec ref / coordinate commence par un clic : même traitement qu'un geste à la souris.
-    const clicks = MOUSE_ACTIONS.has(args.action) || (args.action === "type" && (args.ref || args.coordinate));
+    const needsMouse = (a) => MOUSE_ACTIONS.has(a.action) || (a.action === "type" && (a.ref || a.coordinate));
+    const clicks = needsMouse(args) || (Array.isArray(args.steps) && args.steps.some((s) => s && needsMouse(s)));
     if (!clicks) return tool(agent, args);
     const tab = await assertOwned(agent, args.tabId);
     return withForeground(tab, () => tool(agent, args));
@@ -1742,8 +1914,74 @@ function withDrawnPage(tool) {
 }
 
 async function computer(agent, args) {
-  const { tabId, action } = args;
+  const { tabId } = args;
   const tab = await assertOwned(agent, tabId);
+  if (Array.isArray(args.steps) && args.steps.length) return runSteps(agent, tab, args);
+  const res = await computerAction(agent, tab, args);
+  if (args.snapshot || args.then || args.diff) {
+    return attachActionSnapshot(agent, tabId, args, res);
+  }
+  return res;
+}
+
+/**
+ * Batch : plusieurs actions computer en un appel (une seule prise d'onglet), exécutées en
+ * séquence avec digest numérique avant/après chaque étape (URL, titre, volume de texte,
+ * interactifs). Arrêt à la première erreur, avec le récapitulatif des étapes déjà exécutées.
+ * snapshot/then/diff de haut niveau s'appliquent à l'état FINAL. 'screenshot' interdit en étape
+ * (images : faire une capture séparée).
+ */
+async function runSteps(agent, tab, args) {
+  const { tabId, steps } = args;
+  if (steps.length > 20) throw new Error("'steps' : 20 étapes au plus par appel.");
+  const digestOf = () => inPage(tabId, "pageDigest").catch(() => null);
+  const lines = [];
+  let before = await digestOf();
+  lines.push(`Digest initial : ${formatDigest(before)}.`);
+  for (let i = 0; i < steps.length; i++) {
+    const st = { tabId, ...steps[i] };
+    const tag = st.action ?? "?";
+    try {
+      if (!st.action || typeof st.action !== "string") throw new Error(`Étape ${i + 1} : 'action' manquante.`);
+      if (st.action === "screenshot") throw new Error(`Étape ${i + 1} : 'screenshot' interdit dans steps (faire une capture séparée).`);
+      if (st.steps) throw new Error(`Étape ${i + 1} : steps imbriqués interdits.`);
+      const r = await computerAction(agent, tab, st);
+      const msg = r.content.map((c) => c.text ?? "").join(" ").replace(/\s+/g, " ").slice(0, 300);
+      const after = await digestOf();
+      lines.push(`Étape ${i + 1}/${steps.length} [${tag}${st.ref ? ` ${st.ref}` : ""}] : ${msg} Δ ${formatDelta(before, after)}`);
+      before = after;
+    } catch (e) {
+      lines.push(`Étape ${i + 1}/${steps.length} [${tag}] ÉCHEC : ${e.message} (arrêt, ${i} étape(s) déjà exécutée(s))`);
+      return fail(lines.join("\n"));
+    }
+  }
+  const res = ok(text(lines.join("\n")));
+  if (args.snapshot || args.then || args.diff) {
+    return attachActionSnapshot(agent, tabId, args, res);
+  }
+  return res;
+}
+
+function formatDigest(d) {
+  if (!d) return "digest indisponible";
+  return `« ${(d.title || "").slice(0, 40)} » · ${d.textLen} car. · ~${d.interactive} interactifs`;
+}
+
+function formatDelta(a, b) {
+  if (!a || !b) return "digest indisponible";
+  const parts = [];
+  if (a.url !== b.url) parts.push(`url → ${b.url.slice(0, 80)}`);
+  if (a.title !== b.title) parts.push(`titre → « ${(b.title || "").slice(0, 40)} »`);
+  const dt = b.textLen - a.textLen;
+  if (dt) parts.push(`${dt > 0 ? "+" : ""}${dt} car.`);
+  const di = b.interactive - a.interactive;
+  if (di) parts.push(`${di > 0 ? "+" : ""}${di} interactifs`);
+  return parts.length ? parts.join(", ") : "inchangé";
+}
+
+async function computerAction(agent, tab, args) {
+  const { tabId, action } = args;
+  if (!action) throw new Error("Préciser 'action' ou 'steps'.");
   if (action !== "wait") await bringToFront(tab);
   const modifiers = modifierMask(args.modifiers);
 
@@ -1757,6 +1995,7 @@ async function computer(agent, args) {
     case "double_click":
     case "triple_click": {
       const point = await targetPoint(tabId, args);
+      await assertHit(tabId, args.ref, point);
       await showOverlay(tabId, point);
       const button = action === "right_click" ? "right" : "left";
       const count = { double_click: 2, triple_click: 3 }[action] ?? 1;
@@ -1797,6 +2036,7 @@ async function computer(agent, args) {
 
     case "hover": {
       const point = await targetPoint(tabId, args);
+      await assertHit(tabId, args.ref, point);
       await showOverlay(tabId, point);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, modifiers });
       // Après restitution de l'onglet (le mouseleave qui suit ferme les menus), on rejoue
@@ -1815,6 +2055,7 @@ async function computer(agent, args) {
       if (typeof args.text !== "string") throw new Error("'text' manquant.");
       if (args.ref || args.coordinate) {
         const point = await targetPoint(tabId, args);
+        await assertHit(tabId, args.ref, point);
         await showOverlay(tabId, point);
         await click(tabId, point, "left", 1, 0);
       } else {
@@ -1884,9 +2125,6 @@ async function computer(agent, args) {
       throw new Error(`Action inconnue : ${action}`);
   }
 
-  if (args.snapshot || args.then || args.diff) {
-    return attachActionSnapshot(agent, tabId, args, res);
-  }
   return res;
 }
 
@@ -1924,8 +2162,13 @@ async function javascript(agent, { tabId, code }) {
     return fail(`Exception : ${desc}`);
   }
   let out = await serializeRemote(tabId, res.result);
-  if (out.length > 50_000) out = out.slice(0, 50_000) + "\n[Tronqué]";
   await recordFrame(tabId, "javascript");
+  if (out.length > 50_000) {
+    // Plus de mur à 50k : le complet part en fichier, l'agent reçoit l'aperçu + les comptes.
+    const preview = `Résultat volumineux (${out.length} caractères), aperçu (3000 premiers) :\n` +
+      `${out.slice(0, 3000)}\n…\nContenu complet dans le fichier : {path} (relire avec read_document)`;
+    return attachBigFile(out, "javascript", "txt", untrusted(preview));
+  }
   return ok(text(untrusted(out)));
 }
 
@@ -2166,19 +2409,31 @@ function trackInflight(tabId, method, params) {
 chrome.tabs.onRemoved.addListener((tabId) => inflight.delete(tabId));
 
 async function waitFor(agent, args) {
-  const { tabId, selector, text: expected, textGone, urlContains, networkIdle, domSettled, authSettled, image } = args;
-  await assertOwned(agent, tabId);
+  const { tabId, selector, text: expected, textGone, urlContains, networkIdle, domSettled, authSettled, image, scroll, countStable } = args;
+  const tab = await assertOwned(agent, tabId);
   await ensureAttached(tabId);
   const wantImage = image === true;
-  if (!selector && !expected && !textGone && !urlContains && !networkIdle && !domSettled && !authSettled && !wantImage) {
-    throw new Error("Préciser au moins une condition : selector, text, textGone, urlContains, networkIdle, domSettled, image ou authSettled.");
+  const csSel = typeof countStable?.selector === "string" ? countStable.selector : null;
+  if (!selector && !expected && !textGone && !urlContains && !networkIdle && !domSettled && !authSettled && !wantImage && !csSel) {
+    throw new Error("Préciser au moins une condition : selector, text, textGone, urlContains, networkIdle, domSettled, countStable, image ou authSettled (scroll seul n'est pas une condition : il accompagne les autres).");
   }
   const maxLimit = authSettled ? 300 : 60;
   const defaultLimit = authSettled ? 120 : 10;
   const limitMs = Math.min(Math.max(args.timeout ?? defaultLimit, 0.5), maxLimit) * 1000;
   const quietMs = networkIdle === true ? 500 : Number(networkIdle) || 0;
   const settleMs = domSettled === true ? 800 : Number(domSettled) || 0;
-  const started = Date.now();
+  const scrollCfg = scroll && typeof scroll === "object" ? {
+    container: typeof scroll.container === "string" ? scroll.container : null,
+    direction: scroll.direction === "up" ? "up" : "down",
+    maxScrolls: Math.max(1, Math.min(Number(scroll.maxScrolls) || 30, 200)),
+  } : null;
+  const csStableMs = Math.max(200, Number(countStable?.stableMs) || 1500);
+  const csMin = countStable?.minCount === undefined ? 1 : Math.max(0, Number(countStable.minCount) || 0);
+
+  const run = async () => {
+    const started = Date.now();
+    let csCount = -1;
+    let csSince = started;
 
   let initialUrl = "";
   try {
@@ -2209,11 +2464,34 @@ async function waitFor(agent, args) {
     const el = sel ? document.querySelector(sel) : null;
     const visible = !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
     const body = document.body ? document.body.innerText : "";
+    const textOk = ${JSON.stringify(expected ?? null)} === null || body.includes(${JSON.stringify(expected ?? "")});
+    const goneOk = ${JSON.stringify(textGone ?? null)} === null || !body.includes(${JSON.stringify(textGone ?? "")});
+    const scrollCfg = ${JSON.stringify(scrollCfg)};
+    const countSel = ${JSON.stringify(csSel)};
+    // Scroll d'attente : un cran par tour (200 ms) tant que la cible n'est pas là, borné (bout,
+    // maxScrolls). La cible, c'est les conditions visibles (selector/text/textGone) : le scroll
+    // sert à faire apparaître du contenu paresseux, pas à attendre le réseau ou une URL.
+    let scrollInfo;
+    if (scrollCfg) {
+      window.__abcWaitScrolls = window.__abcWaitScrolls || 0;
+      const sc = scrollCfg.container ? document.querySelector(scrollCfg.container) : document.scrollingElement;
+      const atEnd = !sc ? true : (scrollCfg.direction === "up" ? sc.scrollTop <= 2 : sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2);
+      const capped = window.__abcWaitScrolls >= scrollCfg.maxScrolls;
+      const met = (!sel || visible) && textOk && goneOk;
+      if (sc && !met && !atEnd && !capped) {
+        const step = Math.max(200, sc.clientHeight || 600);
+        sc.scrollTop += scrollCfg.direction === "up" ? -step : step;
+        window.__abcWaitScrolls++;
+      }
+      scrollInfo = { done: window.__abcWaitScrolls, atEnd, capped, missing: !sc };
+    }
     return {
       visible,
-      text: ${JSON.stringify(expected ?? null)} === null || body.includes(${JSON.stringify(expected ?? "")}),
-      gone: ${JSON.stringify(textGone ?? null)} === null || !body.includes(${JSON.stringify(textGone ?? "")}),
+      text: textOk,
+      gone: goneOk,
       url: location.href,
+      scroll: scrollInfo,
+      count: (() => { if (!countSel) return undefined; try { return document.querySelectorAll(countSel).length; } catch { return -1; } })(),
       images: (() => {
         const out = [];
         for (const el of document.querySelectorAll("img, canvas, svg")) {
@@ -2262,6 +2540,7 @@ async function waitFor(agent, args) {
   })()`;
 
   let last = {};
+  const scrollNote = (s) => s ? `, ${s.done} scroll(s)${s.atEnd ? " (bout atteint)" : ""}${s.capped ? " (plafond maxScrolls)" : ""}${s.missing ? " (conteneur introuvable)" : ""}` : "";
   while (true) {
     try {
       last = (await cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true })).result?.value ?? {};
@@ -2282,6 +2561,11 @@ async function waitFor(agent, args) {
     const net = inflight.get(tabId) ?? { ids: new Set(), last: started };
     const timeSinceMutation = last.lastMutation ? (Date.now() - last.lastMutation) : (Date.now() - started);
     const domSettledOk = !settleMs || (Date.now() - started >= Math.min(settleMs, 300) && timeSinceMutation >= settleMs);
+    if (last.count === -1) throw new Error(`Sélecteur countStable invalide : ${JSON.stringify(csSel)}.`);
+    if (csSel && typeof last.count === "number" && last.count !== csCount) {
+      csCount = last.count;
+      csSince = Date.now();
+    }
 
     const checks = {
       selector: !selector || !!last.visible,
@@ -2292,21 +2576,32 @@ async function waitFor(agent, args) {
       networkIdle: !quietMs || (net.ids.size <= 2 && Date.now() - net.last >= quietMs),
       domSettled: domSettledOk,
       authSettled: authOk,
+      countStable: !csSel || (csCount >= csMin && Date.now() - csSince >= csStableMs),
     };
     const elapsed = ((Date.now() - started) / 1000).toFixed(1).replace(".", ",");
     if (Object.values(checks).every(Boolean)) {
       const details = [];
       if (settleMs) details.push(`DOM stable depuis ${timeSinceMutation} ms`);
       if (authSettled && enteredAuth) details.push("connexion validée");
+      if (csSel) details.push(`${csCount} élément(s) stable(s)`);
+      if (scrollCfg && last.scroll) details.push(`${last.scroll.done} scroll(s)`);
       const extra = details.length ? ` (${details.join(", ")})` : "";
       return ok(text(`Condition remplie en ${elapsed} s.${extra}${last.url ? ` URL : ${last.url}` : ""}`));
     }
     if (Date.now() - started >= limitMs) {
       const pending = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k).join(", ");
-      return fail(`Délai dépassé (${String(limitMs / 1000).replace(".", ",")} s), condition(s) non remplie(s) : ${pending}. URL actuelle : ${last.url ?? "?"}`);
+      return fail(`Délai dépassé (${String(limitMs / 1000).replace(".", ",")} s), condition(s) non remplie(s) : ${pending}.${scrollNote(last.scroll)} URL actuelle : ${last.url ?? "?"}`);
     }
     await sleep(200);
   }
+  };
+  // Scroll d'attente sur un onglet qui ne peint pas = scroll events qui ne partent pas :
+  // on emprunte le premier plan le temps de l'attente (rendu après, comme les gestes souris).
+  if (scrollCfg) {
+    const paint = await inPage(tabId, "canPaint").catch(() => null);
+    if (!paint?.paints) return withForeground(tab, run);
+  }
+  return run();
 }
 
 // ---------------------------------------------------------------------------

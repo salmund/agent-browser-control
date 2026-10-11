@@ -139,7 +139,12 @@ export const TOOLS: Tool[] = [
       "Interagit avec la page comme un utilisateur. Les coordonnées sont en pixels CSS du viewport, " +
       "identiques à celles de la capture 'screenshot'. Un élément peut aussi être ciblé par 'ref' (issu de read_page / find).\n" +
       "Actions : screenshot, left_click, right_click, double_click, triple_click, left_click_drag " +
-      "(de start_coordinate vers coordinate), hover, type, key, scroll, scroll_to (ref), wait.",
+      "(de start_coordinate vers coordinate), hover, type, key, scroll, scroll_to (ref), wait.\n" +
+      "Garde anti-clic-dans-le-vide : un clic sur une ref hors écran après scroll ou recouverte par un autre " +
+      "élément (modale, bannière) est refusé avec le diagnostic, au lieu de partir dans le vide.\n" +
+      "steps : liste d'actions en un appel (ex. [{action: 'scroll_to', ref}, {action: 'wait', duration: 1}]) : " +
+      "une seule prise d'onglet, digest numérique (URL, titre, volume, interactifs) avant/après chaque étape, " +
+      "arrêt à la première erreur. 'screenshot' interdit en étape ; snapshot/then/diff s'appliquent à la fin.",
     inputSchema: {
       type: "object",
       properties: {
@@ -211,8 +216,13 @@ export const TOOLS: Tool[] = [
           enum: ["interactive", "all", "text"],
           description: "Format de lecture si snapshot / then est demandé : 'interactive' (défaut), 'all', ou 'text'.",
         },
+        steps: {
+          type: "array",
+          items: { type: "object" },
+          description: "Batch : liste d'étapes {action, ...mêmes champs} exécutées en séquence en un appel, avec digest par étape. Remplace 'action'.",
+        },
       },
-      required: ["tabId", "action"],
+      required: ["tabId"],
     },
   },
   {
@@ -221,7 +231,9 @@ export const TOOLS: Tool[] = [
       "Renvoie l'arbre d'accessibilité de la page sous forme compacte, avec une 'ref' par élément " +
       "utilisable par computer. filter='interactive' ne garde que les éléments cliquables / éditables. " +
       "Le contenu des iframes suit, avec des refs préfixées ('f7:ref_3'). Pour économiser : viewport=true " +
-      "(seulement la partie visible), diff=true (seulement ce qui a changé depuis la lecture précédente).",
+      "(seulement la partie visible), diff=true (seulement ce qui a changé depuis la lecture précédente). " +
+      "labels=true inclut les éléments informatifs non interactifs porteurs d'un aria-label (messages de chat " +
+      "avec expéditeur et date, tuiles riches) ; include (sélecteur CSS) force des éléments dans l'arbre.",
     inputSchema: {
       type: "object",
       properties: {
@@ -230,6 +242,8 @@ export const TOOLS: Tool[] = [
         ref: { type: "string", description: "Limiter l'arbre au sous-arbre de cet élément." },
         viewport: { type: "boolean", description: "Seulement les éléments visibles à l'écran." },
         diff: { type: "boolean", description: "Seulement les lignes ajoutées (+) ou retirées (-) depuis la dernière lecture avec les mêmes options." },
+        labels: { type: "boolean", description: "Inclure les éléments non interactifs porteurs d'un aria-label (ex. messages 'Vous avez dit : ... Envoyé le ...')." },
+        include: { type: "string", description: "Sélecteur CSS d'éléments à forcer dans l'arbre (même non interactifs)." },
       },
       required: ["tabId"],
     },
@@ -240,7 +254,9 @@ export const TOOLS: Tool[] = [
       "Cherche des éléments de la page par texte (nom accessible, libellé, placeholder, valeur…) et renvoie " +
       "leurs refs. Préfixer par 'css:' pour un sélecteur CSS (ex. 'css:button.primary'). " +
       "scan: true balaye les conteneurs défilants (listes virtualisées : les lignes hors écran n'existent pas " +
-      "dans le DOM) avant de conclure ; plus lent, positions restaurées.",
+      "dans le DOM) avant de conclure ; plus lent, positions restaurées. " +
+      "Mots vides retirés de la requête, matchs partiels sous le plancher de pertinence écartés (avec compteur), " +
+      "éléments fixes hors écran (non cliquables) exclus, avec compteur.",
     inputSchema: {
       type: "object",
       properties: {
@@ -250,6 +266,97 @@ export const TOOLS: Tool[] = [
         scan: { type: "boolean", description: "True : balayer les listes virtualisées (plus lent)." },
       },
       required: ["tabId", "query"],
+    },
+  },
+  {
+    name: "scroll_extract",
+    description:
+      "Extrait TOUS les items d'une liste à chargement progressif en un seul appel : scroll répété du conteneur " +
+      "(scroll infini, historique de chat, fil) + collecte à chaque étape, avec attente intelligente (pas de sleep fixe), " +
+      "déduplication et position restaurée. 'item' : sélecteur CSS des lignes. 'container' : sélecteur du conteneur " +
+      "défilant (défaut : détecté automatiquement). 'direction' : down (défaut) ou up (remonter un historique). " +
+      "'extract' : text (défaut), html, aria (aria-label) ou {attrs: [...]}. 'limit'/'offset' pour paginer, " +
+      "'maxRounds' (défaut 40) comme garde-fou. Gros volume : le complet part en fichier JSON (+ aperçu). " +
+      "Arrière-plan si l'onglet peint, premier plan sinon (sans paint : pas de scroll events) ; " +
+      "l'onglet de l'utilisateur est rendu après.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        item: { type: "string", description: "Sélecteur CSS des lignes à extraire (ex. '.message', 'li.row')." },
+        container: { type: "string", description: "Sélecteur du conteneur défilant (défaut : détecté automatiquement)." },
+        direction: { type: "string", enum: ["down", "up"], description: "Sens du balayage (défaut down ; up pour remonter un historique)." },
+        extract: {
+          description: "Ce qu'on lit par ligne : text (défaut), html, aria (aria-label) ou {attrs: [...]}.",
+        },
+        maxRounds: { type: "number", description: "Tours de scroll au plus (défaut 40)." },
+        stableRounds: { type: "number", description: "Tours sans nouveauté avant de conclure (défaut 2)." },
+        waitMs: { type: "number", description: "Attente max de nouveau contenu par tour, en ms (défaut 1200)." },
+        limit: { type: "number", description: "Items renvoyés au plus (défaut 3000)." },
+        offset: { type: "number", description: "Items sautés au début (défaut 0, pour paginer)." },
+      },
+      required: ["tabId", "item"],
+    },
+  },
+  {
+    name: "query",
+    description:
+      "Extraction structurée sans scroll : sélecteur CSS + projection + filtre + pagination, calculés dans la page. " +
+      "'selector' : sélecteur CSS (requis). 'extract' : text (défaut), html, aria (aria-label) ou {attrs: [...]}. " +
+      "'filter' : {contains: '...'} ou {regex: '...'} sur le texte extrait. 'countOnly: true' pour compter sans " +
+      "renvoyer (compter 2000 lignes coûte une ligne de réponse). 'limit' (défaut 200) / 'offset' pour paginer. " +
+      "Gros volume : le complet part en fichier JSON (+ aperçu).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        selector: { type: "string", description: "Sélecteur CSS (ex. 'table tr', '[data-msg]')." },
+        extract: {
+          description: "Ce qu'on lit par élément : text (défaut), html, aria (aria-label) ou {attrs: [...]}.",
+        },
+        filter: {
+          type: "object",
+          properties: {
+            contains: { type: "string" },
+            regex: { type: "string" },
+          },
+          description: "Filtre sur le texte extrait : {contains: '...'} ou {regex: '...'}.",
+        },
+        limit: { type: "number", description: "Éléments renvoyés au plus (défaut 200)." },
+        offset: { type: "number", description: "Éléments sautés au début (défaut 0, pour paginer)." },
+        countOnly: { type: "boolean", description: "True : renvoyer seulement le total (défaut false)." },
+      },
+      required: ["tabId", "selector"],
+    },
+  },
+  {
+    name: "replay_paginated",
+    description:
+      "Rejoue une pagination d'API observée dans le trafic de l'onglet, sans scroller : retrouve le dernier appel GET " +
+      "qui matche 'urlPattern', puis suit le curseur de page en page dans la page (même session, cookies inclus) et " +
+      "fusionne les items. 'cursor' : {in: 'query:<param>', out: 'json:<chemin du curseur>'} (ex. {in: 'query:page', " +
+      "out: 'json:next'}). 'itemsPath' : 'json:<chemin des items>' (ex. 'json:items'). 'maxPages' (défaut 10, max 50), " +
+      "'limit' (défaut 2000). Gardes : GET uniquement, même origine que l'onglet, 15 s par page. Gros volume : " +
+      "fichier JSON (+ aperçu).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        urlPattern: { type: "string", description: "Regex sur l'URL de l'appel à rejouer (ex. '/api/items')." },
+        cursor: {
+          type: "object",
+          properties: {
+            in: { type: "string" },
+            out: { type: "string" },
+          },
+          required: ["in", "out"],
+          description: "Curseur : {in: 'query:<param>', out: 'json:<chemin>'} (v1 : curseur en query uniquement).",
+        },
+        itemsPath: { type: "string", description: "'json:<chemin des items>' (ex. 'json:items', 'json:data.results')." },
+        maxPages: { type: "number", description: "Pages rejouées au plus (défaut 10, max 50)." },
+        limit: { type: "number", description: "Items fusionnés au plus (défaut 2000)." },
+      },
+      required: ["tabId", "urlPattern", "cursor", "itemsPath"],
     },
   },
   {
@@ -363,7 +470,8 @@ export const TOOLS: Tool[] = [
     description:
       "Évalue une expression JavaScript dans la page et renvoie le résultat sérialisé. " +
       "Les promesses sont attendues. Utiliser 'return' n'est pas nécessaire : la dernière expression est renvoyée. " +
-      "Un 'return' de premier niveau est accepté (le code est alors exécuté dans une fonction async).",
+      "Un 'return' de premier niveau est accepté (le code est alors exécuté dans une fonction async). " +
+      "Résultat > 50 000 car. : le complet part en fichier (+ aperçu), plus de troncature sèche.",
     inputSchema: {
       type: "object",
       properties: { tabId, code: { type: "string" } },
@@ -703,7 +811,10 @@ export const TOOLS: Tool[] = [
       "(networkIdle: true = 500 ms sans requête, ou un nombre de ms), le DOM stabilisé " +
       "(domSettled: true = 800 ms sans mutation DOM, ou un nombre de ms pour attendre la fin d'un streaming ou d'une transition ; " +
       "sans effet sur les applis temps réel aux mutations permanentes : préférer text / selector / networkIdle), " +
+      "un nombre d'éléments stabilisé (countStable, ex. fin d'un chargement progressif), " +
       "ou la fin d'une authentification (authSettled: true attend la validation d'une connexion / redirection hors login). " +
+      "scroll: {container?, direction?, maxScrolls?} scrolle en attendant (contenu paresseux qui n'apparaît qu'au scroll ; " +
+      "premier plan le temps de l'attente si l'onglet ne peint pas). " +
       "Conditions combinables ; timeout en secondes (défaut 10, max 60, jusqu'à 300 pour authSettled).",
     inputSchema: {
       type: "object",
@@ -717,6 +828,25 @@ export const TOOLS: Tool[] = [
         domSettled: {
           type: ["boolean", "number"],
           description: "Attendre que le DOM soit stable (aucune mutation) pendant N ms (défaut 800 si true). Idéal pour streaming d'IA ou formulaires dynamiques.",
+        },
+        countStable: {
+          type: "object",
+          properties: {
+            selector: { type: "string" },
+            stableMs: { type: "number" },
+            minCount: { type: "number" },
+          },
+          required: ["selector"],
+          description: "Attendre que le nombre de matchs du sélecteur ne bouge plus pendant stableMs (défaut 1500), avec au moins minCount matchs (défaut 1). Idéal pour la fin d'un chargement progressif.",
+        },
+        scroll: {
+          type: "object",
+          properties: {
+            container: { type: "string" },
+            direction: { type: "string", enum: ["down", "up"] },
+            maxScrolls: { type: "number" },
+          },
+          description: "Scrolle (page ou conteneur CSS, down/up, maxScrolls défaut 30) en attendant que les conditions soient remplies. Pour le contenu paresseux ; emprunte le premier plan si l'onglet ne peint pas.",
         },
         authSettled: {
           type: "boolean",

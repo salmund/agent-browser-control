@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#les-outils">Les 38 outils</a> ·
+  <a href="#les-outils">Les 41 outils</a> ·
   <a href="#le-panneau">Le panneau</a> ·
   <a href="#sécurité">Sécurité</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Votre vrai navigateur.** Pas un Chromium headless lancé à côté : l'agent travaille dans vos onglets, avec vos
   comptes déjà connectés. Il voit ce que vous voyez.
 - **N'importe quel agent.** Tout passe par [MCP](https://modelcontextprotocol.io) : une ligne de configuration, et
-  l'agent dispose des 38 outils, quel que soit le modèle derrière.
+  l'agent dispose des 41 outils, quel que soit le modèle derrière.
 - **Bien plus qu'un pilote de clics.** Arbre d'accessibilité avec des références stables, iframes (même d'une autre
   origine), réseau, WebSocket, console, cookies, performance, émulation mobile, interception de requêtes,
   enregistrement GIF ou vidéo… L'agent a les DevTools, pas seulement une souris.
@@ -109,9 +109,9 @@ comportement (onglet de l'agent devant à chaque action).
 | | Outils |
 |---|---|
 | **Onglets** | `tabs_context` (avec l'âge de chaque onglet) · `tabs_create` (aussi en navigation privée) · `tabs_close` · `tabs_cleanup` (ferme les inactifs, `dryRun` pour prévisualiser) · `history_search` (retrouver une page visitée) · `navigate` · `resize_window` |
-| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `save_image` · `read_screen_text` (OCR locale) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) |
+| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `scroll_extract` (listes à chargement progressif extraites en un appel) · `query` (extraction structurée : sélecteur + filtre + pagination) · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `save_image` · `read_screen_text` (OCR locale) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) |
 | **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `credentials_fill` (remplit identifiants / mots de passe sans jamais les voir : coffre chiffré, section Secrets du panneau) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` |
-| **DevTools** | `javascript` · `read_console_messages` · `read_network_requests` · `site_api` (mémoire par site : routes + appels, pour rejouer vite sans redécouvrir) · `network_har` (enregistrement réseau persistant, export HAR aux secrets masqués) · `network_intercept` · `network_get_body` · `storage` · `performance_metrics` · `emulate` · `pdf` · `read_websocket_messages` · `http_request` |
+| **DevTools** | `replay_paginated` (rejouer une pagination d'API observée, sans scroller) · `javascript` · `read_console_messages` · `read_network_requests` · `site_api` (mémoire par site : routes + appels, pour rejouer vite sans redécouvrir) · `network_har` (enregistrement réseau persistant, export HAR aux secrets masqués) · `network_intercept` · `network_get_body` · `storage` · `performance_metrics` · `emulate` · `pdf` · `read_websocket_messages` · `http_request` |
 | **Enregistrer, automatiser** | `gif_creator` (GIF haute qualité ou vidéo WebM) · `browser_script` · `download_media` (vidéo, audio ou sous-titres d'une page, avec yt-dlp) |
 
 Quelques détails qui changent tout sur les vrais sites :
