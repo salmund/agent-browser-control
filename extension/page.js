@@ -84,7 +84,7 @@
     }
     if (el.labels?.length) return clean([...el.labels].map((l) => l.innerText).join(" "));
     if (role === "img") return clean(el.getAttribute("alt") ?? el.getAttribute("title") ?? "");
-    if (["button", "link", "heading", "option", "tab", "menuitem", "cell", "columnheader", "listitem", "summary"].includes(role)) {
+    if (["button", "link", "heading", "option", "tab", "treeitem", "menuitem", "cell", "columnheader", "listitem", "summary"].includes(role)) {
       const text = clean(el.innerText);
       if (text) return text;
     }
@@ -203,12 +203,27 @@
           }
           continue;
         }
-        if (child.nodeType !== Node.ELEMENT_NODE || SKIP_TAGS.has(child.tagName.toUpperCase())) continue;
+        if (child.nodeType !== Node.ELEMENT_NODE) continue;
+        // Le <svg> lui-même est ignoré (formes graphiques), mais ses îlots HTML
+        // (<foreignObject>, ex. rail de serveurs Discord) sont parcourus.
+        if (child.tagName.toUpperCase() === "SVG") { walkForeign(child, depth); continue; }
+        if (SKIP_TAGS.has(child.tagName.toUpperCase())) continue;
         if (!isVisible(child)) continue;
         if (viewport && !inViewport(child)) continue;
         visit(child, depth);
       }
       if (node.shadowRoot) walk(node.shadowRoot, depth);
+    }
+
+    // Îlots HTML dans un <svg> : seul <foreignObject> est parcouru (récursif sur svg imbriqués).
+    function walkForeign(node, depth) {
+      if (truncated) return;
+      for (const child of node.childNodes) {
+        if (truncated || child.nodeType !== Node.ELEMENT_NODE) continue;
+        const tag = child.tagName.toUpperCase();
+        if (tag === "FOREIGNOBJECT") visit(child, depth);
+        else if (tag === "SVG") walkForeign(child, depth);
+      }
     }
 
     function visit(el, depth) {
@@ -239,6 +254,11 @@
     const key = JSON.stringify([filter, ref ?? null, viewport]);
     const previous = lastReads.get(key);
     lastReads.set(key, lines);
+    // En lecture interactive complète, cadrer ce que l'agent voit (et ce qui est masqué).
+    // Hors de `lines` pour ne pas polluer les diffs ; absent en mode diff (déjà résumé par +/-).
+    const hint = interactiveOnly && window.top === window && !(diff && previous)
+      ? `\nÉléments interactifs : ${lines.length}${truncated ? "+" : ""} (texte statique masqué, relire avec filter="all" pour tout voir)`
+      : "";
     if (diff && previous) {
       // Les refs sont stables d'une lecture à l'autre : une ligne identique = élément inchangé.
       const before = new Set(previous);
@@ -263,7 +283,7 @@
       });
       if (imgs.length) imagesBlock = `\n\nImages à l'écran (${imgs.length}) :\n${imgs.join("\n")}`;
     }
-    return `${header}\n\n${lines.join("\n") || "(aucun élément)"}${imagesBlock}${footer}${note}`;
+    return `${header}${hint}\n\n${lines.join("\n") || "(aucun élément)"}${imagesBlock}${footer}${note}`;
   }
 
   /**
@@ -507,7 +527,15 @@
       return `${ref} ${wanted ? "coché" : "décoché"}.`;
     } else if (el.isContentEditable) {
       el.focus();
-      el.textContent = String(value);
+      // Éditeurs contrôlés (React : Copilot, ChatGPT…) : textContent + événements
+      // synthétiques sont ignorés (état restauré). execCommand passe par le pipeline
+      // d'édition natif (événements de confiance) que le framework accepte.
+      const wanted = String(value);
+      const sel = getSelection();
+      sel.selectAllChildren(el);
+      let filled = false;
+      try { filled = document.execCommand("insertText", false, wanted); } catch { filled = false; }
+      if (!filled || !(el.textContent || "").includes(wanted.slice(0, 30))) el.textContent = wanted;
     } else if ("value" in el) {
       el.focus();
       // Setter natif : contourne le suivi de valeur de React pour que l'événement 'input' soit pris en compte.
@@ -813,6 +841,12 @@
     return best;
   }
 
+  /** Panneau d'écriture (compositeur de chat IA…), pas une fenêtre bloquante : champ riche, sans champ de compte. */
+  function isComposer(scope) {
+    if (scope.querySelector("input[type=password], input[type=email]")) return false;
+    return !!scope.querySelector("textarea, [contenteditable='true'], [contenteditable=''], [contenteditable='plaintext-only'], [role=textbox]");
+  }
+
   function blockingOverlay() {
     const W = innerWidth;
     const H = innerHeight;
@@ -831,14 +865,21 @@
       const scope = root.shadowRoot ?? root;
       const text = (root.innerText || scope.textContent || "").slice(0, 3000);
       const consent = CONSENT_RE.test(text) || CONSENT_RE.test(`${root.id} ${root.className}`);
-      const modal = root.getAttribute("aria-modal") === "true" || root.tagName === "DIALOG" || cover >= 0.5;
+      const explicitModal = root.getAttribute("aria-modal") === "true" || root.tagName === "DIALOG";
+      const modal = explicitModal || cover >= 0.5;
       // Les en-têtes et barres de navigation fixes ne gênent pas : on ne garde que les fenêtres qui recouvrent.
       if (!consent && !modal) continue;
+      if (!consent && !explicitModal && isComposer(scope)) continue;
       const score = (consent ? 2 : 0) + cover;
       if (!best || score > best.score) best = { root, scope, cover, consent, score };
     }
     if (!best) return null;
     let { root, scope } = best;
+    // Fond vide d'un menu ouvert (attrape-clic plein écran, ex. Figaro) : pas bloquant.
+    // Un vrai modal a du texte ou des boutons ; une bannière consentement a du texte.
+    if (!best.consent && (root.innerText || scope.textContent || "").trim().length < 20 &&
+        !scope.querySelector("button, a[href], [role=button]") &&
+        [...document.querySelectorAll("[aria-expanded='true']")].some((el) => isVisible(el))) return null;
     if ((root.innerText || scope.textContent || "").trim().length < 20) {
       const content = overlayContent();
       if (content) {
@@ -908,5 +949,20 @@
     return true;
   }
 
-  globalThis.__abc = { readPage, locate, pageText, find, formInput, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef, refMarks, showRefMarks, hideRefMarks };
+  /**
+   * Survol par événements (complément du survol souris réel) : les menus pilotés
+   * en JS (mouseenter, ex. méga-menus eBay) s'ouvrent même en onglet masqué, où
+   * le :hover CSS ne tient pas. Sans effet sur les menus purement CSS.
+   */
+  function hoverEvents({ x, y }) {
+    const el = typeof x === "number" ? document.elementFromPoint(x, y) : null;
+    if (!el) return false;
+    el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true }));
+    for (let n = el; n && n !== document; n = n.parentElement) {
+      n.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: true }));
+    }
+    return true;
+  }
+
+  globalThis.__abc = { readPage, locate, pageText, find, formInput, hoverEvents, fillSecret, listImages, usableImage, markRef, isFileInput, overlay, hideOverlay, needsRender, imageData, blockingOverlay, gestureStart, gestureEnd, linkHref, clickRef, refMarks, showRefMarks, hideRefMarks };
 })();

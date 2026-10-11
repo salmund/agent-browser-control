@@ -124,6 +124,7 @@ Quelques détails qui changent tout sur les vrais sites :
   système est interceptée, l'agent n'a jamais à la manipuler.
 - **`read_page` en mode `diff`** ne renvoie que ce qui a changé depuis la lecture précédente : moins de contexte,
   plus de vitesse.
+- **Actions composées (1 tour au lieu de 2 ou 3)** : `navigate` et `tabs_create` acceptent `snapshot: true` pour renvoyer directement l'arbre interactif dès le chargement terminé ; `computer` et `form_input` acceptent `snapshot: true` ou `then: "diff"` pour stabiliser le DOM (300 ms) et renvoyer le résultat ou le différentiel immédiatement.
 
 ### `browser_script` : des dizaines d'actions en un seul appel
 

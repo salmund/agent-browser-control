@@ -16,6 +16,7 @@ import {
   deleteSiteRoute,
   deriveSiteCall,
   getSiteNotes,
+  getSiteNotesForHost,
   loadSiteApi,
   setSiteCall,
   setSiteRoute,
@@ -461,7 +462,7 @@ function attachSiteNotes(call: CallRequest, result: CallResult): CallResult {
   const api = readSiteApi();
   const blocks: string[] = [];
   for (const h of [...hosts].sort().slice(0, 3)) {
-    const notes = getSiteNotes(api[h]);
+    const notes = getSiteNotesForHost(api, h);
     if (notes.length) blocks.push(`Mémoire ${h} :\n${notes.slice(0, 4).map((n) => `- ${n}`).join("\n")}`);
   }
   if (!blocks.length) return result;

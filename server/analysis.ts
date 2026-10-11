@@ -292,6 +292,41 @@ export function getSiteNotes(entry?: SiteEntry): string[] {
   return entry.notes ?? [];
 }
 
+function normSiteHost(h: string): string {
+  return h.trim().toLowerCase().replace(/\.$/, "");
+}
+
+/**
+ * Une clé couvre un hôte : égalité ou suffixe de domaine (même règle que la
+ * blocklist, l'historique et les slots : `pinterest.com` couvre
+ * `www.pinterest.com`). Pas de syntaxe `*.` : la clé de domaine nu suffit.
+ */
+export function siteKeyCovers(host: string, key: string): boolean {
+  const h = normSiteHost(host);
+  const k = normSiteHost(key);
+  if (!h || !k) return false;
+  return h === k || h.endsWith(`.${k}`);
+}
+
+/**
+ * Playbook applicable à un hôte : notes de l'hôte exact d'abord, puis des
+ * domaines parents, sans doublons (l'exact gagne en cas de recouvrement).
+ */
+export function getSiteNotesForHost(api: Record<string, SiteEntry>, host: string): string[] {
+  const h = normSiteHost(host);
+  if (!h) return [];
+  const keys = Object.keys(api)
+    .filter((k) => siteKeyCovers(h, k))
+    .sort((a, b) => b.length - a.length);
+  const out: string[] = [];
+  for (const k of keys) {
+    for (const n of getSiteNotes(api[k])) {
+      if (!out.includes(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
 const MAX_NOTES = 12;
 const MAX_NOTE_CHARS = 280;
 

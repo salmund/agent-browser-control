@@ -78,6 +78,12 @@ sauf si chacun se distingue.
 
 ## Aller vite sans agir à l'aveugle
 
+- **Actions fusionnées (1 seul tour de LLM au lieu de 2 ou 3) :**
+  - `tabs_create` avec `url` et `snapshot: true` : crée l'onglet, attend le chargement et renvoie directement l'arbre interactif dans la même réponse.
+  - `navigate` avec `snapshot: true` (ou `read: "interactive"|"all"|"text"`) : navigue et renvoie immédiatement l'arbre dès le chargement terminé (économise un appel `read_page` séparé).
+  - `computer` (`left_click`, `type`, `scroll`, etc.) avec `snapshot: true` ou `then: "read"` : exécute l'action, attend la stabilisation du DOM (300 ms de calme) et renvoie l'arbre à jour en 1 tour.
+  - `computer` avec `then: "diff"` ou `diff: true` : après un clic, renvoie uniquement ce qui a changé (+ / -) depuis l'état précédent (menu déroulé, modal affichée, etc.).
+  - `form_input` avec `snapshot: true` ou `then: "read"` / `then: "diff"` : remplit les champs, valide via `submitRef` et renvoie l'état du DOM stabilisé directement.
 - Explore pas à pas, puis répète avec `browser_script` (si l'utilisateur l'a activé dans le panneau) : des
   dizaines d'actions en un appel. Dans le code passé à `js()`, utilise `String.raw` pour les expressions
   régulières, et fais filtrer / résumer dans la page (50 000 caractères au plus par retour).

@@ -14,6 +14,7 @@ import {
   deriveSiteCall,
   formFieldNames,
   getSiteNotes,
+  getSiteNotesForHost,
   getSiteRoutes,
   inferSchema,
   isSensitiveKey,
@@ -23,6 +24,7 @@ import {
   safeHeaders,
   setSiteCall,
   setSiteRoute,
+  siteKeyCovers,
   type SiteEntry,
 } from "../server/analysis.ts";
 
@@ -149,5 +151,28 @@ assert.strictEqual(deleteSiteNote(many, "s.example", "absente").removed, false);
 const delNote = deleteSiteNote(many, "s.example", "note 2");
 assert.strictEqual(delNote.removed, true);
 assert.ok(!getSiteNotes(delNote.api["s.example"]).includes("note 2"));
+
+// Wildcard de domaine : la clé nue couvre ses sous-domaines (même règle suffixe que blocklist et slots).
+assert.strictEqual(siteKeyCovers("www.pinterest.com", "pinterest.com"), true);
+assert.strictEqual(siteKeyCovers("fr.pinterest.com", "pinterest.com"), true);
+assert.strictEqual(siteKeyCovers("www.pinterest.com", "www.pinterest.com"), true);
+assert.strictEqual(siteKeyCovers("pinterest.com", "www.pinterest.com"), false);
+assert.strictEqual(siteKeyCovers("notpinterest.com", "pinterest.com"), false);
+assert.strictEqual(siteKeyCovers("WWW.Pinterest.COM", "pinterest.com"), true);
+assert.strictEqual(siteKeyCovers("", "pinterest.com"), false);
+let wild: Record<string, SiteEntry> = {};
+wild = addSiteNote(wild, "pinterest.com", "Un seul chargement par session.").api;
+wild = addSiteNote(wild, "www.pinterest.com", "Ne pas recharger sur spinner.").api;
+assert.deepStrictEqual(getSiteNotesForHost(wild, "www.pinterest.com"), [
+  "Ne pas recharger sur spinner.",
+  "Un seul chargement par session.",
+]);
+assert.deepStrictEqual(getSiteNotesForHost(wild, "fr.pinterest.com"), ["Un seul chargement par session."]);
+assert.deepStrictEqual(getSiteNotesForHost(wild, "example.com"), []);
+wild = addSiteNote(wild, "pinterest.com", "Ne pas recharger sur spinner.").api;
+assert.deepStrictEqual(getSiteNotesForHost(wild, "www.pinterest.com"), [
+  "Ne pas recharger sur spinner.",
+  "Un seul chargement par session.",
+]);
 
 console.log("analysis : OK (masquage, exports, décodeurs, site_api, routes, dérivation, suppressions, playbook)");

@@ -122,6 +122,7 @@ A few details that make all the difference on real websites:
 - **`file_upload`** also works when the site opens the file picker on click: the system dialog is intercepted, so
   the agent never has to deal with it.
 - **`read_page` in `diff` mode** only returns what changed since the previous read: less context, more speed.
+- **Compound actions (1 LLM turn instead of 2 or 3)**: `navigate` and `tabs_create` accept `snapshot: true` to directly return the interactive accessibility tree as soon as loading completes; `computer` and `form_input` accept `snapshot: true` or `then: "diff"` to settle the DOM (300 ms) and return the updated tree or diff immediately.
 
 ### `browser_script`: dozens of actions in a single call
 

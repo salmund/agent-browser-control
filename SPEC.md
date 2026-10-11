@@ -42,10 +42,10 @@ Principes :
 | Outil | Rôle |
 |---|---|
 | `tabs_context` | Liste les onglets du groupe de l'agent (id, titre, URL, inactivité) ; `label` : seulement ceux d'un sous-agent |
-| `tabs_create` / `tabs_close` | Ouvre / ferme un onglet dans le groupe de l'agent ; `label` : dans le groupe « agent · label » d'un sous-agent |
+| `tabs_create` / `tabs_close` | Ouvre / ferme un onglet dans le groupe de l'agent ; `snapshot: true` renvoie l'arbre interactif au chargement |
 | `tabs_cleanup` | Ferme les onglets inactifs (seuil `olderThanMinutes`, `dryRun` pour prévisualiser ; actif, épinglé, son et activité inconnue protégés) |
-| `navigate` | URL, `back`, `forward`, `reload` |
-| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` |
+| `navigate` | URL, `back`, `forward`, `reload` ; `snapshot: true` renvoie l'arbre dès le chargement |
+| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`, `wait`, par coordonnées **ou** par `ref` ; `snapshot: true` ou `then: "diff"` pour enchaîner sans tour LLM |
 | `read_page` | Arbre d'accessibilité compact avec `ref` stables (`ref_12`) ; filtre `interactive` |
 | `find` | Recherche d'éléments par texte / rôle / sélecteur (sans LLM) ; `scan` balaye les listes virtualisées |
 | `get_page_text` | Texte principal de la page (type Readability) |

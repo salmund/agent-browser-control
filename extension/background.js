@@ -468,6 +468,12 @@ async function createGroupedTab(agent, incognito, tag) {
       tab = win.tabs[0];
     }
   }
+  if (!incognito && windowId === undefined) {
+    // Onglet normal sans groupe : viser une fenêtre normale existante, jamais
+    // la dernière fenêtre focalisée (qui peut être privée → onglet sans session).
+    const existing = (await chrome.windows.getAll({ windowTypes: ["normal"] })).find((w) => !w.incognito);
+    if (existing) windowId = existing.id;
+  }
   tab ??= await chrome.tabs.create({ url: "about:blank", windowId, active: foreground });
   if (groupId === null) {
     const title = groupTitle(agent, incognito, tag);
@@ -480,7 +486,7 @@ async function createGroupedTab(agent, incognito, tag) {
   return tab;
 }
 
-async function tabsCreate(agent, { url, incognito = false, label }) {
+async function tabsCreate(agent, { url, incognito = false, label, snapshot = false, read }) {
   if (url) await assertAllowed(normalizeUrl(url));
   const tab = await withGroupLock(() => createGroupedTab(agent, incognito, cleanLabel(label)));
   // Attacher le debugger avant de charger la page pour capturer console et réseau dès le début.
@@ -491,7 +497,12 @@ async function tabsCreate(agent, { url, incognito = false, label }) {
     await loaded.catch(() => {});
   }
   const fresh = await chrome.tabs.get(tab.id);
-  return ok(text(`Onglet créé :\n${formatTab(fresh)}`));
+  let baseMsg = `Onglet créé :\n${formatTab(fresh)}`;
+  if (url && (snapshot || read)) {
+    const snap = await getAttachedSnapshot(agent, tab.id, { snapshot, read });
+    if (snap) baseMsg += `\n\n${snap}`;
+  }
+  return ok(text(baseMsg));
 }
 
 async function tabsClose(agent, { tabId }) {
@@ -627,7 +638,77 @@ function isAuthChallenge(url) {
   }
 }
 
-async function navigate(agent, { tabId, url }) {
+async function getAttachedSnapshot(agent, tabId, { snapshot, then, diff, read } = {}) {
+  const wantDiff = diff === true || then === "diff";
+  const wantText = read === "text";
+  const filter = read === "all" ? "all" : "interactive";
+  if (wantText) {
+    const textRes = await getPageText(agent, { tabId });
+    return textRes?.content?.find((c) => c.type === "text")?.text ?? "";
+  }
+  const pageRes = await readPage(agent, { tabId, filter, diff: wantDiff });
+  return pageRes?.content?.find((c) => c.type === "text")?.text ?? "";
+}
+
+/** Attend que les mutations du DOM cessent pendant au moins settleMs (300 ms par défaut, 2 s max). */
+async function waitDomSettle(tabId, settleMs = 300, maxMs = 2000) {
+  const probe = `(() => {
+    if (!window.__abcObserver) {
+      window.__abcLastMutation = Date.now();
+      try {
+        window.__abcObserver = new MutationObserver(() => { window.__abcLastMutation = Date.now(); });
+        window.__abcObserver.observe(document.documentElement || document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+      } catch {}
+    }
+    return window.__abcLastMutation || 0;
+  })()`;
+  // L'observer ne sert que le temps de la mesure : déconnecté et globales supprimées aussitôt
+  // après, pour ne laisser dans la page aucune trace détectable par un anti-bot.
+  const cleanup = `(() => { try { window.__abcObserver?.disconnect(); } catch {} try { delete window.__abcObserver; delete window.__abcLastMutation; } catch {} return true; })()`;
+  try {
+    const start = Date.now();
+    await sleep(60);
+    while (Date.now() - start < maxMs) {
+      try {
+        const res = await cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true }).catch(() => null);
+        const last = res?.result?.value;
+        if (typeof last === "number" && Date.now() - last >= settleMs) return;
+      } catch {
+        break;
+      }
+      await sleep(60);
+    }
+  } finally {
+    await cdp(tabId, "Runtime.evaluate", { expression: cleanup, returnByValue: true }).catch(() => {});
+  }
+}
+
+/** Attend la réaction de la page (navigation ou stabilisation DOM) et joint le snapshot au résultat. */
+async function attachActionSnapshot(agent, tabId, args, res) {
+  if (!res || res.isError) return res;
+  let navigated = false;
+  try {
+    // La navigation met quelques ms à démarrer après l'action : tester, attendre un peu, retester.
+    let loading = (await chrome.tabs.get(tabId))?.status === "loading";
+    if (!loading) {
+      await sleep(50);
+      loading = (await chrome.tabs.get(tabId))?.status === "loading";
+    }
+    if (loading) {
+      await waitForLoad(tabId).catch(() => {});
+      navigated = true;
+    }
+  } catch {}
+  if (!navigated) {
+    await waitDomSettle(tabId, 300).catch(() => sleep(150));
+  }
+  const snap = await getAttachedSnapshot(agent, tabId, args);
+  if (!snap) return res;
+  const original = res.content?.find((c) => c.type === "text")?.text ?? "";
+  return ok(text(`${original}\n\n${snap}`));
+}
+
+async function navigate(agent, { tabId, url, snapshot = false, read }) {
   await assertOwned(agent, tabId);
   if (!url) throw new Error("url manquante.");
   const special = ["back", "forward", "reload"].includes(url);
@@ -651,7 +732,12 @@ async function navigate(agent, { tabId, url }) {
     if (w && !w.focused) chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
     note += `\n⚠ Authentification requise : la page demande une connexion (${tab.url}). L'onglet a été mis au premier plan pour que l'utilisateur puisse s'identifier. Tu peux appeler wait_for(tabId, { authSettled: true }) pour attendre sa validation sans fermer l'onglet.`;
   }
-  return ok(text(`${await overlayNotice(tabId)}Navigation terminée : ${tab.title} · ${tab.url}${note}`));
+  let baseMsg = `Navigation terminée : ${tab.title} · ${tab.url}${note}`;
+  if (snapshot || read) {
+    const snap = await getAttachedSnapshot(agent, tabId, { snapshot, read });
+    return ok(text(snap ? `${baseMsg}\n\n${snap}` : `${await overlayNotice(tabId)}${baseMsg}`));
+  }
+  return ok(text(`${await overlayNotice(tabId)}${baseMsg}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -972,6 +1058,7 @@ async function readNetworkRequests(agent, { tabId, urlPattern, limit = 100, clea
 /** Exécuté dans la frame : appelle une fonction de page.js (éventuellement async). */
 async function callPageFunction(name, a) {
   try {
+    if (!globalThis.__abc) return { missing: true };
     return { value: await globalThis.__abc[name](a) };
   } catch (e) {
     return { error: e.message };
@@ -990,9 +1077,15 @@ const prefixRefs = (text, frameId) => (frameId ? text.replace(/\[ref_(\d+)\]/g, 
 async function inPage(tabId, fnName, arg, frameId = 0) {
   assertNoDialog(tabId);
   const target = { tabId, frameIds: [frameId] };
+  // page.js persiste par document (monde isolé + garde __abc) : appeler d'abord, injecter si absent.
   const run = async () => {
-    await chrome.scripting.executeScript({ target, files: ["page.js"] });
-    const [res] = await chrome.scripting.executeScript({ target, func: callPageFunction, args: [fnName, arg ?? null] });
+    const attempt = () => chrome.scripting.executeScript({ target, func: callPageFunction, args: [fnName, arg ?? null] });
+    let [res] = await attempt();
+    if (res?.result?.missing) {
+      await chrome.scripting.executeScript({ target, files: ["page.js"] });
+      [res] = await attempt();
+      if (res?.result?.missing) throw new Error("page.js non injectable dans cet onglet (navigation en cours ?).");
+    }
     return res;
   };
   const res = await raceDialog(tabId, run());
@@ -1005,8 +1098,15 @@ async function inAllFrames(tabId, fnName, arg) {
   assertNoDialog(tabId);
   const target = { tabId, allFrames: true };
   const run = async () => {
-    await chrome.scripting.executeScript({ target, files: ["page.js"] });
-    return chrome.scripting.executeScript({ target, func: callPageFunction, args: [fnName, arg ?? null] });
+    const attempt = () => chrome.scripting.executeScript({ target, func: callPageFunction, args: [fnName, arg ?? null] });
+    let results = await attempt();
+    if (results.some((r) => r?.result?.missing)) {
+      await chrome.scripting.executeScript({ target, files: ["page.js"] });
+      results = (await attempt()).map((r) =>
+        r?.result?.missing ? { ...r, result: { error: "page.js non injectable dans cette frame (navigation en cours ?)." } } : r,
+      );
+    }
+    return results;
   };
   let results;
   try {
@@ -1056,6 +1156,7 @@ async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
     return ok(text(untrusted(prefixRefs(tree, target.frameId))));
   }
   // Une seule passe dans toutes les frames : la page principale lit avec frame=false.
+  const noticeP = overlayNotice(tabId); // indépendant de l'arbre : en parallèle (ne rejette jamais).
   const frames = await inAllFrames(tabId, "readPage", { filter, viewport, diff, frame: true });
   const main = frames.find((f) => f.frameId === 0)?.value ?? (await inPage(tabId, "readPage", { filter, viewport, diff }));
   const parts = [main];
@@ -1065,11 +1166,12 @@ async function readPage(agent, { tabId, filter, ref, viewport, diff }) {
   }
   let out = parts.join("\n");
   if (out.length > 80_000) out = `${out.slice(0, 80_000)}\n[Tronqué : cibler une ref ou utiliser viewport=true.]`;
-  return ok(text((await overlayNotice(tabId)) + untrusted(out)));
+  return ok(text((await noticeP) + untrusted(out)));
 }
 
 async function find(agent, { tabId, query, limit = 20, scan = false }) {
   await assertOwned(agent, tabId);
+  const noticeP = overlayNotice(tabId); // indépendant de la recherche : en parallèle (ne rejette jamais).
   const frames = await inAllFrames(tabId, "find", { query, limit, structured: true, scan });
   let total = 0;
   const items = [];
@@ -1085,10 +1187,11 @@ async function find(agent, { tabId, query, limit = 20, scan = false }) {
   const result = shown.length
     ? `${total} résultat(s) pour ${JSON.stringify(query)} :\n${shown.join("\n")}${more}`
     : `Aucun élément trouvé pour ${JSON.stringify(query)}.${scan ? " (balayage des listes virtualisées effectué)" : " (scan: true balaye les listes virtualisées)"}`;
-  return ok(text((await overlayNotice(tabId)) + untrusted(result)));
+  return ok(text((await noticeP) + untrusted(result)));
 }
 
-async function formInput(agent, { tabId, ref, value, fields, submitRef }) {
+async function formInput(agent, args) {
+  const { tabId, ref, value, fields, submitRef } = args;
   const tab = await assertOwned(agent, tabId);
   await bringToFront(tab);
   const items = Array.isArray(fields) && fields.length ? fields : (ref !== undefined ? [{ ref, value }] : []);
@@ -1112,21 +1215,30 @@ async function formInput(agent, { tabId, ref, value, fields, submitRef }) {
       await showOverlay(tabId, point).catch(() => {});
       await withForeground(tab, () => click(tabId, point, "left", 1, 0)).catch(() => {});
     }
-    await sleep(200);
+    await sleepForFrame(tabId, 200);
     submitMsg = `\nSoumis via clic sur ${submitRef}.`;
   }
 
   await showOverlay(tabId);
   const summaryRefs = items.map((i) => i.ref).join(", ");
   await recordFrame(tabId, `form_input ${summaryRefs}${submitRef ? ` -> ${submitRef}` : ""}`);
-  return ok(text((results.join("\n") + submitMsg).trim()));
+  const baseRes = ok(text((results.join("\n") + submitMsg).trim()));
+  if (args.snapshot || args.then || args.diff) {
+    return attachActionSnapshot(agent, tabId, args, baseRes);
+  }
+  return baseRes;
 }
 
 async function getPageText(agent, { tabId }) {
   await assertOwned(agent, tabId);
-  const { title, url, text: body } = await inPage(tabId, "pageText");
-  const head = `${await overlayNotice(tabId)}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`;
+  const textP = inPage(tabId, "pageText");
+  const noticeP = overlayNotice(tabId); // indépendant du texte : en parallèle (ne rejette jamais).
+  const { title, url, text: body } = await textP;
+  const head = `${await noticeP}Page : ${title}\nURL : ${url}\n\n${untrusted(body)}`;
   if (!(await hasBigCanvas(tabId))) return ok(text(head));
+  // Toile de fond décorative (ex. Discord) sous un vrai contenu HTML : pas d’export ni d’OCR.
+  // Quand le canvas porte le contenu (Docs, Figma, jeux), il n'est pas fixe : OCR conservé.
+  if (body.trim().length >= 500 && (await bigCanvasFixed(tabId))) return ok(text(head));
   // Page dessinée dans un canvas : le texte n'est pas dans le HTML. On va le chercher là où il est.
   const exported = await adapterText(tabId, url);
   if (exported) {
@@ -1145,6 +1257,18 @@ async function hasBigCanvas(tabId) {
     const r = c.getBoundingClientRect();
     return r.width * r.height > innerWidth * innerHeight * 0.25;
   })`).catch(() => false);
+}
+/**
+ * Tous les grands canvas sont-ils des toiles de fond (position:fixed, ex. fond
+ * animé, canvas Discord) plutôt que le support du contenu (Docs, Figma, jeux) ?
+ * Un canvas fixe passe devant le contenu statique au hit-test : le test de
+ * positionnement remplace un hit-test qui ne distingue rien. Doute -> OCR.
+ */
+async function bigCanvasFixed(tabId) {
+  return evaluate(tabId, `[...document.querySelectorAll("canvas")].filter((c) => {
+    const r = c.getBoundingClientRect();
+    return r.width * r.height > innerWidth * innerHeight * 0.25;
+  }).every((c) => getComputedStyle(c).position === "fixed")`).catch(() => false);
 }
 
 async function fileUpload(agent, { tabId, ref, paths }) {
@@ -1442,6 +1566,7 @@ async function bringToFront(tab) {
 // Dans ces cas seulement, l'onglet passe devant le temps du geste, puis l'utilisateur retrouve le sien.
 const FRONT_HOLD_MS = 800; // garde après le geste : des gestes enchaînés ne font pas d'allers-retours
 const fronts = new Map(); // tabId -> { windowId, previousId, uses, timer, ready }
+const hoverSeq = new Map(); // tabId -> dernier survol (garde les rejouements différés)
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTimeout(fronts.get(tabId)?.timer);
@@ -1541,6 +1666,7 @@ async function computer(agent, args) {
   if (action !== "wait") await bringToFront(tab);
   const modifiers = modifierMask(args.modifiers);
 
+  let res;
   switch (action) {
     case "screenshot":
       return screenshot(tabId, args);
@@ -1554,9 +1680,10 @@ async function computer(agent, args) {
       const button = action === "right_click" ? "right" : "left";
       const count = { double_click: 2, triple_click: 3 }[action] ?? 1;
       await click(tabId, point, button, count, modifiers);
-      await sleep(150);
+      await sleepForFrame(tabId, 150);
       await recordFrame(tabId, action, point);
-      return ok(text(`${action} en (${point.x}, ${point.y}).`));
+      res = ok(text(`${action} en (${point.x}, ${point.y}).`));
+      break;
     }
 
     case "left_click_drag": {
@@ -1583,15 +1710,24 @@ async function computer(agent, args) {
         ? `\n⚠ Geste probablement perturbé : la page a reçu ${stray} position(s) de pointeur loin du tracé, sans doute ` +
           "la souris de l'utilisateur. Vérifier le résultat (capture) et recommencer quand il ne la touche plus."
         : "";
-      return ok(text(`Glisser de (${from.x}, ${from.y}) à (${to.x}, ${to.y})${via}.${warning}`));
+      res = ok(text(`Glisser de (${from.x}, ${from.y}) à (${to.x}, ${to.y})${via}.${warning}`));
+      break;
     }
 
     case "hover": {
       const point = await targetPoint(tabId, args);
       await showOverlay(tabId, point);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, modifiers });
+      // Après restitution de l'onglet (le mouseleave qui suit ferme les menus), on rejoue
+      // le survol par événements : les menus JS restent ouverts en arrière-plan.
+      const seq = (hoverSeq.get(tabId) ?? 0) + 1;
+      hoverSeq.set(tabId, seq);
+      setTimeout(() => {
+        if (hoverSeq.get(tabId) === seq) inPage(tabId, "hoverEvents", { x: point.x, y: point.y }).catch(() => null);
+      }, FRONT_HOLD_MS + 400);
       await recordFrame(tabId, action, point);
-      return ok(text(`Survol en (${point.x}, ${point.y}).`));
+      res = ok(text(`Survol en (${point.x}, ${point.y}).`));
+      break;
     }
 
     case "type": {
@@ -1616,16 +1752,18 @@ async function computer(agent, args) {
         ? ""
         : `\n⚠ Aucun champ de saisie n'avait le focus (élément actif : ${focus}) : le texte est parti vers la page, ` +
           "où il a pu déclencher des raccourcis clavier. Cliquer d'abord dans le champ (ref), puis vérifier.";
-      return ok(text(`Texte saisi (${args.text.length} caractères).${warning}`));
+      res = ok(text(`Texte saisi (${args.text.length} caractères).${warning}`));
+      break;
     }
 
     case "key": {
       if (!args.text) throw new Error("'text' manquant (ex. 'Enter', 'ctrl+a').");
       await showOverlay(tabId);
       await pressKeys(tabId, args.text);
-      await sleep(100);
+      await sleepForFrame(tabId, 100);
       await recordFrame(tabId, `key ${args.text}`);
-      return ok(text(`Touches envoyées : ${args.text}`));
+      res = ok(text(`Touches envoyées : ${args.text}`));
+      break;
     }
 
     case "scroll": {
@@ -1639,9 +1777,10 @@ async function computer(agent, args) {
       const deltaX = dir === "left" ? -amount : dir === "right" ? amount : 0;
       const deltaY = dir === "up" ? -amount : dir === "down" ? amount : 0;
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX, deltaY, modifiers });
-      await sleep(300);
+      await sleepForFrame(tabId, 300);
       await recordFrame(tabId, `scroll ${dir}`);
-      return ok(text(`Défilement ${dir} de ${amount}px en (${point.x}, ${point.y}).`));
+      res = ok(text(`Défilement ${dir} de ${amount}px en (${point.x}, ${point.y}).`));
+      break;
     }
 
     case "scroll_to": {
@@ -1649,7 +1788,8 @@ async function computer(agent, args) {
       const point = await locateRef(tabId, args.ref);
       await showOverlay(tabId, point);
       await recordFrame(tabId, `scroll_to ${args.ref}`);
-      return ok(text(`${args.ref} amené à l'écran, centre en (${point.x}, ${point.y}).`));
+      res = ok(text(`${args.ref} amené à l'écran, centre en (${point.x}, ${point.y}).`));
+      break;
     }
 
     case "wait": {
@@ -1662,6 +1802,11 @@ async function computer(agent, args) {
     default:
       throw new Error(`Action inconnue : ${action}`);
   }
+
+  if (args.snapshot || args.then || args.diff) {
+    return attachActionSnapshot(agent, tabId, args, res);
+  }
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -1730,12 +1875,22 @@ const WEBM_MAX_WIDTH = 1280;
 const recordings = new Map(); // tabId -> [{ jpeg, w, h, t, label, point }]
 const stoppedRecordings = new Map();
 
-async function recordFrame(tabId, label, point) {
+/** Enregistrement GIF en cours sur cet onglet (avec de la place pour une image). */
+function isRecording(tabId) {
   const frames = recordings.get(tabId);
-  if (!frames || frames.length >= MAX_GIF_FRAMES) return;
+  return !!frames && frames.length < MAX_GIF_FRAMES;
+}
+
+/** Pause de stabilisation avant une capture : inutile hors enregistrement. */
+async function sleepForFrame(tabId, ms) {
+  if (isRecording(tabId)) await sleep(ms);
+}
+
+async function recordFrame(tabId, label, point) {
+  if (!isRecording(tabId)) return;
   try {
     const { jpeg, w, h } = await captureViewport(tabId);
-    frames.push({ jpeg, w, h, t: Date.now(), label, point });
+    recordings.get(tabId).push({ jpeg, w, h, t: Date.now(), label, point });
   } catch {}
 }
 
@@ -2625,7 +2780,7 @@ async function credentialsFill(agent, { tabId, fills, submitRef }) {
       await showOverlay(tabId, point).catch(() => {});
       await withForeground(tab, () => click(tabId, point, "left", 1, 0)).catch(() => {});
     }
-    await sleep(200);
+    await sleepForFrame(tabId, 200);
     submitMsg = `\nSoumis via clic sur ${submitRef}.`;
   }
 

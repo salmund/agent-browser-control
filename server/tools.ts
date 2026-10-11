@@ -28,7 +28,8 @@ export const TOOLS: Tool[] = [
     name: "tabs_create",
     description:
       "Ouvre un nouvel onglet dans le groupe de l'agent (ou de son sous-agent, avec label) et renvoie son id. " +
-      "Ne travailler que sur les onglets qu'on a soi-même créés.",
+      "Ne travailler que sur les onglets qu'on a soi-même créés. " +
+      "Avec url et snapshot: true, attend le chargement et renvoie directement l'arbre interactif dans la même réponse (1 tour au lieu de 2).",
     inputSchema: {
       type: "object",
       properties: {
@@ -38,6 +39,15 @@ export const TOOLS: Tool[] = [
           description: "Ouvrir en navigation privée (sans cookies ni session de l'utilisateur), dans un groupe « agent (privé) ».",
         },
         label,
+        snapshot: {
+          type: "boolean",
+          description: "True : si une url est donnée, attend le chargement et renvoie directement l'arbre d'accessibilité interactif de la page.",
+        },
+        read: {
+          type: "string",
+          enum: ["interactive", "all", "text"],
+          description: "Format de lecture si snapshot est demandé : 'interactive' (défaut), 'all', ou 'text'.",
+        },
       },
     },
   },
@@ -92,11 +102,24 @@ export const TOOLS: Tool[] = [
     name: "navigate",
     description:
       "Navigue vers une URL, ou 'back' / 'forward' / 'reload'. Attend la fin du chargement. " +
+      "Avec snapshot: true (ou read: 'interactive'), renvoie directement l'arbre interactif de la page dans la même réponse (1 seul tour au lieu de 2). " +
       "Dans une SPA (Discord…) : naviguer par clic (find + ref) quand la cible est même origine, pas par URL — " +
       "navigate recharge tout le client (auth, gateway) quand un clic ne fait qu'un appel XHR.",
     inputSchema: {
       type: "object",
-      properties: { tabId, url: { type: "string", description: "URL, 'back', 'forward' ou 'reload'." } },
+      properties: {
+        tabId,
+        url: { type: "string", description: "URL, 'back', 'forward' ou 'reload'." },
+        snapshot: {
+          type: "boolean",
+          description: "True : renvoie directement l'arbre d'accessibilité interactif dès que le chargement est terminé (économise un appel read_page séparé).",
+        },
+        read: {
+          type: "string",
+          enum: ["interactive", "all", "text"],
+          description: "Format de lecture si snapshot est demandé : 'interactive' (défaut), 'all', ou 'text'.",
+        },
+      },
       required: ["tabId", "url"],
     },
   },
@@ -160,6 +183,24 @@ export const TOOLS: Tool[] = [
           type: "boolean",
           description: "Pour 'screenshot' : numérote les éléments interactifs (pastilles violettes = refs cliquables, légende fournie ; main frame, 30 au plus).",
         },
+        snapshot: {
+          type: "boolean",
+          description: "Après l'action (clic, frappe, etc.) : attend la réaction du DOM (300 ms) et renvoie directement l'arbre interactif dans la même réponse.",
+        },
+        diff: {
+          type: "boolean",
+          description: "Avec snapshot: true, ou seul : ne renvoie que ce qui a changé (+ / -) depuis la lecture précédente.",
+        },
+        then: {
+          type: "string",
+          enum: ["read", "diff"],
+          description: "Raccourci pour enchaîner directement : 'read' (arbre interactif) ou 'diff' (seulement les changements).",
+        },
+        read: {
+          type: "string",
+          enum: ["interactive", "all", "text"],
+          description: "Format de lecture si snapshot / then est demandé : 'interactive' (défaut), 'all', ou 'text'.",
+        },
       },
       required: ["tabId", "action"],
     },
@@ -175,7 +216,7 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         tabId,
-        filter: { type: "string", enum: ["all", "interactive"], description: "Défaut : all." },
+        filter: { type: "string", enum: ["all", "interactive"], description: "Commencer par 'interactive' (liens, boutons, champs : rapide et suffisant pour agir). Passer à 'all' seulement si le texte statique manque (prix, libellés, contenu). Défaut : all." },
         ref: { type: "string", description: "Limiter l'arbre au sous-arbre de cet élément." },
         viewport: { type: "boolean", description: "Seulement les éléments visibles à l'écran." },
         diff: { type: "boolean", description: "Seulement les lignes ajoutées (+) ou retirées (-) depuis la dernière lecture avec les mêmes options." },
@@ -228,6 +269,24 @@ export const TOOLS: Tool[] = [
         submitRef: {
           type: "string",
           description: "Ref du bouton de validation / soumission à cliquer automatiquement après avoir rempli les champs.",
+        },
+        snapshot: {
+          type: "boolean",
+          description: "Attend la stabilisation du DOM (notamment après submitRef) et renvoie directement l'arbre interactif dans la même réponse.",
+        },
+        diff: {
+          type: "boolean",
+          description: "Avec snapshot: true : ne renvoie que ce qui a changé (+ / -).",
+        },
+        then: {
+          type: "string",
+          enum: ["read", "diff"],
+          description: "Raccourci pour enchaîner directement : 'read' (arbre interactif) ou 'diff' (seulement les changements).",
+        },
+        read: {
+          type: "string",
+          enum: ["interactive", "all", "text"],
+          description: "Format de lecture : 'interactive' (défaut), 'all', ou 'text'.",
         },
       },
       required: ["tabId"],
@@ -391,7 +450,8 @@ export const TOOLS: Tool[] = [
       "(tabId + requestId de network_har list, nom optionnel ; réenregistrer sous le même nom met à jour quand " +
       "le site change) ; 'save_route' mémorise un deep link (nom + URL sans jeton) ; 'delete' (site, nom, kind) " +
       "retire un appel, une route ou une note périmée. 'note' ajoute une ligne au playbook du site " +
-      "(comment il se comporte ; servi automatiquement à l'arrivée : navigate, tabs_context). " +
+      "(comment il se comporte ; servi automatiquement à l'arrivée : navigate, tabs_context ; " +
+      "une note sous le domaine nu couvre ses sous-domaines : pinterest.com vaut pour www.pinterest.com). " +
       "Prochaine visite : list, puis navigate vers une route ou " +
       "http_request pour rejouer un appel, au lieu de tout redécouvrir en cliquant.",
     inputSchema: {
