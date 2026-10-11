@@ -13,6 +13,14 @@ const label = {
     "et son fil dans le journal. Sans label, on travaille dans le groupe de l'agent.",
 } as const;
 
+const wait = {
+  type: "string",
+  enum: ["ready", "load"],
+  description:
+    "'ready' (défaut) : rend la main dès que la page est utilisable (DOM prêt et stable), sans attendre images, " +
+    "publicités ni traceurs. 'load' : attend le chargement complet (rarement utile).",
+} as const;
+
 /** Outils exposés aux agents. L'extension implémente chacun d'eux sous le même nom. */
 export const TOOLS: Tool[] = [
   {
@@ -48,6 +56,7 @@ export const TOOLS: Tool[] = [
           enum: ["interactive", "all", "text"],
           description: "Format de lecture si snapshot est demandé : 'interactive' (défaut), 'all', ou 'text'.",
         },
+        wait,
       },
     },
   },
@@ -101,7 +110,7 @@ export const TOOLS: Tool[] = [
   {
     name: "navigate",
     description:
-      "Navigue vers une URL, ou 'back' / 'forward' / 'reload'. Attend la fin du chargement. " +
+      "Navigue vers une URL, ou 'back' / 'forward' / 'reload'. Rend la main dès que la page est utilisable (wait: 'load' pour le chargement complet). " +
       "Avec snapshot: true (ou read: 'interactive'), renvoie directement l'arbre interactif de la page dans la même réponse (1 seul tour au lieu de 2). " +
       "Dans une SPA (Discord…) : naviguer par clic (find + ref) quand la cible est même origine, pas par URL — " +
       "navigate recharge tout le client (auth, gateway) quand un clic ne fait qu'un appel XHR.",
@@ -119,6 +128,7 @@ export const TOOLS: Tool[] = [
           enum: ["interactive", "all", "text"],
           description: "Format de lecture si snapshot est demandé : 'interactive' (défaut), 'all', ou 'text'.",
         },
+        wait,
       },
       required: ["tabId", "url"],
     },

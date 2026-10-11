@@ -4,7 +4,7 @@
 importScripts("gif.js", "annotate.js", "devtools.js", "wait-diag.js", "js-eval.js", "tab-hygiene.js", "history.js", "ws-mask.js");
 
 const DAEMON_URL = "ws://127.0.0.1:7878/ext";
-const PING_MS = 20_000;
+const PING_MS = 10_000;
 const LOAD_TIMEOUT_MS = 20_000;
 const GROUP_COLORS = ["purple", "blue", "green", "orange", "pink", "cyan", "red", "yellow", "grey"];
 const MAX_CONSOLE = 1000;
@@ -19,7 +19,7 @@ const GIF_MAX_WIDTH = 800;
 
 let ws = null;
 let pingTimer = null;
-let reconnectDelay = 1000;
+let reconnectDelay = 500;
 
 function connect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return;
@@ -486,13 +486,13 @@ async function createGroupedTab(agent, incognito, tag) {
   return tab;
 }
 
-async function tabsCreate(agent, { url, incognito = false, label, snapshot = false, read }) {
+async function tabsCreate(agent, { url, incognito = false, label, snapshot = false, read, wait }) {
   if (url) await assertAllowed(normalizeUrl(url));
   const tab = await withGroupLock(() => createGroupedTab(agent, incognito, cleanLabel(label)));
   // Attacher le debugger avant de charger la page pour capturer console et réseau dès le début.
   await ensureAttached(tab.id).catch(() => {});
   if (url) {
-    const loaded = waitForLoad(tab.id);
+    const loaded = waitForReady(tab.id, { until: wait, targetUrl: normalizeUrl(url) });
     await chrome.tabs.update(tab.id, { url: normalizeUrl(url) });
     await loaded.catch(() => {});
   }
@@ -613,6 +613,51 @@ function waitForLoad(tabId) {
   });
 }
 
+const READY_SETTLE_MAX_MS = 1500; // après DOMContentLoaded : attente max de la stabilisation du DOM
+
+/**
+ * Attend que la page soit utilisable, sans attendre la dernière image, publicité ou traceur :
+ * DOMContentLoaded du nouveau document, puis DOM stable 300 ms (1,5 s au plus), ou chargement
+ * complet s'il arrive avant. until: "load" garde l'ancien comportement (chargement complet).
+ * targetUrl évite de prendre la fin de chargement d'about:blank (onglet neuf) pour celle de la cible.
+ * assumeNavigated : la navigation a déjà commencé (après un clic), le prochain DOMContentLoaded compte.
+ */
+function waitForReady(tabId, { until = "ready", targetUrl, assumeNavigated = false } = {}) {
+  if (until === "load") return waitForLoad(tabId);
+  return new Promise((resolve, reject) => {
+    let navigated = assumeNavigated;
+    let contentLoaded = false;
+    let finished = false;
+    const finish = (err) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.debugger.onEvent.removeListener(onCdp);
+      if (err) reject(err);
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error("Chargement trop long (page peut-être encore en cours).")), LOAD_TIMEOUT_MS);
+    function onUpdated(id, info, tab) {
+      if (id !== tabId || info.status !== "complete") return;
+      if (targetUrl && targetUrl !== "about:blank" && tab?.url === "about:blank") return;
+      finish();
+    }
+    function onCdp(source, method, params) {
+      // Seulement la page principale (pas les iframes ni workers attachés, qui ont un sessionId).
+      if (source.tabId !== tabId || source.sessionId) return;
+      if (method === "Page.frameNavigated" && !params.frame?.parentId) {
+        navigated = true;
+      } else if (method === "Page.domContentEventFired" && navigated && !contentLoaded) {
+        contentLoaded = true;
+        waitDomSettle(tabId, 300, READY_SETTLE_MAX_MS).catch(() => {}).then(() => finish());
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.debugger.onEvent.addListener(onCdp);
+  });
+}
+
 /** Détecte si l'URL correspond à une mire d'authentification, SSO, MFA ou défi bot. */
 function isAuthChallenge(url) {
   if (!url) return false;
@@ -695,7 +740,7 @@ async function attachActionSnapshot(agent, tabId, args, res) {
       loading = (await chrome.tabs.get(tabId))?.status === "loading";
     }
     if (loading) {
-      await waitForLoad(tabId).catch(() => {});
+      await waitForReady(tabId, { assumeNavigated: true }).catch(() => {});
       navigated = true;
     }
   } catch {}
@@ -708,13 +753,13 @@ async function attachActionSnapshot(agent, tabId, args, res) {
   return ok(text(`${original}\n\n${snap}`));
 }
 
-async function navigate(agent, { tabId, url, snapshot = false, read }) {
+async function navigate(agent, { tabId, url, snapshot = false, read, wait }) {
   await assertOwned(agent, tabId);
   if (!url) throw new Error("url manquante.");
   const special = ["back", "forward", "reload"].includes(url);
   if (!special) await assertAllowed(normalizeUrl(url));
   await ensureAttached(tabId).catch(() => {});
-  const loaded = waitForLoad(tabId);
+  const loaded = waitForReady(tabId, { until: wait });
   if (url === "back") await chrome.tabs.goBack(tabId);
   else if (url === "forward") await chrome.tabs.goForward(tabId);
   else if (url === "reload") await chrome.tabs.reload(tabId);
@@ -1336,6 +1381,40 @@ async function uploadViaFileChooser(tabId, ref, paths) {
 // Capture d'écran
 // ---------------------------------------------------------------------------
 
+const CAPTURE_TIMEOUT_MS = 800; // capture en arrière-plan : au-delà, la page ne dessine pas (passage devant)
+const CAPTURE_FRONT_TIMEOUT_MS = 10_000; // seconde chance, onglet devant
+
+class CaptureTimeout extends Error {}
+
+/**
+ * Page.captureScreenshot d'un onglet masqué répond d'habitude vite, mais reste parfois sans réponse
+ * (aucune image dessinée) jusqu'au délai du démon (90 s). Délai court, puis l'onglet passe devant le
+ * temps d'une seconde capture (withForeground), et l'utilisateur retrouve le sien.
+ */
+async function capturePng(tabId) {
+  const shoot = (ms) => {
+    let timer;
+    const late = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new CaptureTimeout()), ms);
+    });
+    return Promise.race([cdp(tabId, "Page.captureScreenshot", { format: "png" }), late]).finally(() => clearTimeout(timer));
+  };
+  try {
+    return await shoot(CAPTURE_TIMEOUT_MS);
+  } catch (err) {
+    if (!(err instanceof CaptureTimeout)) throw err;
+  }
+  const tab = await chrome.tabs.get(tabId);
+  try {
+    return await withForeground(tab, () => shoot(CAPTURE_FRONT_TIMEOUT_MS));
+  } catch (err) {
+    if (!(err instanceof CaptureTimeout)) throw err;
+    const win = await chrome.windows.get(tab.windowId).catch(() => null);
+    const why = win?.state === "minimized" ? " : la fenêtre du navigateur est réduite, la restaurer" : "";
+    throw new Error(`Capture impossible, la page ne se dessine pas${why}. Réessayer, ou lire la page en texte (read_page, get_page_text).`);
+  }
+}
+
 /** Capture le viewport, redimensionnée en pixels CSS (coordonnées image = coordonnées de clic). */
 /**
  * Capture du viewport. Par défaut en pixels CSS (coordonnées image = coordonnées de clic).
@@ -1346,7 +1425,7 @@ async function captureViewport(tabId, { scale = 1, region } = {}) {
   await inPage(tabId, "hideOverlay").catch(() => {});
   const [{ w, h }, shot] = await Promise.all([
     evaluate(tabId, "({ w: innerWidth, h: innerHeight })"),
-    cdp(tabId, "Page.captureScreenshot", { format: "png" }),
+    capturePng(tabId),
   ]);
   const blob = await (await fetch(`data:image/png;base64,${shot.data}`)).blob();
   const bitmap = await createImageBitmap(blob);
@@ -1643,7 +1722,9 @@ const MOUSE_ACTIONS = new Set(["left_click", "right_click", "double_click", "tri
 /** Un geste à la souris se fait onglet devant. */
 function withFrontForMouse(tool) {
   return async (agent, args) => {
-    if (!MOUSE_ACTIONS.has(args.action)) return tool(agent, args);
+    // type avec ref / coordinate commence par un clic : même traitement qu'un geste à la souris.
+    const clicks = MOUSE_ACTIONS.has(args.action) || (args.action === "type" && (args.ref || args.coordinate));
+    if (!clicks) return tool(agent, args);
     const tab = await assertOwned(agent, args.tabId);
     return withForeground(tab, () => tool(agent, args));
   };
@@ -2317,7 +2398,7 @@ async function captureForOcr(tabId, region) {
   await inPage(tabId, "hideOverlay").catch(() => {});
   const [{ w, h }, shot] = await Promise.all([
     evaluate(tabId, "({ w: innerWidth, h: innerHeight })"),
-    cdp(tabId, "Page.captureScreenshot", { format: "png" }),
+    capturePng(tabId),
   ]);
   const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${shot.data}`)).blob());
   const dpr = bitmap.width / w;
