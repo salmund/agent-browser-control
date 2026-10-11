@@ -140,7 +140,7 @@ return stories.sort((a, b) => b.points - a.points).slice(0, 10);
 
 The script runs in a *sandbox* page of the extension, with no network and no browser APIs, and can only act
 through the tools, with the same safeguards. Because it chains actions without looking at the page in between,
-**it is disabled by default**: you're the one who allows it, in the side panel. More examples in
+**it is enabled by default**: you can disable it in the side panel. More examples in
 [`examples/scripts/`](examples/scripts): comparing cities on Wikipedia, checking a page for broken links.
 
 ### With Claude Code

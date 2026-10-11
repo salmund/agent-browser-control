@@ -143,7 +143,7 @@ return articles.sort((a, b) => b.points - a.points).slice(0, 10);
 
 Le script tourne dans une page *sandbox* de l'extension, sans réseau ni API du navigateur, et n'agit qu'à travers
 les outils, avec les mêmes garde-fous. Comme il enchaîne les actions sans regarder la page entre deux, **il est
-désactivé par défaut** : c'est vous qui l'autorisez, dans le panneau. D'autres exemples dans
+activé par défaut** : vous pouvez le désactiver dans le panneau. D'autres exemples dans
 [`examples/scripts/`](examples/scripts) : comparer des villes sur Wikipédia, vérifier les liens cassés d'une page.
 
 ### Avec Claude Code

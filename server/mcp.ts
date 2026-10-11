@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { BASE_URL, getToken, type CallResult } from "./common.ts";
+import { BASE_URL, disabledToolNames, getToken, type CallResult } from "./common.ts";
 import { TOOLS } from "./tools.ts";
 
 function argValue(name: string): string | undefined {
@@ -70,14 +70,14 @@ const server = new Server(
   },
 );
 
-/** Outils que l'utilisateur a désactivés dans le panneau de l'extension (browser_script par défaut). */
+/** Outils que l'utilisateur a désactivés dans le panneau de l'extension (browser_script, activé par défaut). */
 async function disabledTools(): Promise<Set<string>> {
   try {
     const res = await fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(2000) });
     const { settings } = (await res.json()) as { settings?: { scriptsEnabled?: boolean } };
-    return new Set(settings?.scriptsEnabled ? [] : ["browser_script"]);
+    return new Set(disabledToolNames(settings));
   } catch {
-    return new Set(["browser_script"]);
+    return new Set(disabledToolNames(undefined));
   }
 }
 

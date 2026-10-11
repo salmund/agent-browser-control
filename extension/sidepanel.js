@@ -210,7 +210,7 @@ $("scripts-toggle").onchange = async (event) => {
   renderScripts(event.target.checked);
 };
 
-chrome.storage.local.get("scriptsEnabled").then(({ scriptsEnabled = false }) => renderScripts(scriptsEnabled === true));
+chrome.storage.local.get("scriptsEnabled").then(({ scriptsEnabled = true }) => renderScripts(scriptsEnabled !== false));
 
 // --- Synchronisation ---------------------------------------------------------------
 

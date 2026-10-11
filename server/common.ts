@@ -24,6 +24,25 @@ export interface CallRequest {
   args: Record<string, unknown>;
 }
 
+/** Réglages de l'utilisateur (panneau de l'extension), persistés par le démon. */
+export interface UserSettings {
+  scriptsEnabled: boolean;
+}
+
+/**
+ * Réglages effectifs : tout ce qui n'est pas explicitement désactivé est activé
+ * (browser_script est activé par défaut ; seul un `false` explicite le coupe).
+ */
+export function normalizeSettings(saved: unknown): UserSettings {
+  const flag = (saved as { scriptsEnabled?: unknown } | null | undefined)?.scriptsEnabled;
+  return { scriptsEnabled: flag !== false };
+}
+
+/** Noms des outils à retirer de la liste MCP selon les réglages (browser_script si désactivé). */
+export function disabledToolNames(settings: { scriptsEnabled?: unknown } | undefined): string[] {
+  return settings?.scriptsEnabled === false ? ["browser_script"] : [];
+}
+
 /** Contenu MCP renvoyé par l'extension. */
 export type ToolContent =
   | { type: "text"; text: string }
