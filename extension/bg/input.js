@@ -70,7 +70,8 @@ async function assertHit(tabId, ref, point) {
   }
 }
 
-async function click(tabId, { x, y }, button, count, modifiers) {
+async function click(tabId, { x, y }, button, count, modifiers, ref) {
+  if (await pointerGesture(tabId, { action: "click", point: { x, y }, ref, button, count, modifiers })) return;
   await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
   for (let i = 1; i <= count; i++) {
     await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: i, modifiers });
@@ -83,6 +84,7 @@ async function click(tabId, { x, y }, button, count, modifiers) {
  * pour un logiciel de dessin, un seul geste pour un curseur ou un glisser-déposer.
  */
 async function drag(tabId, points, modifiers) {
+  if (await pointerGesture(tabId, { action: "drag", points, modifiers })) return;
   const send = (params) => cdp(tabId, "Input.dispatchMouseEvent", { ...params, modifiers });
   const move = (x, y) => send({ type: "mouseMoved", x, y, button: "left", buttons: 1 });
   const [first] = points;

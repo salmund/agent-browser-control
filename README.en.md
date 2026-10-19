@@ -123,6 +123,14 @@ scroll or reading such a list, the agent's tab therefore comes to the front for 
 hold so gestures can chain), then you get your tab back. Reading, keyboard typing, navigation and screenshots touch
 nothing. The "Foreground" switch in the panel restores the old behaviour (agent tab brought to the front on every action).
 
+**Real mouse, for a machine dedicated to agents.** A simulated gesture jumps to the exact centre of its target with
+no travel, which anti-bot protections (Turnstile, reCAPTCHA, DataDome…) detect. On a machine whose screen belongs to
+the agents (a Linux mini-PC, say), the panel's "Real mouse" switch routes clicks, hovers, scrolls and drags through the
+real pointer, moved by the daemon (X11, `xdotool`) along a hand-like path: an arc, a bell-shaped speed profile, a slight
+overshoot on distant targets. The extension checks that the page saw the pointer land in the right place before
+clicking, and falls back to the simulated gesture when the real mouse is unavailable. Off by default: on your own PC,
+the pointer stays yours.
+
 ## The tools
 
 | | Tools |

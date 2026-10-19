@@ -22,6 +22,11 @@ const SWITCHES = [
     off: "Rien ne s'affiche dans la page : les actions sont un peu plus rapides.",
   },
   {
+    id: "pointer-toggle", key: "nativePointer", fallback: false, hint: "pointer-hint",
+    on: "Clics, survols, défilements et glisser bougent le vrai pointeur de cette machine, le long d'un trajet de main : les protections anti-robot les prennent pour ceux d'une personne. Le pointeur n'est plus à vous pendant les gestes.",
+    off: "Les gestes des agents sont simulés dans la page, sans toucher votre pointeur. À activer seulement sur une machine dont l'écran sert aux agents (Linux, X11).",
+  },
+  {
     id: "autologin-toggle", key: "autoLogin", fallback: false, hint: "autologin-hint",
     on: "Les agents remplissent vos identifiants sans vous demander, seulement sur les sites associés à chaque compte. Plusieurs comptes pour un site : vous choisissez.",
     off: "Chaque connexion d'un agent attend votre accord ici, sauf sur les sites marqués « Toujours autoriser ».",

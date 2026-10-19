@@ -113,6 +113,7 @@ import {
   truncateStrings,
 } from "./security.ts";
 import { createAbcServer } from "./mcp-server.ts";
+import { createPointer } from "./pointer.ts";
 
 const VERSION = "0.8.0";
 const EXTENSION_WAIT_MS = 10_000;
@@ -1291,6 +1292,8 @@ let bwPath: { path: string | null; at: number } | null = null;
 let bwSessionKey: string | null = null;
 /** Réglage « Garder Vaultwarden déverrouillé » : la session survit au redémarrage du démon (bw-keep.ts). */
 const bwKeep = createBwKeep(CONFIG_DIR);
+/** Réglage « Souris réelle » : le vrai pointeur de la machine, pour les gestes des agents (pointer.ts). */
+const pointer = createPointer({ log });
 /** Relais des demandes vers Argos : la décision repart vers l'extension, qui la traite comme un clic du panneau. */
 const relayForwards = new Map<number, { resolve: (ok: boolean) => void; timer: NodeJS.Timeout }>();
 let relayForwardSeq = 0;
@@ -1394,6 +1397,9 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
     const check = checkUploadPaths(params.paths, CONFIG_DIR);
     log({ event: "upload-check", ok: check.ok, count: Array.isArray(params.paths) ? params.paths.length : 0 });
     return check.ok ? reply(true, { paths: check.paths }) : reply(false, undefined, check.error);
+  }
+  if (op === "pointer") {
+    return pointer.run(params).then((result) => reply(true, result), (err) => reply(false, undefined, errText(err)));
   }
   await bwSessionLoaded;
   try {

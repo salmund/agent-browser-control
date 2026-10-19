@@ -202,10 +202,10 @@ async function computerAction(agent, tab, args) {
       await showOverlay(tabId, point);
       const button = action === "right_click" ? "right" : "left";
       const count = { double_click: 2, triple_click: 3 }[action] ?? 1;
-      await click(tabId, point, button, count, modifiers);
+      await click(tabId, point, button, count, modifiers, args.ref);
       await sleepForFrame(tabId, 150);
       await recordFrame(tabId, action, point);
-      res = ok(text(`${action} en (${point.x}, ${point.y}).${healNote(point)}`));
+      res = ok(text(`${action} en (${point.x}, ${point.y}).${healNote(point)}${pointerNote(tabId)}`));
       break;
     }
 
@@ -233,7 +233,7 @@ async function computerAction(agent, tab, args) {
         ? `\n⚠ Geste probablement perturbé : la page a reçu ${stray} position(s) de pointeur loin du tracé, sans doute ` +
           "la souris de l'utilisateur. Vérifier le résultat (capture) et recommencer quand il ne la touche plus."
         : "";
-      res = ok(text(`Glisser de (${from.x}, ${from.y}) à (${to.x}, ${to.y})${via}.${warning}`));
+      res = ok(text(`Glisser de (${from.x}, ${from.y}) à (${to.x}, ${to.y})${via}.${warning}${pointerNote(tabId)}`));
       break;
     }
 
@@ -241,7 +241,9 @@ async function computerAction(agent, tab, args) {
       const point = await targetPoint(tabId, args);
       await assertHit(tabId, args.ref, point);
       await showOverlay(tabId, point);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, modifiers });
+      if (!(await pointerGesture(tabId, { action: "move", point, ref: args.ref }))) {
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, modifiers });
+      }
       // Après restitution de l'onglet (le mouseleave qui suit ferme les menus), on rejoue
       // le survol par événements : les menus JS restent ouverts en arrière-plan.
       const seq = (hoverSeq.get(tabId) ?? 0) + 1;
@@ -250,7 +252,7 @@ async function computerAction(agent, tab, args) {
         if (hoverSeq.get(tabId) === seq) inPage(tabId, "hoverEvents", { x: point.x, y: point.y }).catch(() => null);
       }, FRONT_HOLD_MS + 400);
       await recordFrame(tabId, action, point);
-      res = ok(text(`Survol en (${point.x}, ${point.y}).${healNote(point)}`));
+      res = ok(text(`Survol en (${point.x}, ${point.y}).${healNote(point)}${pointerNote(tabId)}`));
       break;
     }
 
@@ -262,7 +264,7 @@ async function computerAction(agent, tab, args) {
         heal = healNote(point);
         await assertHit(tabId, args.ref, point);
         await showOverlay(tabId, point);
-        await click(tabId, point, "left", 1, 0);
+        await click(tabId, point, "left", 1, 0, args.ref);
       } else {
         await showOverlay(tabId);
       }
@@ -303,10 +305,12 @@ async function computerAction(agent, tab, args) {
       const dir = args.scroll_direction ?? "down";
       const deltaX = dir === "left" ? -amount : dir === "right" ? amount : 0;
       const deltaY = dir === "up" ? -amount : dir === "down" ? amount : 0;
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX, deltaY, modifiers });
+      if (!(await pointerGesture(tabId, { action: "wheel", point, deltaX, deltaY }))) {
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y, deltaX, deltaY, modifiers });
+      }
       await sleepForFrame(tabId, 300);
       await recordFrame(tabId, `scroll ${dir}`);
-      res = ok(text(`Défilement ${dir} de ${amount}px en (${point.x}, ${point.y}).${healNote(point)}`));
+      res = ok(text(`Défilement ${dir} de ${amount}px en (${point.x}, ${point.y}).${healNote(point)}${pointerNote(tabId)}`));
       break;
     }
 

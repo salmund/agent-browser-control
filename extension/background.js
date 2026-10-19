@@ -17,6 +17,7 @@ importScripts(
   "bg/reading.js",
   "bg/capture.js",
   "bg/input.js",
+  "bg/pointer.js",
   "bg/foreground.js",
   "bg/computer.js",
   "bg/javascript.js",

@@ -124,6 +124,14 @@ donc devant le temps du geste (0,8 s de garde pour enchaîner), puis vous retrou
 clavier, navigation et captures se font sans rien toucher. L'interrupteur « Premier plan » du panneau redonne l'ancien
 comportement (onglet de l'agent devant à chaque action).
 
+**Souris réelle, pour une machine dédiée aux agents.** Un geste simulé saute sur le centre exact de sa cible, sans
+trajet : les protections anti-robot (Turnstile, reCAPTCHA, DataDome…) le repèrent. Sur une machine dont l'écran sert
+aux agents (un mini-PC sous Linux, par exemple), l'interrupteur « Souris réelle » du panneau fait passer clics, survols,
+défilements et glisser par le vrai pointeur, que le démon déplace (X11, `xdotool`) le long d'un trajet de main : arc,
+vitesse en cloche, léger dépassement des cibles lointaines. L'extension vérifie que la page a vu le pointeur arriver au
+bon endroit avant de cliquer, et revient au geste simulé si la souris réelle est indisponible. Désactivé par défaut :
+sur votre PC, le pointeur reste à vous.
+
 ## Les outils
 
 | | Outils |

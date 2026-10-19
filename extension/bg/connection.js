@@ -200,7 +200,7 @@ function replyWith(reply, promise) {
 /** Diagnostic copiable depuis le panneau : état utile pour un rapport de bug, jamais de secret ni de contenu de page. */
 async function diagnostic() {
   const session = await chrome.storage.session.get(["connected", "daemonVersion", "groups"]);
-  const local = await chrome.storage.local.get(["foregroundTabs", "scriptsEnabled", "showGestures", "blocklist"]);
+  const local = await chrome.storage.local.get(["foregroundTabs", "scriptsEnabled", "showGestures", "nativePointer", "blocklist"]);
   return {
     extension: chrome.runtime.getManifest().version,
     daemon: session.daemonVersion || null,
@@ -216,6 +216,7 @@ async function diagnostic() {
       foregroundTabs: local.foregroundTabs === true,
       scriptsEnabled: local.scriptsEnabled !== false,
       showGestures: local.showGestures !== false,
+      nativePointer: local.nativePointer === true,
       blockedSites: (local.blocklist ?? []).length,
     },
     recentErrors: activity.filter((e) => e.status === "error").slice(0, 8)
