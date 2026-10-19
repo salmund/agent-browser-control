@@ -274,7 +274,10 @@ async function credentialsList(agent, { tabId } = {}) {
   }
   const slots = Object.values(store?.slots ?? {}).map((s) => ({ id: s.id, label: s.label ?? s.id, login: s.login, hosts: s.hosts ?? [], policy: s.policy, external: credIsExternal(s) ? s.external : null }));
   const list = tabHost ? slots.filter((s) => s.hosts.some((h) => credHostCovered(tabHost, h))) : slots;
-  const policyFr = (s) => (s.policy === "always" ? "toujours autoriser" : "demander à chaque fois");
+  // La politique annoncée est celle que credentials_fill appliquera : l'agent n'attend pas un accord qui ne viendra pas.
+  const { autoLogin = false } = await chrome.storage.local.get("autoLogin");
+  const askFr = autoLogin === true ? "rempli sans demander (connexions automatiques)" : "demander à chaque fois";
+  const policyFr = (s) => (s.policy === "always" ? "toujours autoriser" : askFr);
   const lines = list.map((s) => s.external
     ? `- ${s.id} (« ${s.label} », coffre : « ${s.external.itemName ?? s.external.itemId} », ${policyFr(s)}, sites : ${s.hosts.join(", ")})`
     : `- ${s.id} (« ${s.label} », identifiant : ${s.login ? `"${s.login}"` : "non renseigné"}, ${policyFr(s)}, sites : ${s.hosts.join(", ")})`);
@@ -287,11 +290,12 @@ async function credentialsList(agent, { tabId } = {}) {
       const known = new Set(list.filter((s) => s.external).map((s) => s.external.itemId));
       const items = (await bwMatches(tab.url).catch(() => [])).filter((it) => !known.has(it.id));
       for (const it of items.slice(0, 10)) {
-        lines.push(`- bw-${it.id} (« ${it.name} », ${name}${it.username ? `, identifiant : "${it.username}"` : ""}, demander à chaque fois, associé à ${tabHost})`);
+        lines.push(`- bw-${it.id} (« ${it.name} », ${name}${it.username ? `, identifiant : "${it.username}"` : ""}, ${askFr}, associé à ${tabHost})`);
       }
     }
     const state = vault.state === "unlocked" ? "" : vault.state === "locked" ? ` ; ${name} est verrouillé : l'utilisateur sera invité à le déverrouiller` : ` ; ${name} n'est pas encore connecté : l'utilisateur sera invité à le connecter`;
-    lines.push(`- vaultwarden (l'identifiant de cette page dans le coffre ${name} de l'utilisateur, choisi automatiquement ; approbation dans le panneau${state})`);
+    const approval = autoLogin === true ? "rempli sans demander (connexions automatiques), sauf plusieurs comptes : l'utilisateur choisit dans le panneau" : "approbation dans le panneau";
+    lines.push(`- vaultwarden (l'identifiant de cette page dans le coffre ${name} de l'utilisateur, choisi automatiquement ; ${approval}${state})`);
   }
   if (!lines.length) {
     return ok(text(tabHost ? `Aucun slot autorisé pour ${tabHost}.` : "Aucun secret : l'utilisateur peut connecter son coffre (Vaultwarden, Bitwarden) ou créer un slot dans le panneau latéral (onglet Secrets)."));
