@@ -11,7 +11,7 @@ async function computer(agent, args) {
   const res = await computerAction(agent, tab, args);
   if (wantEffect) await appendActionEffect(tabId, res, before, since);
   if (args.snapshot || args.then || args.diff) {
-    return attachActionSnapshot(agent, tabId, args, res);
+    return attachActionSnapshot(agent, tabId, args, res, since);
   }
   return res;
 }

@@ -6,6 +6,7 @@
 // ---------------------------------------------------------------------------
 
 const inflight = new Map(); // tabId -> { ids: Set, last: instant de la dernière activité réseau }
+const SPINNER_STALE_MS = 2500; // wait_for settle : indicateur de chargement figé, page calme, ignoré au-delà
 
 function trackInflight(tabId, method, params) {
   let state = inflight.get(tabId);
@@ -48,6 +49,10 @@ async function waitFor(agent, args) {
     const started = Date.now();
     let csCount = -1;
     let csSince = started;
+    // Indicateurs de chargement : même liste depuis quand, et page calme (réseau et DOM) depuis quand.
+    let spinKey = "";
+    let spinSince = started;
+    let calmSince = 0;
 
   let initialUrl = "";
   try {
@@ -66,11 +71,12 @@ async function waitFor(agent, args) {
         window.__abcObserver = new MutationObserver(() => {
           window.__abcLastMutation = Date.now();
         });
+        // Classes et styles exclus : une animation (carrousel, bandeau qui défile) empêchait toute stabilité.
         window.__abcObserver.observe(document.documentElement || document.body, {
           childList: true,
           subtree: true,
-          attributes: true,
           characterData: true,
+          attributeFilter: ["hidden", "open", "aria-hidden", "aria-busy"],
         });
       } catch {}
     }
@@ -139,7 +145,9 @@ async function waitFor(agent, args) {
           const r = el.getBoundingClientRect();
           if (!r.width && !r.height) continue;
           if (getComputedStyle(el).display === "none") continue;
-          const t = (el.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+          const t = (el.innerText || "").trim().replace(/\\s+/g, " ").slice(0, 80);
+          // role="status" vide, sans image ni classe de chargement : une zone d'annonces (aria-live), pas un chargement.
+          if (!t && el.matches('[role="status"]') && !el.matches('[class*="spinner" i], [class*="loading" i], [class*="loader" i]') && !el.querySelector("svg, img, canvas")) continue;
           const key = t || el.tagName;
           if (seen[key]) continue;
           seen[key] = true;
@@ -187,6 +195,17 @@ async function waitFor(agent, args) {
       csSince = Date.now();
     }
 
+    // Un indicateur affiché sans changer pendant SPINNER_STALE_MS, page calme (réseau et DOM) tout ce temps :
+    // décor ou chargeur d'un module secondaire, pas un chargement en cours. Il ne bloque plus settle.
+    const key = (last.spinners ?? []).join("|");
+    if (key !== spinKey) {
+      spinKey = key;
+      spinSince = Date.now();
+    }
+    if (!(netIdleOk && domSettledOk)) calmSince = 0;
+    else if (!calmSince) calmSince = Date.now();
+    const spinnerStale = !!key && !!calmSince && Date.now() - Math.max(spinSince, calmSince) >= SPINNER_STALE_MS;
+
     const checks = {
       selector: !selector || !!last.visible,
       text: !expected || !!last.text,
@@ -194,14 +213,18 @@ async function waitFor(agent, args) {
       urlContains: !urlContains || currentUrl.includes(urlContains),
       networkIdle: quietMs ? netIdleOk : true,
       domSettled: settleMs ? domSettledOk : true,
-      settle: !settleAll || (netIdleOk && domSettledOk && (last.spinners?.length ?? 0) === 0),
+      settle: !settleAll || (netIdleOk && domSettledOk && (!key || spinnerStale)),
       authSettled: authOk,
       countStable: !csSel || (csCount >= csMin && Date.now() - csSince >= csStableMs),
     };
     const elapsed = ((Date.now() - started) / 1000).toFixed(1).replace(".", ",");
     if (Object.values(checks).every(Boolean)) {
       const details = [];
-      if (settleAll) details.push(`page stabilisée (réseau calme, DOM stable depuis ${timeSinceMutation} ms, aucun chargement)`);
+      if (settleAll) {
+        details.push(`page stabilisée (réseau calme, DOM stable depuis ${timeSinceMutation} ms, ${key
+          ? `un indicateur de chargement reste affiché mais n'a pas bougé depuis ${((Date.now() - Math.max(spinSince, calmSince)) / 1000).toFixed(1).replace(".", ",")} s : ignoré`
+          : "aucun chargement"})`);
+      }
       else if (settleMs) details.push(`DOM stable depuis ${timeSinceMutation} ms`);
       if (authSettled && enteredAuth) details.push("connexion validée");
       if (csSel) details.push(`${csCount} élément(s) stable(s)`);

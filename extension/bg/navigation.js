@@ -109,41 +109,47 @@ async function getAttachedSnapshot(agent, tabId, { snapshot, then, diff, read } 
   return pageRes?.content?.find((c) => c.type === "text")?.text ?? "";
 }
 
-/** Attend que les mutations du DOM cessent pendant au moins settleMs (300 ms par défaut, 2 s max). */
-async function waitDomSettle(tabId, settleMs = 300, maxMs = 2000) {
-  const probe = `(() => {
-    if (!window.__abcObserver) {
-      window.__abcLastMutation = Date.now();
-      try {
-        window.__abcObserver = new MutationObserver(() => { window.__abcLastMutation = Date.now(); });
-        window.__abcObserver.observe(document.documentElement || document.body, { childList: true, subtree: true, attributes: true, characterData: true });
-      } catch {}
+/**
+ * Exécuté dans la page (monde isolé : le site ne voit ni l'observateur ni la variable) : instant de la dernière
+ * mutation qui change le contenu (nœuds ajoutés ou retirés, texte, éléments montrés ou cachés). Les classes et les
+ * styles n'en sont pas : une animation (carrousel, compteur de pub) empêchait la page de paraître stable.
+ * L'observateur reste posé pour la vie du document : un appel suivant sait déjà si la page bouge.
+ * Même variable que watchDom de page.js (même monde isolé) : le premier qui la pose sert aux deux.
+ */
+function domQuietProbe() {
+  if (!globalThis.__abcDomWatch) {
+    const watch = (globalThis.__abcDomWatch = { last: Date.now() });
+    try {
+      new MutationObserver(() => (watch.last = Date.now())).observe(document.documentElement || document, {
+        childList: true, subtree: true, characterData: true, attributeFilter: ["hidden", "open", "aria-hidden", "aria-busy"],
+      });
+    } catch {}
+  }
+  return globalThis.__abcDomWatch.last;
+}
+
+/**
+ * Attend que le contenu de la page cesse de changer pendant settleMs (300 ms par défaut, maxMs au plus).
+ * since : instant de l'action dont on attend la réaction ; le calme se compte à partir de là au plus tôt.
+ */
+async function waitDomSettle(tabId, settleMs = 300, maxMs = 2000, since = 0) {
+  const start = Date.now();
+  let failures = 0;
+  while (Date.now() - start < maxMs) {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: domQuietProbe }).catch(() => [null]);
+    const last = res?.result;
+    if (typeof last === "number") {
+      failures = 0;
+      if (Date.now() - Math.max(last, since) >= settleMs) return;
+    } else if (++failures >= 5) {
+      return; // page fermée aux scripts (page interne, PDF) : rien à observer
     }
-    return window.__abcLastMutation || 0;
-  })()`;
-  // L'observer ne sert que le temps de la mesure : déconnecté et globales supprimées aussitôt
-  // après, pour ne laisser dans la page aucune trace détectable par un anti-bot.
-  const cleanup = `(() => { try { window.__abcObserver?.disconnect(); } catch {} try { delete window.__abcObserver; delete window.__abcLastMutation; } catch {} return true; })()`;
-  try {
-    const start = Date.now();
-    await sleep(60);
-    while (Date.now() - start < maxMs) {
-      try {
-        const res = await cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true }).catch(() => null);
-        const last = res?.result?.value;
-        if (typeof last === "number" && Date.now() - last >= settleMs) return;
-      } catch {
-        break;
-      }
-      await sleep(60);
-    }
-  } finally {
-    await cdp(tabId, "Runtime.evaluate", { expression: cleanup, returnByValue: true }).catch(() => {});
+    await sleep(50);
   }
 }
 
 /** Attend la réaction de la page (navigation ou stabilisation DOM) et joint le snapshot au résultat. */
-async function attachActionSnapshot(agent, tabId, args, res) {
+async function attachActionSnapshot(agent, tabId, args, res, since = Date.now()) {
   if (!res || res.isError) return res;
   let navigated = false;
   try {
@@ -159,7 +165,7 @@ async function attachActionSnapshot(agent, tabId, args, res) {
     }
   } catch {}
   if (!navigated) {
-    await waitDomSettle(tabId, 300).catch(() => sleep(150));
+    await waitDomSettle(tabId, 300, 2000, since).catch(() => sleep(150));
   }
   const snap = await getAttachedSnapshot(agent, tabId, args);
   if (!snap) return res;
@@ -237,6 +243,9 @@ async function navigateSpa(tabId, targetUrl, { force = false } = {}) {
         if (window.__NEXT_DATA__ || d.getElementById("__next")) return "next";
         if (window.__NUXT__ || d.getElementById("__nuxt") || d.querySelector("[data-v-app]")) return "vue";
         if (window.React || window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || d.querySelector("[data-reactroot]")) return "react";
+        // React 18 et plus (createRoot) : plus de data-reactroot, mais une clé __reactContainer$… sur la racine.
+        const roots = [d.getElementById("root"), d.getElementById("app"), ...d.querySelectorAll("body > div")].slice(0, 12);
+        if (roots.some((el) => el && Object.keys(el).some((k) => k.startsWith("__reactContainer$") || k === "_reactRootContainer"))) return "react";
         if (d.querySelector("[data-sveltekit-preload-data]")) return "svelte";
         return null;
       })()`,
@@ -245,17 +254,28 @@ async function navigateSpa(tabId, targetUrl, { force = false } = {}) {
     if (!probe?.result?.value) return null;
   }
   const path = target.pathname + target.search + target.hash;
+  const t0 = Date.now();
   const clicked = await inPage(tabId, "spaLinkClick", { path }).catch(() => null);
   if (clicked?.clicked && (await waitUrl(tabId, target.href, 2000))) {
-    await waitDomSettle(tabId, 500, 5000).catch(() => {});
+    await waitDomSettle(tabId, 300, 2500, t0).catch(() => {});
     return `navigation SPA (clic sur le lien « ${pageLabel(clicked.clicked, 80)} »)`;
   }
+  // Repli pushState : seuls les routeurs qui écoutent popstate suivent (Next.js, entre autres, l'ignore et
+  // laisserait l'ancienne page sous la nouvelle adresse). Le contenu doit donc avoir changé, sinon navigation complète.
+  const before = await inPage(tabId, "pageDigest").catch(() => null);
+  const t1 = Date.now();
   await cdp(tabId, "Runtime.evaluate", {
     expression: `history.pushState({}, "", ${JSON.stringify(path)}); dispatchEvent(new PopStateEvent("popstate")); "ok"`,
   }).catch(() => null);
   if (await waitUrl(tabId, target.href, 2000)) {
-    await waitDomSettle(tabId, 500, 5000).catch(() => {});
-    return "navigation SPA (pushState)";
+    await waitDomSettle(tabId, 300, 2500, t1).catch(() => {});
+    const after = await inPage(tabId, "pageDigest").catch(() => null);
+    const same = (a, b) => a && b && a.title === b.title && a.textLen === b.textLen && a.interactive === b.interactive;
+    if (before && after && !same(before, after)) return "navigation SPA (pushState)";
+    // Rien n'a suivi : on retire l'entrée ajoutée, pour que la navigation complète charge bien la cible
+    // (vers l'adresse affichée, un #fragment ne ferait que défiler) et que « retour » ne tombe pas dessus.
+    await cdp(tabId, "Runtime.evaluate", { expression: "history.back()" }).catch(() => null);
+    await waitUrl(tabId, cur.href, 1000);
   }
   return null;
 }

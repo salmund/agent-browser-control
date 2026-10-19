@@ -1384,7 +1384,21 @@
    * appel du document pour que avant et après restent comparables.
    */
   let digestMode = null;
+  /**
+   * Instant de la dernière mutation de contenu (même variable et mêmes règles que domQuietProbe de
+   * bg/navigation.js). Posé dès le digest d'avant une action : l'attente qui suit sait si la page a bougé.
+   */
+  function watchDom() {
+    if (globalThis.__abcDomWatch) return;
+    const watch = (globalThis.__abcDomWatch = { last: Date.now() });
+    try {
+      new MutationObserver(() => (watch.last = Date.now())).observe(document.documentElement || document, {
+        childList: true, subtree: true, characterData: true, attributeFilter: ["hidden", "open", "aria-hidden", "aria-busy"],
+      });
+    } catch {}
+  }
   function pageDigest() {
+    watchDom();
     // formLen : innerText ignore les valeurs des champs ; sans lui, une saisie est « inchangée ».
     // (Limite : cases à cocher et listes déroulantes ne sont pas vues ; leur effet passe par la soumission.)
     let formLen = 0;
