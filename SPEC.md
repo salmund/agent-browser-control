@@ -141,6 +141,9 @@ qui l'obtient du CLI `bw` (`bw get password|username <id> --raw`) et la renvoie.
 - **Session** : le mot de passe maître est saisi dans le panneau, sert une fois
   à `bw unlock` et est abandonné ; la clé de session vit en mémoire du démon
   uniquement (`bw lock` à la demande). `bw login` reste manuel, une fois par poste.
+  Réglage « Garder Vaultwarden déverrouillé » (vue Réglages, désactivé par défaut) : la clé de session est aussi
+  écrite dans `bitwarden-session` (DPAPI du compte Windows ; ailleurs fichier 0600) et relue au démarrage du
+  démon ; « Verrouiller » ou la désactivation du réglage l'effacent (`server/bw-keep.ts`, `test/bw-keep.ts`).
 - **Hygiène CLI** (`server/bitwarden.ts`) : execFile sans shell, secrets en env
   (`BW_SESSION`, `ABC_BW_PASSWORD` + `--passwordenv`), jamais en argv ; recherche
   expurgée (id, nom, identifiant, urls ; mots de passe et notes jetés côté démon).

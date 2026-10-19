@@ -26,6 +26,11 @@ const SWITCHES = [
     on: "Les agents remplissent vos identifiants sans vous demander, seulement sur les sites associés à chaque compte. Plusieurs comptes pour un site : vous choisissez.",
     off: "Chaque connexion d'un agent attend votre accord ici, sauf sur les sites marqués « Toujours autoriser ».",
   },
+  {
+    id: "bwkeep-toggle", key: "bwKeepUnlocked", fallback: false, hint: "bwkeep-hint",
+    on: "Le coffre reste déverrouillé après un redémarrage du PC ou d'ABC : la session est gardée sur ce PC, chiffrée pour votre compte Windows. « Verrouiller » (onglet Secrets) l'efface.",
+    off: "Le coffre se reverrouille à chaque redémarrage d'ABC : mot de passe maître à retaper.",
+  },
 ];
 
 for (const s of SWITCHES) {

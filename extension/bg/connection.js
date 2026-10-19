@@ -46,6 +46,7 @@ function connect() {
     if (msg.type === "hello") {
       const daemonVersion = String(msg.version ?? msg.daemonVersion ?? "");
       chrome.storage.session.set({ daemonVersion }).catch(() => {});
+      syncBwKeep();
       return;
     }
     // Le démon a abandonné un appel (délai dépassé, client parti) : on coupe le travail restant.
@@ -91,6 +92,15 @@ let daemonRpcId = 0;
 const daemonRpcPending = new Map();
 // Délai large : une synchro Bitwarden peut prendre jusqu'à 60 s côté démon.
 const DAEMON_RPC_TIMEOUT_MS = 65_000;
+
+/** Réglage « Garder Vaultwarden déverrouillé » (panneau) transmis au démon, qui garde la session. */
+async function syncBwKeep() {
+  const { bwKeepUnlocked = false } = await chrome.storage.local.get("bwKeepUnlocked").catch(() => ({}));
+  return daemonRpc("bw-keep", { on: bwKeepUnlocked === true }).catch(() => {});
+}
+chrome.storage.local.onChanged.addListener((changes) => {
+  if ("bwKeepUnlocked" in changes) syncBwKeep();
+});
 
 function daemonRpc(op, params = {}) {
   return new Promise((resolve, reject) => {

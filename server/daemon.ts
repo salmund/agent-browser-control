@@ -98,6 +98,7 @@ import {
   scrubBwError,
   type BwField,
 } from "./bitwarden.ts";
+import { createBwKeep } from "./bw-keep.ts";
 import {
   LOG_STRING_MAX,
   checkUploadPaths,
@@ -1261,6 +1262,18 @@ setInterval(() => {
  */
 let bwPath: { path: string | null; at: number } | null = null;
 let bwSessionKey: string | null = null;
+/** Réglage « Garder Vaultwarden déverrouillé » : la session survit au redémarrage du démon (bw-keep.ts). */
+const bwKeep = createBwKeep(CONFIG_DIR);
+/** Change la session en mémoire et, si le réglage est actif, sur disque (chiffrée par Windows). */
+function setBwSession(key: string | null) {
+  bwSessionKey = key;
+  bwKeep.store(key).catch((err) => log({ event: "bw-keep", ok: false, error: errText(err).slice(0, 200) }));
+}
+// Démarrage : session gardée par le démon précédent, si le réglage est actif.
+const bwSessionLoaded = bwKeep.load().then((key) => {
+  if (key && !bwSessionKey) bwSessionKey = key;
+  if (key) log({ event: "bw-keep", restored: true });
+}).catch(() => {});
 const BW_RETRY_MS = 60_000;
 
 /**
@@ -1303,14 +1316,22 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
     log({ event: "upload-check", ok: check.ok, count: Array.isArray(params.paths) ? params.paths.length : 0 });
     return check.ok ? reply(true, { paths: check.paths }) : reply(false, undefined, check.error);
   }
+  await bwSessionLoaded;
   try {
     const client = await bwClient();
     switch (op) {
+      case "bw-keep": {
+        const on = params.on === true;
+        bwKeep.setEnabled(on);
+        if (on && bwSessionKey) await bwKeep.store(bwSessionKey);
+        log({ event: "bw-rpc", op, ok: true, keep: on });
+        return reply(true, { keep: on });
+      }
       case "bw-status": {
         const st = await client.status().catch(() => ({ state: "unknown" as const }));
         // `bw status` sans clé de session dit « locked » même si le démon détient une session valide.
         if (st.state === "locked" && bwSessionKey) st.state = "unlocked";
-        if (st.state === "unauthenticated") bwSessionKey = null;
+        if (st.state === "unauthenticated") setBwSession(null);
         log({ event: "bw-rpc", op, ok: true, cli: true, state: st.state });
         return reply(true, { cli: true, profile: BW_APPDATA_DIR ? "abc" : "default", ...st });
       }
@@ -1327,7 +1348,7 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
         if ((st.serverUrl ?? "") !== serverUrl) {
           // Le CLI n'accepte un changement de serveur qu'une fois déconnecté (profil propre à ABC).
           if (st.state !== "unauthenticated") {
-            bwSessionKey = null;
+            setBwSession(null);
             await client.logout();
           }
           await client.configServer(serverUrl);
@@ -1343,21 +1364,21 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
         // Déjà connecté avec ce compte : un simple déverrouillage suffit (pas de nouvelle connexion).
         if (st.state !== "unauthenticated" && st.email && st.email.toLowerCase() === email.trim().toLowerCase()) {
           const { status, sessionKey } = await client.unlock(password);
-          bwSessionKey = sessionKey;
+          setBwSession(sessionKey);
           log({ event: "bw-rpc", op, ok: true, state: status.state, mode: "unlock" });
           return reply(true, { state: status.state, email: status.email, serverUrl: status.serverUrl });
         }
         if (st.state !== "unauthenticated") {
-          bwSessionKey = null;
+          setBwSession(null);
           await client.logout();
         }
         const { status, sessionKey } = await client.login(email, password, code);
-        bwSessionKey = sessionKey;
+        setBwSession(sessionKey);
         log({ event: "bw-rpc", op, ok: true, state: status.state, mode: "login" });
         return reply(true, { state: status.state, email: status.email, serverUrl: status.serverUrl });
       }
       case "bw-logout": {
-        bwSessionKey = null;
+        setBwSession(null);
         await client.logout();
         log({ event: "bw-rpc", op, ok: true });
         return reply(true, {});
@@ -1373,12 +1394,12 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
         if (!password) return reply(false, undefined, "Mot de passe maître vide.");
         // `bw unlock` invalide les clés précédentes : on remplace le cache.
         const { status, sessionKey } = await client.unlock(password);
-        bwSessionKey = sessionKey;
+        setBwSession(sessionKey);
         log({ event: "bw-rpc", op, ok: true, state: status.state });
         return reply(true, { state: status.state, email: status.email });
       }
       case "bw-lock": {
-        bwSessionKey = null;
+        setBwSession(null);
         await client.lock().catch(() => {});
         log({ event: "bw-rpc", op, ok: true });
         return reply(true, {});
@@ -1409,7 +1430,7 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
   } catch (err) {
     const locked = bwLocked(err);
     const loggedOut = !locked && bwLoggedOut(err) && op !== "bw-configure";
-    if (locked || loggedOut) bwSessionKey = null;
+    if (locked || loggedOut) setBwSession(null);
     const installMissing = err instanceof Error && err.message === BW_INSTALL_HINT;
     if (op === "bw-status" && installMissing) {
       log({ event: "bw-rpc", op, ok: true, cli: false });
