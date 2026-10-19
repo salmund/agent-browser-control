@@ -50,6 +50,7 @@ import {
   type LogCall,
   type SiteEntry,
 } from "./analysis.ts";
+import { captchaSolve } from "./captcha.ts";
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, purgeOldJobs, validateMediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
@@ -566,6 +567,20 @@ function localTool(call: CallRequest): Promise<CallResult> | null {
     // Le contenu d'un document vient de l'extérieur : non fiable, comme une page web.
     return readDocument({ path: String(args.path ?? ""), pages: args.pages as string | undefined })
       .then((text) => ({ content: [{ type: "text", text: untrusted(text) }] }));
+  }
+  if (call.tool === "captcha_solve") {
+    // Outil local : autoCaptcha pilote les outils d'extension existants, aucun code extension.
+    const tabId = Number(args.tabId);
+    if (!Number.isInteger(tabId)) return Promise.resolve(errorResult("captcha_solve : tabId entier attendu."));
+    const opt = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
+    return captchaSolve(tabId, (tool, a) => forward({ agent: call.agent, tool, args: a }), {
+      provider: opt(args.provider),
+      model: opt(args.model),
+      effort: opt(args.effort),
+    }).then(
+      (r) => r,
+      (err) => errorResult(`captcha_solve : ${errText(err)}`),
+    );
   }
   return null;
 }

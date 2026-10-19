@@ -85,6 +85,9 @@ export function timeoutFor(tool: string, args: Record<string, unknown> = {}): nu
       return Math.min(clamp(Math.trunc(num(a.maxPages, 10)) || 10, 1, 50) * 15_000 + MARGIN_MS, 300_000);
     case "ask_human":
       return Math.min(Math.max(num(a.timeout, 300) * 1000, 10_000) + MARGIN_MS, ASK_TIMEOUT_MAX_MS);
+    case "captcha_solve":
+      // Résolution complète : case + rondes image (vision) ; large pour les cas difficiles.
+      return 600_000;
     case "browser_script":
       return SCRIPT_TIMEOUT_MS;
     case "credentials_fill":

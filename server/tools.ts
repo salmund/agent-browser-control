@@ -729,4 +729,20 @@ export const TOOLS: Tool[] = [
       required: ["tabId", "question"],
     },
   },
+  {
+    name: "captcha_solve",
+    description:
+      "Résout le captcha de l'onglet (Turnstile, reCAPTCHA, hCaptcha) : case, défis image via modèle de vision, vérification du jeton. " +
+      "En cas d'échec, passer la main avec ask_human.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId,
+        provider: { type: "string", enum: ["auto", "openai", "muse"], default: "auto", description: "auto : DeepSeek puis Muse en repli." },
+        model: { type: "string", description: "Modèle vision OpenAI-compatible (défaut deepseek-chat)." },
+        effort: { type: "string", description: "Effort Muse (défaut low)." },
+      },
+      required: ["tabId"],
+    },
+  },
 ];

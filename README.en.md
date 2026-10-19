@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#the-tools">The 34 tools</a> ·
+  <a href="#the-tools">The 35 tools</a> ·
   <a href="#the-side-panel">The side panel</a> ·
   <a href="#security">Security</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Your real browser.** Not a headless Chromium running on the side: the agent works in your tabs, with the
   accounts you're already signed in to. It sees what you see.
 - **Any agent.** Everything goes through [MCP](https://modelcontextprotocol.io): one line of configuration and the
-  agent gets all 34 tools, whatever model runs behind it.
+  agent gets all 35 tools, whatever model runs behind it.
 - **Far more than a click driver.** Accessibility tree with stable references, iframes (even cross-origin),
   network, WebSocket, console, cookies, performance, mobile emulation, request interception, GIF or video
   recording… The agent gets the DevTools, not just a mouse.
@@ -129,7 +129,7 @@ nothing. The "Foreground" switch in the panel restores the old behaviour (agent 
 |---|---|
 | **Tabs** | `tabs_context` (with each tab's age) · `tabs_create` (incognito too) · `tabs_close` · `tabs_cleanup` (closes idle tabs, `dryRun` to preview) · `history_search` (find a visited page) · `navigate` |
 | **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `scroll_extract` (infinite lists extracted in a single call) · `query` (structured extraction: selector + filter + pagination) · `read_tables` (tables as Markdown or CSV) · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `save_image` · `read_screen_text` (local OCR) · `transcript` (the text of a YouTube video, without downloading anything) · `downloads` (download a file with your session, follow a download) · `read_document` (PDF, even scanned, Word, PowerPoint, Excel) |
-| **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `credentials_fill` (fills logins / passwords without ever seeing them: encrypted vault or your Vaultwarden / Bitwarden, side panel Secrets tab) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` · `ask_human` (hand over to the user: captcha, 2FA, validation) |
+| **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `credentials_fill` (fills logins / passwords without ever seeing them: encrypted vault or your Vaultwarden / Bitwarden, side panel Secrets tab) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` · `ask_human` (hand over to the user: captcha, 2FA, validation) · `captcha_solve` (solves Turnstile, reCAPTCHA, hCaptcha) |
 | **DevTools** | `replay_paginated` (replay an observed API pagination, no scrolling) · `javascript` · `devtools` (console, network, interceptions, storage, perf, emulation, PDF, WebSocket, HTTP, HAR, resize: 12 tools in one) · `site_api` (per-site memory: routes + calls, replay fast without rediscovering) |
 | **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` · `download_media` (a page's video, audio or subtitles, with yt-dlp) · `watch` (persistent watches: the daemon checks on its own, periodically) · `demo` (the user shows the flow once, the agent replays it) |
 

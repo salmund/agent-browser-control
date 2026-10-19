@@ -45,6 +45,7 @@ const CATEGORY: Record<string, string> = {
   wait_for: "Agir",
   handle_dialog: "Agir",
   ask_human: "Agir",
+  captcha_solve: "Agir",
   javascript: "DevTools",
   devtools: "DevTools",
   site_api: "DevTools",

@@ -101,6 +101,7 @@ Garde-fous côté démon : journal expurgé (saisies et corps réduits à leur l
 | `watch` | Surveillances persistantes du démon (texte, sélecteur, JS) : declare, list, check, cancel ; réarmement, pause auto après 5 erreurs |
 | `demo` | L'utilisateur montre le parcours (clics, saisies hors mots de passe, navigations), l'agent reçoit étapes + code rejouable + note suggérée |
 | `ask_human` | Passe la main dans le vrai onglet (captcha, 2FA, validation) : notification + panneau, retour avec effet constaté et note |
+| `captcha_solve` | Résout le captcha de l'onglet (Turnstile, reCAPTCHA, hCaptcha : case, défis image via vision, jeton) ; échec explicite vers ask_human |
 
 ## 3.3 Secrets d'authentification (`credentials_fill`)
 
