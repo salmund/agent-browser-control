@@ -57,6 +57,8 @@ const context: Record<string, unknown> = {
   btoa,
   structuredClone,
   navigator: { userAgent: "test" },
+  // Événements du service worker (install : empreinte du code chargé, bg/connection.js).
+  addEventListener: (type: string) => listeners.push(`self.${type}`),
 };
 context.self = context;
 context.globalThis = context;
@@ -75,6 +77,7 @@ const missing = vm.runInContext("Object.entries(TOOLS).filter(([, f]) => typeof 
 assert.strictEqual(missing, "", "chaque outil est une fonction");
 assert.ok(listeners.includes("chrome.runtime.onMessage"), "écouteur runtime.onMessage enregistré");
 assert.ok(listeners.includes("chrome.debugger.onEvent"), "écouteur debugger.onEvent enregistré");
+assert.ok(listeners.includes("self.install"), "écouteur install du service worker enregistré");
 
 // Messages du panneau : remis une seule fois, en tête de la réponse, au seul acteur visé.
 const run = (code: string) => vm.runInContext(code, context as vm.Context) as Promise<string>;
