@@ -39,7 +39,7 @@ try {
     arguments: { tabId, action: "export", format: "gif", quality: "standard", filename: "e2e-recording-test" },
   });
   const expText = (expRes.content as { type: string; text: string }[])[0].text;
-  const m = expText.match(/([A-Z]:\\[^\n"']*?\.gif)/);
+  const m = expText.match(/((?:[A-Z]:\\|\/)[^\n"']*?\.gif)/); // chemin Windows ou POSIX
   assert.ok(m, "Chemin du GIF dans la réponse : " + expText.slice(0, 200));
   gifPath = m[1];
   const size = statSync(gifPath).size;

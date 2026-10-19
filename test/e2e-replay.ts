@@ -109,5 +109,6 @@ try {
     await client.callTool({ name: "tabs_close", arguments: { tabId: id } }).catch(() => {});
   }
   await client.close();
+  server.closeAllConnections(); // Chromium garde ses connexions keep-alive : close() attendrait sans fin
   server.close();
 }
