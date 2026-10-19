@@ -1273,7 +1273,40 @@ function setBwSession(key: string | null) {
 const bwSessionLoaded = bwKeep.load().then((key) => {
   if (key && !bwSessionKey) bwSessionKey = key;
   if (key) log({ event: "bw-keep", restored: true });
+  if (key) void bwSyncNow("restauration");
 }).catch(() => {});
+
+/**
+ * Synchronisation du cache local du CLI avec le serveur (Vaultwarden) : un compte ajouté ailleurs (PC,
+ * téléphone, coffre web) n'est vu par `bw list` qu'après un `bw sync`. Le démon synchronise après chaque
+ * déverrouillage, toutes les 5 min tant que le coffre est ouvert, et tout de suite quand un site ne
+ * trouve aucun compte (30 s au plus entre deux synchros de ce type).
+ */
+const BW_SYNC_EVERY_MS = 5 * 60_000;
+const BW_SYNC_ON_MISS_MS = 30_000;
+let bwLastSync = 0;
+let bwSyncing: Promise<boolean> | null = null;
+function bwSyncNow(reason: string): Promise<boolean> {
+  if (!bwSessionKey) return Promise.resolve(false);
+  bwSyncing ??= (async () => {
+    try {
+      await (await bwClient()).sync(bwSessionKey!);
+      bwLastSync = Date.now();
+      log({ event: "bw-sync", ok: true, reason });
+      return true;
+    } catch (err) {
+      if (bwLocked(err) || bwLoggedOut(err)) setBwSession(null);
+      log({ event: "bw-sync", ok: false, reason, error: errText(err).slice(0, 200) });
+      return false;
+    } finally {
+      bwSyncing = null;
+    }
+  })();
+  return bwSyncing;
+}
+setInterval(() => {
+  if (bwSessionKey && Date.now() - bwLastSync >= BW_SYNC_EVERY_MS) void bwSyncNow("périodique");
+}, 60_000).unref();
 const BW_RETRY_MS = 60_000;
 
 /**
@@ -1385,7 +1418,11 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
       }
       case "bw-match": {
         if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
-        const items = await client.matchUrl(bwSessionKey, String(params.url ?? ""));
+        let items = await client.matchUrl(bwSessionKey, String(params.url ?? ""));
+        // Aucun compte : peut-être ajouté depuis peu sur un autre appareil. Une synchro, puis on recommence.
+        if (!items.length && Date.now() - bwLastSync > BW_SYNC_ON_MISS_MS && (await bwSyncNow("site sans compte")) && bwSessionKey) {
+          items = await client.matchUrl(bwSessionKey, String(params.url ?? ""));
+        }
         log({ event: "bw-rpc", op, ok: true, count: items.length });
         return reply(true, { items: items.slice(0, 20) });
       }
@@ -1395,6 +1432,7 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
         // `bw unlock` invalide les clés précédentes : on remplace le cache.
         const { status, sessionKey } = await client.unlock(password);
         setBwSession(sessionKey);
+        void bwSyncNow("déverrouillage");
         log({ event: "bw-rpc", op, ok: true, state: status.state });
         return reply(true, { state: status.state, email: status.email });
       }
@@ -1406,7 +1444,7 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
       }
       case "bw-sync": {
         if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
-        await client.sync(bwSessionKey);
+        if (!(await bwSyncNow("panneau"))) throw new Error("Synchronisation impossible : voir le journal du démon.");
         log({ event: "bw-rpc", op, ok: true });
         return reply(true, {});
       }

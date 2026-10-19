@@ -210,7 +210,7 @@ async function bwMatches(url, ctx) {
   if (hit && Date.now() - hit.t < 60_000) return hit.items;
   const res = await bwCall("bw-match", { url: origin }, ctx);
   const items = Array.isArray(res?.items) ? res.items : [];
-  bwMatchCache.set(origin, { items, t: Date.now() });
+  if (items.length) bwMatchCache.set(origin, { items, t: Date.now() }); // vide : peut-être ajouté depuis
   return items;
 }
 

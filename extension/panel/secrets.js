@@ -370,7 +370,11 @@ async function refreshBw() {
   }
   if (!st.cli) {
     set(false, "CLI absent");
-    showError("bw-error", "Il manque le CLI Bitwarden (gratuit, sert aussi pour Vaultwarden). Dans un terminal : winget install --id Bitwarden.CLI, puis revenez ici.");
+    const os = navigator.userAgentData?.platform ?? navigator.platform ?? "";
+    const install = /win/i.test(os) ? "winget install --id Bitwarden.CLI"
+      : /mac/i.test(os) ? "brew install bitwarden-cli"
+      : "sudo snap install bw (ou npm install -g @bitwarden/cli)";
+    showError("bw-error", `Il manque le CLI Bitwarden (gratuit, sert aussi pour Vaultwarden). Dans un terminal : ${install}, puis revenez ici.`);
     return;
   }
   const account = () => {

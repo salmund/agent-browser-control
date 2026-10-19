@@ -18,7 +18,7 @@
  *   identifiant, urls) : mots de passe, notes et champs perso sont jetés côté démon.
  */
 import { execFile } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
@@ -159,12 +159,22 @@ export async function findBw(runner: BwRunner = defaultRunner): Promise<string |
         if (dir.startsWith("Bitwarden.CLI")) return join(pkgs, dir, "bw.exe");
       }
     } catch {}
+  } else {
+    // Démon lancé en service (systemd, launchd) : PATH réduit, sans /snap/bin ni le préfixe npm de l'utilisateur.
+    const candidates = ["/snap/bin/bw", "/usr/local/bin/bw", "/usr/bin/bw", "/opt/homebrew/bin/bw",
+      join(homedir(), ".local", "bin", "bw"), join(homedir(), ".npm-global", "bin", "bw")];
+    const found = candidates.find((p) => existsSync(p));
+    if (found) return found;
   }
   return fallback ?? null;
 }
 
+const BW_INSTALL_COMMAND =
+  platform() === "win32" ? "winget install --id Bitwarden.CLI"
+  : platform() === "darwin" ? "brew install bitwarden-cli"
+  : "sudo snap install bw (ou npm install -g @bitwarden/cli)";
 export const BW_INSTALL_HINT =
-  "CLI Bitwarden introuvable. Installez-le (gratuit) : `winget install --id Bitwarden.CLI`, " +
+  `CLI Bitwarden introuvable. Installez-le (gratuit) : \`${BW_INSTALL_COMMAND}\`, ` +
   "puis connectez-vous dans le panneau de l'extension (onglet Secrets).";
 
 /** Variable du CLI qui choisit son dossier de données (profil). */
