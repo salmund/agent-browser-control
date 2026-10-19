@@ -21,6 +21,11 @@ const SWITCHES = [
     on: "Un halo marque l'élément cliqué ou rempli par l'agent, dans la page.",
     off: "Rien ne s'affiche dans la page : les actions sont un peu plus rapides.",
   },
+  {
+    id: "autologin-toggle", key: "autoLogin", fallback: false, hint: "autologin-hint",
+    on: "Les agents remplissent vos identifiants sans vous demander, seulement sur les sites associés à chaque compte. Plusieurs comptes pour un site : vous choisissez.",
+    off: "Chaque connexion d'un agent attend votre accord ici, sauf sur les sites marqués « Toujours autoriser ».",
+  },
 ];
 
 for (const s of SWITCHES) {

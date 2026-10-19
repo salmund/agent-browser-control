@@ -116,7 +116,9 @@ planifiées sans intervention). Références opaques de bout en bout :
   remplit via `fillSecret` (sans écho de valeur) et ne renvoie que des confirmations.
 - **Approbation** : politique par slot, `ask` (défaut, approbation unique dans le
   panneau, 75 s puis refus) ou `always` (sans demander, pour les runs planifiés).
-  STOP, verrouillage et révocation refusent les demandes en attente.
+  STOP, verrouillage et révocation refusent les demandes en attente. Réglage « Connexions automatiques »
+  (vue Réglages, désactivé par défaut) : plus de carte d'accord pour aucun slot ni élément du coffre ; périmètre,
+  iframe et sites interdits restent vérifiés ; plusieurs comptes pour un site : l'utilisateur choisit toujours.
 - **Non-fuite** : aucune valeur dans MCP, le journal (`redact()` + args sans valeur),
   les résultats ni le HAR (corps non enregistrés 120 s après un remplissage sur l'onglet ;
   valeurs `password` déjà masquées dans `read_page`). Tests : `test/credentials.ts`

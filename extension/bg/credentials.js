@@ -370,6 +370,9 @@ async function credentialsFill(agent, { tabId, fills, submitRef }) {
 
   const results = [];
   const approved = new Set(); // slots déjà approuvés pendant cet appel
+  // Réglage « Connexions automatiques » du panneau (l'utilisateur seul peut le changer) : pas de carte
+  // d'accord, mais périmètre, iframe et sites interdits restent vérifiés. Plusieurs comptes : il choisit.
+  const { autoLogin = false } = await chrome.storage.local.get("autoLogin");
   await bringToFront(tab);
   // Silence HAR dès maintenant : un site qui vérifie à la frappe, ou un login AJAX très rapide, enverrait
   // le secret avant la fin de l'outil. Les corps envoyés pendant ce délai ne sont pas enregistrés.
@@ -392,7 +395,7 @@ async function credentialsFill(agent, { tabId, fills, submitRef }) {
     if (!frameOk) {
       throw new Error(`Slot "${item.slot}" : le champ ${item.ref} est dans une iframe de ${frameHost || "(origine inconnue)"}, hors périmètre (${slot.hosts.map((h) => `"${h}"`).join(", ")}). Remplissage refusé.`);
     }
-    if (slot.policy !== "always" && !approved.has(item.slot)) {
+    if (slot.policy !== "always" && !(autoLogin === true && !slot.candidates) && !approved.has(item.slot)) {
       const entry = {
         id: ++credApprovalId, agent, slotId: item.slot, label: slot.label ?? item.slot,
         tabHost, ...(frameHost !== tabHost && { frameHost }), use: item.use === "login" ? "login" : "secret",
