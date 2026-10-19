@@ -144,6 +144,11 @@ qui l'obtient du CLI `bw` (`bw get password|username <id> --raw`) et la renvoie.
   Réglage « Garder Vaultwarden déverrouillé » (vue Réglages, désactivé par défaut) : la clé de session est aussi
   écrite dans `bitwarden-session` (DPAPI du compte Windows ; ailleurs fichier 0600) et relue au démarrage du
   démon ; « Verrouiller » ou la désactivation du réglage l'effacent (`server/bw-keep.ts`, `test/bw-keep.ts`).
+- **Relais des demandes** (`server/relay.ts`, `extension/bg/relay.js`, `test/relay.ts`) : si `relay.json` existe,
+  chaque demande en attente (`credApprovals`, `askRequests`, `bwUnlockRequests`) part en POST vers le service
+  configuré, avec une `replyUrl` (`POST /relay/decision`, hors jeton du démon) et un jeton aléatoire propre à la
+  demande, à usage unique. La décision repart vers l'extension (`relay-decision`) et suit le même chemin qu'un clic
+  du panneau ; le déverrouillage du coffre ne peut qu'être refusé par ce biais.
 - **Hygiène CLI** (`server/bitwarden.ts`) : execFile sans shell, secrets en env
   (`BW_SESSION`, `ABC_BW_PASSWORD` + `--passwordenv`), jamais en argv ; recherche
   expurgée (id, nom, identifiant, urls ; mots de passe et notes jetés côté démon).

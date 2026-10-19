@@ -27,7 +27,7 @@ importScripts(
   "bg/media.js",
   "bg/downloads.js",
   "bg/credentials.js",
-  "bg/ask.js", "bg/messages.js",
+  "bg/ask.js", "bg/messages.js", "bg/relay.js",
   "bg/demo.js",
   "bg/dispatch.js",
   "bg/connection.js"

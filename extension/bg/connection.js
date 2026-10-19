@@ -47,6 +47,13 @@ function connect() {
       const daemonVersion = String(msg.version ?? msg.daemonVersion ?? "");
       chrome.storage.session.set({ daemonVersion }).catch(() => {});
       syncBwKeep();
+      relayResync();
+      return;
+    }
+    // Réponse de l'utilisateur venue d'Argos (Telegram, web), relayée par le démon (bg/relay.js).
+    if (msg.type === "relay-decision") {
+      const ok = relayDecision(msg);
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "relay-decision-result", reqId: msg.reqId, ok }));
       return;
     }
     // Le démon a abandonné un appel (délai dépassé, client parti) : on coupe le travail restant.
@@ -255,39 +262,21 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       return replyWith(reply, diagnostic());
     case "credentials-state":
       return replyWith(reply, credDek().then((dek) => ({ unlocked: !!dek })));
-    case "credential-decision": {
-      const p = credPending.get(msg.id);
-      if (!p) {
+    case "credential-decision":
+      if (!decideCredential(msg.id, msg.decision, { itemId: msg.itemId, remember: msg.remember })) {
         reply({ ok: false, error: "Demande inconnue ou expirée." });
         return;
       }
-      clearTimeout(p.timer);
-      credPending.delete(msg.id);
-      credDropApproval(msg.id).catch(() => {});
-      // Élément Vaultwarden choisi dans la carte (plusieurs candidats pour le site) et « toujours sur ce site ».
-      p.resolve(msg.decision === "allow"
-        ? { ok: true, itemId: typeof msg.itemId === "string" ? msg.itemId : undefined, remember: msg.remember === true }
-        : { ok: false, error: "Remplissage refusé par l'utilisateur dans le panneau latéral." });
       break;
-    }
     case "bw-unlock-decline":
       bwUnlockSettle({ ok: false, error: "L'utilisateur n'a pas déverrouillé son coffre (refus dans le panneau latéral)." });
       break;
-    case "ask-decision": {
-      const p = askPending.get(msg.id);
-      if (!p) {
+    case "ask-decision":
+      if (!decideAsk(msg.id, msg.decision, { note: msg.note })) {
         reply({ ok: false, error: "Demande inconnue ou expirée." });
         return;
       }
-      clearTimeout(p.timer);
-      askPending.delete(msg.id);
-      askDrop(msg.id).catch(() => {});
-      chrome.notifications.clear(msg.id).catch(() => {});
-      p.resolve(msg.decision === "done"
-        ? { ok: true, note: String(msg.note ?? "").trim().slice(0, 2000) }
-        : { ok: false, error: "L'utilisateur a annulé la demande dans le panneau latéral." });
       break;
-    }
     case "credentials-unlock":
       return replyWith(reply, credUnlock(msg.dek));
     case "credentials-lock":

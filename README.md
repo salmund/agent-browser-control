@@ -193,6 +193,21 @@ journalisé : il passe au CLI par une variable d'environnement, et la clé de se
 Seule l'origine de la page (pas son chemin) est envoyée au CLI pour trouver les éléments correspondants. Un serveur
 privé (Tailscale, réseau local) doit être joignable depuis ce PC.
 
+### Machine sans écran : répondre aux demandes depuis une messagerie
+
+Sur un serveur où personne ne regarde le panneau, le démon peut relayer chaque demande qui attend l'utilisateur
+(accord pour un secret, `ask_human`, coffre verrouillé) vers un service local, par exemple un assistant sur
+Telegram. Il suffit d'un fichier `~/.agent-browser-control/relay.json` :
+
+```json
+{"url": "http://127.0.0.1:8096/api/abc/demandes", "headers": {"X-Argos": "1"}, "bureauUrl": "https://exemple/bureau"}
+```
+
+Le service reçoit `{"event": "request", "id", "kind", "agent", "text", "detail", "site", "until", "choices",
+"replyUrl", "replyToken"}` puis `{"event": "done", "id"}` quand la demande est réglée ailleurs. Pour répondre, il
+envoie `{"id", "token", "decision"}` (et `note` pour `ask_human`) à `replyUrl` : même effet qu'un clic dans le
+panneau. Le jeton est propre à la demande et ne sert qu'une fois ; le mot de passe maître ne passe jamais par là.
+
 ## Sécurité
 
 - **Tout reste sur votre machine.** Le démon écoute sur `127.0.0.1` avec un jeton ; il refuse toute requête venue

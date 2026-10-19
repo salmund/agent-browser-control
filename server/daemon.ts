@@ -99,6 +99,7 @@ import {
   type BwField,
 } from "./bitwarden.ts";
 import { createBwKeep } from "./bw-keep.ts";
+import { createRelay } from "./relay.ts";
 import {
   LOG_STRING_MAX,
   checkUploadPaths,
@@ -388,6 +389,17 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       inflight,
       shuttingDown,
     });
+  }
+
+  // Réponse d'un service relayé (Argos) à une demande : authentifiée par le jeton propre à la demande.
+  if (req.method === "POST" && path === "/relay/decision") {
+    const raw = await readBody(req, 16 * 1024);
+    let body: Record<string, unknown> = {};
+    try {
+      body = raw ? JSON.parse(raw) : {};
+    } catch {}
+    const out = await relay.decide(body && typeof body === "object" ? body : {});
+    return sendJson(res, out.status, out.body);
   }
 
   const authed = tokenMatches(requestToken(req.headers), token);
@@ -1264,6 +1276,25 @@ let bwPath: { path: string | null; at: number } | null = null;
 let bwSessionKey: string | null = null;
 /** Réglage « Garder Vaultwarden déverrouillé » : la session survit au redémarrage du démon (bw-keep.ts). */
 const bwKeep = createBwKeep(CONFIG_DIR);
+/** Relais des demandes vers Argos : la décision repart vers l'extension, qui la traite comme un clic du panneau. */
+const relayForwards = new Map<number, { resolve: (ok: boolean) => void; timer: NodeJS.Timeout }>();
+let relayForwardSeq = 0;
+const relay = createRelay({
+  configDir: CONFIG_DIR,
+  replyUrl: `${BASE_URL}/relay/decision`,
+  log,
+  forward: (id, decision, note) => new Promise((resolve) => {
+    if (!extension || extension.readyState !== WebSocket.OPEN) return resolve(false);
+    const reqId = ++relayForwardSeq;
+    const timer = setTimeout(() => {
+      relayForwards.delete(reqId);
+      resolve(false);
+    }, 10_000);
+    relayForwards.set(reqId, { resolve, timer });
+    extension.send(JSON.stringify({ type: "relay-decision", reqId, id, decision, ...(note && { note }) }));
+  }),
+});
+
 /** Change la session en mémoire et, si le réglage est actif, sur disque (chiffrée par Windows). */
 function setBwSession(key: string | null) {
   bwSessionKey = key;
@@ -1588,6 +1619,18 @@ function handleExtensionMessage(ws: WebSocket, msg: Record<string, unknown>) {
   if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong" }));
   if (msg.type === "daemon-rpc") {
     handleDaemonRpc(ws, msg).catch((err) => log({ event: "bw-rpc", op: String(msg.op ?? ""), ok: false, error: scrubBwError(err) }));
+    return;
+  }
+  // Demandes qui attendent l'utilisateur : relayées vers Argos si relay.json existe (relay.ts).
+  if (msg.type === "user-request") return void relay.request(msg);
+  if (msg.type === "user-request-done") return void relay.done(msg.id);
+  if (msg.type === "relay-decision-result") {
+    const p = relayForwards.get(Number(msg.reqId));
+    if (p) {
+      relayForwards.delete(Number(msg.reqId));
+      clearTimeout(p.timer);
+      p.resolve(msg.ok === true);
+    }
     return;
   }
   if (msg.type === "har") {
