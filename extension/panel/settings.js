@@ -23,7 +23,7 @@ const SWITCHES = [
   },
   {
     id: "pointer-toggle", key: "nativePointer", fallback: false, hint: "pointer-hint",
-    on: "Clics, survols, défilements et glisser bougent le vrai pointeur de cette machine, le long d'un trajet de main : les protections anti-robot les prennent pour ceux d'une personne. Le pointeur n'est plus à vous pendant les gestes.",
+    on: "Sur les pages protégées (anti-robot, captcha, connexion), clics, survols, défilements et glisser bougent le vrai pointeur de cette machine, le long d'un trajet de main : les protections les prennent pour ceux d'une personne. Ailleurs, les gestes restent simulés et rapides. Le pointeur n'est plus à vous pendant ces gestes.",
     off: "Les gestes des agents sont simulés dans la page, sans toucher votre pointeur. À activer seulement sur une machine dont l'écran sert aux agents (Linux, X11).",
   },
   {

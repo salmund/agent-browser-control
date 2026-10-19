@@ -134,7 +134,8 @@ async function actorColor(actor) {
   return group?.color ?? colorFor(actor);
 }
 
-async function assertOwned(agent, tabId) {
+/** `allowCrashed` : seuls les remèdes d'un onglet planté (le fermer, y naviguer) passent outre son état. */
+async function assertOwned(agent, tabId, { allowCrashed = false } = {}) {
   if (typeof tabId !== "number") throw new Error("tabId manquant.");
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) throw new Error(`Onglet ${tabId} introuvable.`);
@@ -146,7 +147,7 @@ async function assertOwned(agent, tabId) {
   }
   await assertAllowed(tab.url || tab.pendingUrl);
   assertRunning(tabId);
-  if (crashedTabs.has(tabId)) {
+  if (crashedTabs.has(tabId) && !allowCrashed) {
     throw new Error(`L'onglet ${tabId} a planté (${crashedTabs.get(tabId)}). Le recharger avec navigate (url: "reload") ou le fermer.`);
   }
   // Attribution des téléchargements et âge des onglets : seulement une fois la propriété vérifiée.
@@ -331,26 +332,34 @@ async function createGroupedTab(agent, incognito, tag) {
 }
 
 async function tabsCreate(agent, { url, incognito = false, label, snapshot = false, read, wait }) {
+  // Durée de chaque étape (ms depuis le début), écrite au journal du démon : de quoi savoir où passe le temps.
+  const t0 = Date.now();
+  const phases = {};
+  const mark = (name) => (phases[name] = Date.now() - t0);
   if (url) await assertAllowed(normalizeUrl(url));
   const tab = await withGroupLock(() => createGroupedTab(agent, incognito, cleanLabel(label)));
+  mark("onglet");
   // Attacher le debugger avant de charger la page pour capturer console et réseau dès le début.
   await ensureAttached(tab.id).catch(() => {});
+  mark("debogueur");
   if (url) {
     const loaded = waitForReady(tab.id, { until: wait, targetUrl: normalizeUrl(url) });
     await chrome.tabs.update(tab.id, { url: normalizeUrl(url) });
     await loaded.catch(() => {});
+    mark("page");
   }
   const fresh = await chrome.tabs.get(tab.id);
   let baseMsg = `Onglet créé :\n${formatTab(fresh)}`;
   if (url && (snapshot || read)) {
     const snap = await getAttachedSnapshot(agent, tab.id, { snapshot, read });
     if (snap) baseMsg += `\n\n${snap}`;
+    mark("lecture");
   }
-  return ok(text(baseMsg));
+  return { ...ok(text(baseMsg)), _phases: phases };
 }
 
 async function tabsClose(agent, { tabId }) {
-  await assertOwned(agent, tabId);
+  await assertOwned(agent, tabId, { allowCrashed: true });
   await giveBack(tabId);
   await chrome.tabs.remove(tabId);
   return ok(text(`Onglet ${tabId} fermé.`));

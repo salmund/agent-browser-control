@@ -36,10 +36,12 @@ const prefixRefs = (text, frameId) => (frameId ? text.replace(/\[ref_(\d+)\]/g, 
  * premier plan de la fenêtre. Les fonctions qui défilent ou téléchargent ont droit à plus.
  */
 const LONG_PAGE_FUNCTIONS = new Set(["scrollExtract", "fetchJson", "imageData", "pageText", "findScan"]);
+/** Fonctions bornées par construction (dismissConsent : deux passes de 2 s) : une page figée ne coûte pas 45 s. */
+const SHORT_PAGE_FUNCTIONS = new Map([["dismissConsent", 10_000]]);
 function pageTimeout(fnName, arg) {
   const own = Number(arg?.timeout ?? arg?.timeoutMs);
   if (Number.isFinite(own) && own > 0) return Math.min(own + 10_000, 300_000);
-  return LONG_PAGE_FUNCTIONS.has(fnName) ? 180_000 : 45_000;
+  return LONG_PAGE_FUNCTIONS.has(fnName) ? 180_000 : (SHORT_PAGE_FUNCTIONS.get(fnName) ?? 45_000);
 }
 
 async function inPage(tabId, fnName, arg, frameId = 0) {

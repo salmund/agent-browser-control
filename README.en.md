@@ -128,8 +128,10 @@ no travel, which anti-bot protections (Turnstile, reCAPTCHA, DataDome…) detect
 the agents (a Linux mini-PC, say), the panel's "Real mouse" switch routes clicks, hovers, scrolls and drags through the
 real pointer, moved by the daemon (X11, `xdotool`) along a hand-like path: an arc, a bell-shaped speed profile, a slight
 overshoot on distant targets. The extension checks that the page saw the pointer land in the right place before
-clicking, and falls back to the simulated gesture when the real mouse is unavailable. Off by default: on your own PC,
-the pointer stays yours.
+clicking, and falls back to the simulated gesture when the real mouse is unavailable. A hand-like path costs 0.5 to
+1.5 s, so it is only used where a protection judges behaviour (anti-bot widget or script, Cloudflare challenge, login
+page, protected site seen in the last 30 min); elsewhere gestures stay simulated and fast. The agent can decide for a
+gesture (`computer`, `human: true` or `false`). Off by default: on your own PC, the pointer stays yours.
 
 ## The tools
 

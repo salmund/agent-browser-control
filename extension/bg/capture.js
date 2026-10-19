@@ -5,28 +5,38 @@
 // Capture d'écran
 // ---------------------------------------------------------------------------
 
-const CAPTURE_TIMEOUT_MS = 800; // capture en arrière-plan : au-delà, la page ne dessine pas (passage devant)
+const CAPTURE_TIMEOUT_MS = 500; // capture en arrière-plan : au-delà, la page ne dessine pas (passage devant)
 const CAPTURE_FRONT_TIMEOUT_MS = 10_000; // seconde chance, onglet devant
+const CAPTURE_BG_FAIL_TTL_MS = 120_000; // un onglet qui ne se dessine pas en arrière-plan passe devant d'emblée
 
 class CaptureTimeout extends Error {}
+
+/** Onglets dont la dernière capture en arrière-plan a échoué : tabId -> horodatage. */
+const captureBgFails = new Map();
 
 /**
  * Page.captureScreenshot d'un onglet masqué répond d'habitude vite, mais reste parfois sans réponse
  * (aucune image dessinée) jusqu'au délai du démon (90 s). Délai court, puis l'onglet passe devant le
- * temps d'une seconde capture (withForeground), et l'utilisateur retrouve le sien.
+ * temps d'une seconde capture (withForeground), et l'utilisateur retrouve le sien. Un onglet qui a déjà
+ * échoué en arrière-plan passe devant tout de suite pendant 2 min : plus de demi-seconde perdue à chaque capture.
  */
-async function capturePng(tabId) {
+async function captureShot(tabId, { format = "png", quality } = {}) {
+  const params = format === "jpeg" ? { format, quality: quality ?? 90 } : { format };
   const shoot = (ms) => {
     let timer;
     const late = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new CaptureTimeout()), ms);
     });
-    return Promise.race([cdp(tabId, "Page.captureScreenshot", { format: "png" }), late]).finally(() => clearTimeout(timer));
+    return Promise.race([cdp(tabId, "Page.captureScreenshot", params), late]).finally(() => clearTimeout(timer));
   };
-  try {
-    return await shoot(CAPTURE_TIMEOUT_MS);
-  } catch (err) {
-    if (!(err instanceof CaptureTimeout)) throw err;
+  for (const [id, t] of captureBgFails) if (Date.now() - t > CAPTURE_BG_FAIL_TTL_MS) captureBgFails.delete(id);
+  if (!captureBgFails.has(tabId)) {
+    try {
+      return await shoot(CAPTURE_TIMEOUT_MS);
+    } catch (err) {
+      if (!(err instanceof CaptureTimeout)) throw err;
+      captureBgFails.set(tabId, Date.now());
+    }
   }
   const tab = await chrome.tabs.get(tabId);
   try {
@@ -39,6 +49,9 @@ async function capturePng(tabId) {
   }
 }
 
+/** Capture sans perte (OCR, enregistrement image par image). */
+const capturePng = (tabId) => captureShot(tabId);
+
 /** Capture le viewport, redimensionnée en pixels CSS (coordonnées image = coordonnées de clic). */
 /**
  * Capture du viewport. Par défaut en pixels CSS (coordonnées image = coordonnées de clic).
@@ -49,11 +62,12 @@ async function capturePng(tabId) {
 async function captureViewport(tabId, { scale = 1, region } = {}) {
   await inPage(tabId, "hideOverlay").catch(() => {});
   await refreshDeviceOverride(tabId); // onglet émulé passé devant puis rendu : sans cela, capture en mosaïque
+  // JPEG directement (pas d'encodage PNG puis de décodage) ; transmis tel quel s'il est déjà à la bonne taille.
   const [{ w, h }, shot] = await Promise.all([
     evaluate(tabId, "({ w: innerWidth, h: innerHeight })"),
-    capturePng(tabId),
+    captureShot(tabId, { format: "jpeg", quality: region ? 100 : 85 }),
   ]);
-  const blob = await (await fetch(`data:image/png;base64,${shot.data}`)).blob();
+  const blob = await (await fetch(`data:image/jpeg;base64,${shot.data}`)).blob();
   const bitmap = await createImageBitmap(blob);
   const dpr = bitmap.width / w;
   let src = [0, 0, w, h];
@@ -66,6 +80,10 @@ async function captureViewport(tabId, { scale = 1, region } = {}) {
     const zoom = Math.min(dpr * 2, 1600 / (src[2] - src[0]));
     outW = Math.round((src[2] - src[0]) * zoom);
     outH = Math.round((src[3] - src[1]) * zoom);
+  }
+  if (!region && bitmap.width === outW && bitmap.height === outH) {
+    bitmap.close();
+    return { jpeg: blob, w, h, outW, outH, src };
   }
   const canvas = new OffscreenCanvas(outW, outH);
   canvas.getContext("2d").drawImage(bitmap, src[0] * dpr, src[1] * dpr, (src[2] - src[0]) * dpr, (src[3] - src[1]) * dpr, 0, 0, outW, outH);

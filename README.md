@@ -129,8 +129,11 @@ trajet : les protections anti-robot (Turnstile, reCAPTCHA, DataDome…) le repè
 aux agents (un mini-PC sous Linux, par exemple), l'interrupteur « Souris réelle » du panneau fait passer clics, survols,
 défilements et glisser par le vrai pointeur, que le démon déplace (X11, `xdotool`) le long d'un trajet de main : arc,
 vitesse en cloche, léger dépassement des cibles lointaines. L'extension vérifie que la page a vu le pointeur arriver au
-bon endroit avant de cliquer, et revient au geste simulé si la souris réelle est indisponible. Désactivé par défaut :
-sur votre PC, le pointeur reste à vous.
+bon endroit avant de cliquer, et revient au geste simulé si la souris réelle est indisponible. Un trajet de main coûte
+0,5 à 1,5 s : il ne sert que là où une protection juge le comportement (widget ou script anti-robot, défi Cloudflare,
+page de connexion, site protégé vu depuis moins de 30 min) ; ailleurs, le geste reste simulé et rapide. L'agent peut
+trancher pour un geste (`computer`, `human: true` ou `false`). Désactivé par défaut : sur votre PC, le pointeur reste à
+vous.
 
 ## Les outils
 

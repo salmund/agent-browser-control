@@ -168,7 +168,8 @@ async function attachActionSnapshot(agent, tabId, args, res) {
 }
 
 async function navigate(agent, { tabId, url, snapshot = false, read, wait, spa }) {
-  await assertOwned(agent, tabId);
+  // Un onglet planté se répare en y naviguant (url: "reload" ou une adresse) : c'est le conseil de l'erreur.
+  await assertOwned(agent, tabId, { allowCrashed: true });
   if (!url) throw new Error("url manquante.");
   const special = ["back", "forward", "reload"].includes(url);
   // Chemin relatif (« /wiki/Myocarde », « ?page=2 », « #notes ») : read_page affiche des href compacts.
@@ -181,7 +182,9 @@ async function navigate(agent, { tabId, url, snapshot = false, read, wait, spa }
   let note = "";
   // Même origine + routeur détecté (ou spa: true) : naviguer sans recharger (clic sur le
   // lien, sinon pushState). Échec ou inapplicable : repli sur la navigation complète.
-  const viaSpa = !special && spa !== false ? await navigateSpa(tabId, normalizeUrl(url), { force: spa === true }).catch(() => null) : null;
+  const viaSpa = !special && spa !== false && !crashedTabs.has(tabId)
+    ? await navigateSpa(tabId, normalizeUrl(url), { force: spa === true }).catch(() => null)
+    : null;
   if (!viaSpa) {
     const loaded = waitForReady(tabId, { until: wait });
     if (url === "back") await chrome.tabs.goBack(tabId);

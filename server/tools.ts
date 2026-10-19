@@ -152,6 +152,11 @@ export const TOOLS: Tool[] = [
         scale: { type: "number", minimum: 0.2, maximum: 1, description: "screenshot : réduction (0,5 suffit souvent : une capture coûte cher)." },
         region: { ...box, description: "screenshot : zoom net sur [x0, y0, x1, y1]." },
         refs: { type: "boolean", description: "screenshot : numérote les éléments cliquables (30 au plus)." },
+        human: {
+          type: "boolean",
+          description: "Si l'utilisateur a activé « Souris réelle » : true impose le vrai pointeur pour ce geste, false l'écarte. " +
+            "Sans ce champ, ABC le prend seul sur les pages protégées (anti-robot, captcha, connexion).",
+        },
         snapshot,
         diff,
         then,

@@ -2844,6 +2844,12 @@
     const H = innerHeight;
     const points = [[0.5, 0.5], [0.25, 0.3], [0.75, 0.3], [0.25, 0.7], [0.75, 0.7], [0.5, 0.93], [0.5, 0.07]];
     const roots = new Map(); // conteneur -> nombre de points d'échantillonnage où il est au premier plan
+    // innerText force une mise en page et peut couvrir toute l'application (Discord) : une seule lecture par conteneur.
+    const texts = new Map();
+    const fullText = (root, scope) => {
+      if (!texts.has(root)) texts.set(root, root.innerText || scope.textContent || "");
+      return texts.get(root);
+    };
     for (const [px, py] of points) {
       const el = deepElementFromPoint(W * px, H * py);
       const root = el && !el.closest?.("#abc-overlay") && coveringAncestor(el);
@@ -2855,7 +2861,7 @@
       const visibleArea = Math.max(0, Math.min(r.right, W) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, H) - Math.max(r.top, 0));
       const cover = Math.min(1, visibleArea / (W * H));
       const scope = root.shadowRoot ?? root;
-      const text = (root.innerText || scope.textContent || "").slice(0, 3000);
+      const text = fullText(root, scope).slice(0, 3000);
       const consent = looksLikeConsent(root, scope, text);
       const explicitModal = root.getAttribute("aria-modal") === "true" || root.tagName === "DIALOG";
       const modal = explicitModal || cover >= 0.5;
@@ -2864,7 +2870,7 @@
       if (!consent && !explicitModal && isComposer(scope)) continue;
       // Toile de fond fixe (canvas décoratif) que le contenu recouvre presque partout : elle n'est au
       // premier plan que dans les marges, elle n'intercepte pas les clics sur la page.
-      if (!consent && !explicitModal && hits < 3 && !scope.querySelector?.(BUTTON_LIKE) && (root.innerText || scope.textContent || "").trim().length < 20) continue;
+      if (!consent && !explicitModal && hits < 3 && !scope.querySelector?.(BUTTON_LIKE) && fullText(root, scope).trim().length < 20) continue;
       const score = (consent ? 2 : 0) + cover;
       if (!best || score > best.score) best = { root, scope, cover, consent, score };
     }
@@ -2872,10 +2878,10 @@
     let { root, scope } = best;
     // Fond vide d'un menu ouvert (attrape-clic plein écran, ex. Figaro) : pas bloquant.
     // Un vrai modal a du texte ou des boutons ; une bannière consentement a du texte.
-    if (!best.consent && (root.innerText || scope.textContent || "").trim().length < 20 &&
+    if (!best.consent && fullText(root, scope).trim().length < 20 &&
         !scope.querySelector(BUTTON_LIKE) &&
         deepQueryAll("[aria-expanded='true']").some((el) => isVisible(el))) return null;
-    if ((root.innerText || scope.textContent || "").trim().length < 20) {
+    if (fullText(root, scope).trim().length < 20) {
       const content = overlayContent();
       if (content) {
         root = content;

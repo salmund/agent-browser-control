@@ -353,8 +353,22 @@ async function runCall(input: CallRequest): Promise<CallResult> {
   } finally {
     inflight--;
   }
-  log({ agent: input.agent, tool: input.tool, args: redactArgs(input.tool, input.args), ms: Date.now() - started, error: !!result.isError });
+  // Durées par étape jointes par l'extension (tabs_create…) : pour le journal seulement, jamais pour l'agent.
+  const phases = (result as { _phases?: unknown })._phases;
+  if (phases !== undefined) delete (result as { _phases?: unknown })._phases;
+  log({
+    agent: input.agent, tool: input.tool, args: redactArgs(input.tool, input.args), ms: Date.now() - started, error: !!result.isError,
+    ...(result.isError && { errorText: errorSummary(result) }),
+    ...(phases && typeof phases === "object" && !Array.isArray(phases) ? { phases } : {}),
+  });
   return result;
+}
+
+/** Cause d'un échec pour le journal : première ligne du message, 200 caractères, requêtes des adresses masquées. */
+function errorSummary(result: CallResult): string {
+  const first = (result.content ?? []).find((c) => c.type === "text") as { text?: string } | undefined;
+  const line = String(first?.text ?? "").split("\n")[0].replace(/(https?:\/\/[^\s?#"'<>]+)\?[^\s"'<>)]*/g, "$1?<query masquée>");
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
 }
 
 async function afterForward(call: CallRequest, raw: CallResult): Promise<CallResult> {

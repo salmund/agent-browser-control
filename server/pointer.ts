@@ -254,9 +254,11 @@ export function createPointer(opts: PointerOptions = {}) {
     run(params: Record<string, unknown>): Promise<Record<string, unknown>> {
       const job = queue.then(() => perform(params));
       queue = job.catch(() => {});
+      // Pourquoi l'extension a choisi la souris réelle (anti-robot, connexion, agent) : au journal, pour le suivi.
+      const why = typeof params.why === "string" && params.why ? { why: params.why.slice(0, 80) } : {};
       job.then(
-        () => params.action !== "status" && opts.log?.({ event: "pointer", action: params.action, ok: true }),
-        (err) => opts.log?.({ event: "pointer", action: params.action, ok: false, error: String(err?.message ?? err) }),
+        () => params.action !== "status" && opts.log?.({ event: "pointer", action: params.action, ok: true, ...why }),
+        (err) => opts.log?.({ event: "pointer", action: params.action, ok: false, error: String(err?.message ?? err), ...why }),
       );
       return job;
     },

@@ -31,7 +31,7 @@ async function runSteps(agent, tab, args) {
   let before = await digestOf();
   lines.push(`Digest initial : ${formatDigest(before)}.`);
   for (let i = 0; i < steps.length; i++) {
-    const st = { tabId, ...steps[i] };
+    const st = { tabId, ...(typeof args.human === "boolean" && { human: args.human }), ...steps[i] };
     const tag = st.action ?? "?";
     try {
       if (!st.action || typeof st.action !== "string") throw new Error(`Étape ${i + 1} : 'action' manquante.`);
@@ -178,7 +178,17 @@ async function appendActionEffect(tabId, res, before, since = Date.now() - 2000)
   return res;
 }
 
+/** human (réglage « Souris réelle » actif) : true impose le vrai pointeur pour ce geste, false l'écarte (pointer.js). */
 async function computerAction(agent, tab, args) {
+  if (typeof args.human === "boolean") pointerHumanArg.set(tab.id, args.human);
+  try {
+    return await computerGesture(agent, tab, args);
+  } finally {
+    pointerHumanArg.delete(tab.id);
+  }
+}
+
+async function computerGesture(agent, tab, args) {
   const { tabId, action } = args;
   if (!action) throw new Error("Préciser 'action' ou 'steps'.");
   if (action !== "wait") await bringToFront(tab);
