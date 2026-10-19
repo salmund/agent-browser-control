@@ -134,6 +134,8 @@ const token = getToken();
 let extension: WebSocket | null = null;
 /** Version de l'extension connectée (manifest), pour détecter les couples démon/extension désynchronisés. */
 let extensionVersion: string | null = null;
+/** L'extension signale que son code (en cache dans Chrome) n'est plus celui du disque : à relancer (bg/connection.js). */
+let extensionStale = false;
 /**
  * Réglages de l'utilisateur, envoyés par l'extension. Gardés sur disque : après un redémarrage du
  * démon, les agents voient le dernier réglage connu sans attendre que l'extension se reconnecte.
@@ -405,6 +407,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       extensionConnected: extension !== null,
       extensionVersion,
       versionMismatch: extensionVersion !== null && extensionVersion !== VERSION,
+      extensionStale,
       settings,
       inflight,
       idleMs: inflight ? 0 : Date.now() - lastCallEnd,
@@ -1685,6 +1688,7 @@ function acceptExtension(ws: WebSocket, origin: string) {
     extension = null;
     // Version inconnue jusqu'au prochain message settings (une extension rechargée peut avoir changé).
     extensionVersion = null;
+    extensionStale = false;
     log({ event: "extension_disconnected", code });
   });
 }
@@ -1728,6 +1732,10 @@ function handleExtensionMessage(ws: WebSocket, msg: Record<string, unknown>) {
       writeFileSync(SETTINGS_FILE, JSON.stringify(settings));
     } catch {}
     const ext = typeof msg.extensionVersion === "string" ? msg.extensionVersion : null;
+    if (msg.codeStale === true && !extensionStale) {
+      log({ event: "extension_code_stale", hint: "code de l'extension en cache, différent du disque : redémarrer le navigateur" });
+    }
+    extensionStale = msg.codeStale === true;
     if (ext !== extensionVersion) {
       extensionVersion = ext;
       if (ext && ext !== VERSION) {

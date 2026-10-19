@@ -179,10 +179,13 @@ chrome.runtime.onInstalled.addListener(connect);
 // un banc d'essai) ne tournerait qu'après un rechargement à la main, et l'ancien code répondrait sans rien dire.
 // L'empreinte des scripts est notée à l'événement install du service worker, le seul moment où Chrome vient de les
 // lire sur le disque (runtime.onInstalled ne convient pas : avec --load-extension, il revient à chaque démarrage,
-// code en cache compris, et onStartup ne vient pas). Au démarrage du navigateur (onStartup, ou onInstalled avec
-// --load-extension), un service worker sorti du cache compare l'empreinte du disque à la sienne : différente,
-// l'extension se recharge (une fois par empreinte : pas de boucle).
+// code en cache compris, et onStartup ne vient pas). Au démarrage du navigateur, un service worker sorti du cache
+// compare l'empreinte du disque à la sienne. Différente :
+// - démarrage ordinaire (onStartup) : l'extension se recharge (une fois par empreinte : pas de boucle) ;
+// - extension chargée par --load-extension (onInstalled) : un rechargement la couperait jusqu'au prochain démarrage
+//   du navigateur (constaté sur Orion). Elle le signale au démon (/health : extensionStale), au lanceur d'agir.
 let codeFreshlyRead = false; // ce service worker vient d'être installé : ses scripts sortent du disque
+let codeStale = false; // code en cache différent du disque, rechargement impossible ou déjà tenté
 async function diskCodeStamp() {
   const texts = await Promise.all(["background.js", ...SW_SCRIPTS].map((f) =>
     fetch(chrome.runtime.getURL(f), { cache: "no-store" }).then((r) => r.text())));
@@ -193,18 +196,22 @@ self.addEventListener("install", () => {
   codeFreshlyRead = true;
   diskCodeStamp().then((codeStamp) => chrome.storage.local.set({ codeStamp })).catch(() => {});
 });
-async function reloadIfCodeChanged() {
+async function checkCodeOnDisk(canReload) {
   if (codeFreshlyRead) return;
   try {
     const [{ codeStamp, codeReloadFor }, disk] = await Promise.all([chrome.storage.local.get(["codeStamp", "codeReloadFor"]), diskCodeStamp()]);
     if (codeStamp === disk) return;
-    if (!codeStamp || codeReloadFor === disk) return chrome.storage.local.set({ codeStamp: disk });
+    if (!codeStamp) return chrome.storage.local.set({ codeStamp: disk });
+    if (!canReload || codeReloadFor === disk) {
+      codeStale = true;
+      return sendSettings();
+    }
     await chrome.storage.local.set({ codeReloadFor: disk });
     chrome.runtime.reload();
   } catch {}
 }
-chrome.runtime.onStartup.addListener(reloadIfCodeChanged);
-chrome.runtime.onInstalled.addListener(reloadIfCodeChanged);
+chrome.runtime.onStartup.addListener(() => checkCodeOnDisk(true));
+chrome.runtime.onInstalled.addListener(() => checkCodeOnDisk(false));
 
 // Raccourcis (chrome://extensions/shortcuts) : l'arrêt d'urgence marche même panneau fermé.
 chrome.commands.onCommand.addListener((command) => {

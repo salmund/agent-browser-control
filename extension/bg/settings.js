@@ -18,6 +18,7 @@ async function sendSettings() {
     type: "settings",
     settings: { scriptsEnabled: await scriptsEnabled() },
     extensionVersion: chrome.runtime.getManifest().version,
+    codeStale, // bg/connection.js : le code qui tourne n'est plus celui du disque
   }));
 }
 
