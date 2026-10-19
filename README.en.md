@@ -148,7 +148,8 @@ A few details that make all the difference on real websites:
 - **`wait_for`** waits for a condition (an element, a text appearing or disappearing, a URL, a quiet network)
   instead of a fixed number of seconds. A 9-second image generation? It hands control back at second 9.
 - **Windows covering the page**, such as cookie banners or modals, are flagged at the top of every read, with the
-  buttons to close them and the instruction to decline non-essential cookies.
+  buttons to close them and the instruction to decline non-essential cookies. A cookie wall that offers no way to
+  decline ("accept or subscribe") is accepted rather than leaving the page blocked.
 - **`file_upload`** also works when the site opens the file picker on click: the system dialog is intercepted, so
   the agent never has to deal with it.
 - **`read_page` in `diff` mode** only returns what changed since the previous read: less context, more speed.

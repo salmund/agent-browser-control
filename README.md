@@ -150,7 +150,8 @@ Quelques détails qui changent tout sur les vrais sites :
 - **`wait_for`** attend une condition (un élément, un texte qui apparaît ou disparaît, une URL, un réseau calme)
   plutôt qu'un nombre de secondes. Une génération d'image de 9 s ? Il rend la main à la 9ᵉ seconde.
 - **Les fenêtres qui recouvrent la page**, comme les bannières de cookies ou les modales, sont signalées en tête de
-  chaque lecture, avec les boutons pour les fermer et la consigne de refuser les cookies non essentiels.
+  chaque lecture, avec les boutons pour les fermer et la consigne de refuser les cookies non essentiels. Un mur de
+  cookies qui ne laisse pas refuser (« accepter ou s'abonner ») est accepté plutôt que de bloquer la page.
 - **`file_upload`** fonctionne aussi quand le site ouvre le sélecteur de fichiers au clic : la boîte de dialogue
   système est interceptée, l'agent n'a jamais à la manipuler.
 - **`read_page` en mode `diff`** ne renvoie que ce qui a changé depuis la lecture précédente : moins de contexte,

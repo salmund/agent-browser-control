@@ -2769,6 +2769,17 @@
     /nur notwendige|only necessary|necessary only|essential only|strictly necessary|uniquement (les )?(cookies )?(necessaires|essentiels)|necessaires uniquement/,
     /refuser|reject|decline|non merci|no thanks/,
   ];
+  // Acceptation, seulement pour un mur de cookies sans refus (« accepter ou s'abonner ») : du plus explicite au plus vague.
+  const ACCEPT_PATTERNS = [
+    /accepter et (continuer|fermer)|accept (and|&) (continue|close)/,
+    /tout accepter|accepter tout|accept all|allow all|alle akzeptieren|aceptar todo|accetta tutto/,
+    /^j'?accepte|^accepter|^accept|^i accept|^akzeptieren|^aceptar|^accetta/,
+    /agree|d'accord|^ok$|^compris$|^got it$/,
+  ];
+  // Jamais cliqué pour accepter : abonnement, paiement, connexion, inscription, réglages, refus.
+  const NOT_ACCEPT_RE = /abonn|subscri|pay|achet|acheter|offre|connect|log ?in|sign|inscri|compte|account|parametr|personnalis|gerer|manage|preferenc|reglage|settings|option|choix|sans accepter|without accepting|refus|reject|decline|deny/;
+  const SUBSCRIBE_RE = /abonn|subscri|pay|payer|offre|premium/;
+  const SETTINGS_RE = /parametr|personnalis|gerer|manage|preferenc|reglage|settings|options|choix|customi/;
   const CMP_RE = /cookie|consent|privacy|didomi|onetrust|axeptio|tarteaucitron|tc-privacy|cmp|gdpr|rgpd|sp_message|qc-cmp|usercentrics|cybotcookiebot|trustarc|truste/i;
   const KNOWN_CMP = [
     ["didomi", "#didomi-host, #didomi-popup, .didomi-popup-container", "window.Didomi && Didomi.setUserDisagreeToAll()"],
@@ -2962,6 +2973,29 @@
     return best;
   }
 
+  /**
+   * Bouton « Accepter » d'un mur de cookies, ou null. Mur : aucun refus possible, et soit un abonnement proposé à la
+   * place (« accepter ou s'abonner »), soit aucun réglage où refuser. Jamais un bouton d'abonnement ou de connexion.
+   */
+  function wallAcceptButton(root) {
+    if (refuseButton(root)) return null;
+    const labels = buttonsIn(root).filter((b) => isVisible(b)).map((b) => fold(buttonLabel(b))).filter(Boolean);
+    if (!labels.some((l) => SUBSCRIBE_RE.test(l)) && labels.some((l) => SETTINGS_RE.test(l))) return null;
+    let best = null;
+    let bestRank = Infinity;
+    for (const b of buttonsIn(root)) {
+      if (!isVisible(b)) continue;
+      const label = fold(buttonLabel(b));
+      if (!label || NOT_ACCEPT_RE.test(label)) continue;
+      const rank = ACCEPT_PATTERNS.findIndex((re) => re.test(label));
+      if (rank >= 0 && rank < bestRank) {
+        best = b;
+        bestRank = rank;
+      }
+    }
+    return best;
+  }
+
   function stillShown(el) {
     return el.isConnected && isVisible(el) && el.getClientRects().length > 0 && (el === document.body || el.getBoundingClientRect().height > 2);
   }
@@ -2977,12 +3011,26 @@
    * la disparition, une seconde passe si un panneau de réglages a pris la place. Marche aussi
    * appelée dans l'iframe d'une CMP (Sourcepoint, TrustArc). Les API des CMP (Didomi, OneTrust…)
    * vivent dans le monde principal : renvoyées dans mainWorld pour que l'extension les exécute.
+   * accept: true (appelé en dernier recours par l'extension) : sur un mur de cookies sans refus (« accepter ou
+   * s'abonner »), accepte plutôt que de laisser la page bloquée.
    */
-  async function dismissConsent() {
+  async function dismissConsent(opts) {
     const frame = window !== top;
     const banner = consentBanner();
     if (!banner) return { found: false, dismissed: false, how: "aucune bannière de consentement détectée", remaining: false, frame };
     let root = banner.root;
+    if (opts?.accept === true) {
+      const btn = wallAcceptButton(root);
+      if (!btn) return { found: true, dismissed: false, how: "aucun refus, mais pas un mur « accepter ou s'abonner »", remaining: true, frame };
+      const label = buttonLabel(btn);
+      btn.scrollIntoView?.({ block: "nearest", behavior: "instant" });
+      pressOn(btn);
+      const gone = await waitUntil(() => {
+        newPass();
+        return !stillShown(root);
+      }, 2000);
+      return { found: true, dismissed: gone, accepted: true, how: `clic sur « ${label} »`, remaining: !gone, frame };
+    }
     const clicked = [];
     for (let round = 0; round < 2; round++) {
       const btn = refuseButton(root);

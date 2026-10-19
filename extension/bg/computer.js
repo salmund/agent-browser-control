@@ -130,7 +130,9 @@ const CMP_REJECT_SOURCE = `(() => {
 
 /**
  * Ferme la bannière de cookies en refusant les cookies non essentiels : bouton de refus (page principale,
- * puis iframes de la bannière), sinon API du gestionnaire de consentement. Vérifie ensuite la disparition.
+ * puis iframes de la bannière), sinon API du gestionnaire de consentement. Mur de cookies sans aucun refus
+ * (« accepter ou s'abonner ») : accepte, plutôt que de laisser la page bloquée (choix de l'utilisateur ; la
+ * réponse le dit). Vérifie ensuite la disparition.
  */
 async function dismissConsent(tabId) {
   let res = await inPage(tabId, "dismissConsent").catch((err) => ({ dismissed: false, error: err.message }));
@@ -143,9 +145,19 @@ async function dismissConsent(tabId) {
     const api = await evaluate(tabId, CMP_REJECT_SOURCE).catch(() => null);
     if (api) res = { dismissed: true, how: `API ${api}` };
   }
+  if (!res?.dismissed) {
+    const frames = await inAllFrames(tabId, "dismissConsent", { accept: true }).catch(() => []);
+    const hit = frames.find((f) => f.value?.accepted);
+    if (hit) res = { ...hit.value, frame: hit.frameId !== 0 };
+  }
   await sleepForFrame(tabId, 400);
   const still = await inPage(tabId, "blockingOverlay").catch(() => null);
   await recordFrame(tabId, "dismiss_consent");
+  if (res?.accepted) {
+    return still?.consent || !res.dismissed
+      ? ok(text(`Mur de cookies sans refus possible : cookies acceptés (${pageLabel(res.how, 80)}), mais une fenêtre recouvre encore la page : relire avec read_page.`))
+      : ok(text(`Bannière fermée en acceptant les cookies : le site ne propose pas de refus (accepter ou s'abonner) ; ${pageLabel(res.how, 80)}${res.frame ? ", dans une iframe" : ""}.`));
+  }
   if (res?.dismissed && !still?.consent) {
     return ok(text(`Bannière de cookies fermée en refusant les cookies non essentiels (${pageLabel(res.how, 80) || "bouton de refus"}${res.frame ? ", dans une iframe" : ""}).`));
   }

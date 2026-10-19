@@ -121,7 +121,7 @@ export const TOOLS: Tool[] = [
       "Un clic sur une ref recouverte ou hors écran est refusé avec diagnostic. steps enchaîne plusieurs actions en un appel " +
       "(arrêt à la première erreur, pas de screenshot en étape). Chaque réponse décrit l'effet constaté (page, erreurs JS, requêtes en échec, " +
       "nouvel onglet, téléchargement) : inutile de relire pour vérifier. dismiss_consent ferme la bannière de cookies en refusant " +
-      "les cookies non essentiels. screenshot avec ref : capture cadrée sur l'élément.",
+      "les cookies non essentiels (mur « accepter ou s'abonner » sans refus : accepte). screenshot avec ref : capture cadrée sur l'élément.",
     inputSchema: {
       type: "object",
       properties: {

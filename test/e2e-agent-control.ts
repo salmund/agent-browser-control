@@ -5,7 +5,8 @@
  * 3. L'effet d'une action signale les erreurs JavaScript et les requêtes en échec qu'elle a provoquées.
  * 4. navigate vers l'URL courante recharge la page (au lieu de ne rien faire).
  * 5. Une page qui écrit « </page_content> » ne referme pas la balise de contenu non fiable.
- * 6. dismiss_consent ferme une bannière de cookies en cliquant le bouton de refus.
+ * 6. dismiss_consent ferme une bannière de cookies en cliquant le bouton de refus ; sur un mur « accepter ou
+ *    s'abonner » sans refus, il accepte (jamais l'abonnement) et le dit ; avec un bouton de réglages, il n'accepte pas.
  * 7. file_upload refuse un fichier sensible (clé SSH).
  *
  * Lancer avec : node test/e2e-agent-control.ts (extension + démon actifs, Comet ouvert)
@@ -122,6 +123,35 @@ try {
   console.log(consent.content.map((c) => c.text).join("\n"));
   textOf(consent);
   assert.ok((await js(tabId, "String(window.__consent)")).includes("refusé"), "le bouton de refus a été cliqué");
+
+  // Mur de cookies : accepter ou s'abonner, aucun refus.
+  const mur = (boutons: string[]) => js(tabId, `(() => {
+    document.getElementById("cmp")?.remove();
+    window.__consent = "rien";
+    const b = document.createElement("div");
+    b.id = "cmp";
+    b.style.cssText = "position:fixed;inset:0;background:#fff;z-index:99;padding:20px";
+    b.innerHTML = "<h2>Soutenez un journalisme fiable</h2><p>Acceptez les cookies pour continuer, ou abonnez-vous pour lire sans publicité ciblée.</p>";
+    for (const t of ${JSON.stringify(boutons)}) {
+      const btn = document.createElement("button");
+      btn.textContent = t;
+      btn.onclick = () => { window.__consent = t; b.remove(); };
+      b.append(btn);
+    }
+    document.body.append(b);
+    return "ok";
+  })()`);
+  await mur(["S'abonner", "Accepter et continuer", "Se connecter"]);
+  const wall = textOf(await call("computer", { tabId, action: "dismiss_consent" }));
+  console.log(wall);
+  assert.ok((await js(tabId, "String(window.__consent)")).includes("Accepter et continuer"), "mur : cookies acceptés, pas d'abonnement");
+  assert.ok(wall.includes("acceptant"), "la réponse dit que les cookies ont été acceptés");
+
+  await mur(["Accepter", "Paramétrer mes choix"]);
+  const reglages = await call("computer", { tabId, action: "dismiss_consent" });
+  console.log(reglages.content.map((c) => c.text).join("\n"));
+  assert.ok((await js(tabId, "String(window.__consent)")).includes("rien"), "réglages proposés : pas d'acceptation automatique");
+  await js(tabId, `document.getElementById("cmp")?.remove(); "ok"`);
 
   console.log("\n7. file_upload d'une clé SSH refusé...");
   await js(tabId, `document.body.innerHTML = '<input type="file" id="f">'; "ok"`);

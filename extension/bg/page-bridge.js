@@ -116,12 +116,13 @@ async function overlayNotice(tabId) {
   const what = o.consent ? "Une bannière de cookies" : `Une fenêtre (${o.cover} % de l'écran)`;
   const advice = o.consent
     ? "Tant qu'elle est ouverte, les clics sur la page risquent de tomber dessus : la fermer d'abord, en choisissant " +
-      "l'option qui refuse les cookies non essentiels (« Refuser », « Continuer sans accepter »), sauf consigne contraire de l'utilisateur. " +
+      "l'option qui refuse les cookies non essentiels (« Refuser », « Continuer sans accepter »), sauf consigne contraire de l'utilisateur ; " +
+      "s'il n'y a aucun refus possible (« accepter ou s'abonner »), accepter, sans jamais s'abonner. " +
       "Si le clic reste sans effet juste après le chargement, attendre (wait_for networkIdle) puis réessayer."
     : "Elle intercepte probablement les clics sur la page : la traiter ou la fermer d'abord.";
   const where = o.inIframe ? "\nSes boutons sont dans une iframe : voir la section iframe de read_page." : "";
   const details = [`Titre : ${o.title}`];
-  if (o.consent) details.push("Pour la fermer en refusant les cookies non essentiels : computer action=\"dismiss_consent\".");
+  if (o.consent) details.push("Pour la fermer en refusant les cookies non essentiels (ou en acceptant s'il n'y a pas de refus) : computer action=\"dismiss_consent\".");
   if (o.buttons.length) details.push(`Boutons : ${o.buttons.map((b) => `${b.name} [${b.ref}]`).join(" · ")}`);
   return `⚠ ${what} recouvre la page. ${advice}${where}\n${untrusted(details.join("\n"))}\n\n`;
 }
