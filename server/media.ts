@@ -10,15 +10,57 @@ import { basename, join } from "node:path";
 
 export const MEDIA_DIR = join(homedir(), "Downloads", "agent-browser-control");
 const WAIT_MS = 240_000; // au-delà, le téléchargement continue en arrière-plan
+const JOB_MAX_AGE_MS = 24 * 3600_000;
+
+const ACTIONS = ["download", "info"] as const;
+const MODES = ["video", "audio", "subtitles"] as const;
+const AUDIO_FORMATS = ["mp3", "m4a", "opus", "wav"] as const;
 
 export interface MediaRequest {
   url: string;
-  action?: "download" | "info";
-  mode?: "video" | "audio" | "subtitles";
+  action?: (typeof ACTIONS)[number];
+  mode?: (typeof MODES)[number];
   quality?: number; // hauteur maximale de la vidéo (1080, 720, 480…)
-  audioFormat?: "mp3" | "m4a" | "opus" | "wav";
+  audioFormat?: (typeof AUDIO_FORMATS)[number];
   subtitles?: boolean;
   playlist?: boolean;
+}
+
+const isOneOf = <T extends string>(list: readonly T[], v: unknown): v is T => typeof v === "string" && (list as readonly string[]).includes(v);
+
+/**
+ * Valide la demande avant de lancer yt-dlp : URL http(s) seulement (jamais une option),
+ * listes blanches pour action, mode et format audio, hauteur entière. Message d'erreur sinon.
+ */
+export function validateMediaRequest(raw: unknown): MediaRequest | string {
+  if (!raw || typeof raw !== "object") return "download_media : demande invalide.";
+  const r = raw as Record<string, unknown>;
+  const url = typeof r.url === "string" ? r.url.trim() : "";
+  if (!/^https?:\/\/[^\s]+$/i.test(url)) return "download_media : URL http(s) requise.";
+  const action = r.action ?? "download";
+  if (!isOneOf(ACTIONS, action)) return `download_media : action inconnue (${String(action)}).`;
+  const mode = r.mode ?? "video";
+  if (!isOneOf(MODES, mode)) return `download_media : mode inconnu (${String(mode)}) : video, audio ou subtitles.`;
+  const audioFormat = r.audioFormat ?? "mp3";
+  if (!isOneOf(AUDIO_FORMATS, audioFormat)) return `download_media : format audio inconnu (${String(audioFormat)}) : ${AUDIO_FORMATS.join(", ")}.`;
+  let quality: number | undefined;
+  if (r.quality !== undefined && r.quality !== null && r.quality !== "") {
+    quality = Number(r.quality);
+    if (!Number.isInteger(quality) || quality < 1 || quality > 10_000) return "download_media : quality = hauteur en pixels (entier, ex. 720).";
+  }
+  return { url, action, mode, audioFormat, quality, subtitles: r.subtitles === true, playlist: r.playlist === true };
+}
+
+/** Oublie les téléchargements terminés depuis plus de 24 h (le démon tourne des mois). */
+export function purgeOldJobs(now = Date.now()): number {
+  let removed = 0;
+  for (const [id, job] of jobs) {
+    if (job.done && now - (job.ended || job.started) > JOB_MAX_AGE_MS) {
+      jobs.delete(id);
+      removed++;
+    }
+  }
+  return removed;
 }
 
 interface Job {
@@ -70,7 +112,8 @@ const duration = (s?: number) => {
 /** Titre, durée, qualités et sous-titres disponibles, sans rien télécharger. */
 export async function mediaInfo(req: MediaRequest): Promise<string> {
   let json = "";
-  const { code, stderr } = await run(["-J", "--no-warnings", req.playlist ? "--yes-playlist" : "--no-playlist", req.url], (l) => (json += l));
+  // « -- » : l'URL ne peut jamais être lue comme une option de yt-dlp.
+  const { code, stderr } = await run(["-J", "--no-warnings", req.playlist ? "--yes-playlist" : "--no-playlist", "--", req.url], (l) => (json += l));
   if (code !== 0) throw new Error(lastError(stderr));
   const info = JSON.parse(json);
   if (info._type === "playlist") {
@@ -90,6 +133,7 @@ export async function mediaInfo(req: MediaRequest): Promise<string> {
 
 /** Lance le téléchargement ; rend la main à la fin, ou après 4 min en laissant le travail continuer. */
 export async function mediaDownload(req: MediaRequest): Promise<string> {
+  purgeOldJobs();
   if (!existsSync(MEDIA_DIR)) mkdirSync(MEDIA_DIR, { recursive: true });
   const args = [
     req.playlist ? "--yes-playlist" : "--no-playlist",
@@ -114,7 +158,7 @@ export async function mediaDownload(req: MediaRequest): Promise<string> {
     args.push("--write-subs", "--write-auto-subs", "--sub-langs", "fr,fr-FR,fr-orig,en,en-US,en-GB,en-orig", "--convert-subs", "srt",
       "--sleep-subtitles", "3", "--retries", "5", "--retry-sleep", "http:exp=2:30", "--ignore-errors");
   }
-  args.push(req.url);
+  args.push("--", req.url);
 
   const job: Job = { id: `media_${++jobCounter}`, url: req.url, started: Date.now(), done: false, files: [], ids: [], error: "", progress: "", ended: 0 };
   jobs.set(job.id, job);
@@ -133,6 +177,7 @@ export async function mediaDownload(req: MediaRequest): Promise<string> {
 }
 
 export function mediaStatus(jobId?: string): string {
+  purgeOldJobs();
   if (jobId) {
     const job = jobs.get(jobId);
     if (!job) throw new Error(`Téléchargement ${jobId} inconnu (le démon a peut-être redémarré).`);

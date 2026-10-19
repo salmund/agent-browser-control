@@ -36,12 +36,15 @@ export function resolveDocumentPath(input: string): string {
   return real;
 }
 
-function parsePages(spec: string | undefined, total: number): number[] {
+/** Pages demandées (« 3 », « 2-5 », « 1,4 »), bornées par le nombre total : « 1-999999999 » ne boucle pas. */
+export function parsePages(spec: string | undefined, total: number): number[] {
   if (!spec) return Array.from({ length: total }, (_, i) => i + 1);
   const pages = new Set<number>();
   for (const part of spec.split(",")) {
     const [a, b] = part.split("-").map((n) => parseInt(n.trim(), 10));
-    for (let p = a; p <= (Number.isFinite(b) ? b : a); p++) if (p >= 1 && p <= total) pages.add(p);
+    if (!Number.isFinite(a)) continue;
+    const last = Math.min(Number.isFinite(b) ? b : a, total);
+    for (let p = Math.max(a, 1); p <= last; p++) pages.add(p);
   }
   return [...pages].sort((x, y) => x - y);
 }

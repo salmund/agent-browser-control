@@ -25,10 +25,29 @@ function headerList(obj) {
   return Object.entries(obj).map(([name, value]) => ({ name, value: String(value) }));
 }
 
+/**
+ * Motif CDP (Fetch.enable) d'une règle : seules les requêtes susceptibles de correspondre sont
+ * suspendues, pas toutes celles de l'onglet. Les motifs CDP sont sensibles à la casse, la règle
+ * non (regex /i) : on filtre donc sur l'hôte (toujours en minuscules dans une URL normalisée),
+ * la regex de la règle tranchant ensuite. Sans hôte reconnaissable (« *\/api/* »), tout est suspendu.
+ */
+function interceptPatternFor(glob) {
+  let rest = String(glob ?? "").trim().replace(/^\*+/, "");
+  rest = rest.replace(/^(?:[a-z][a-z0-9+.-]*|\*):\/\//i, "").replace(/^\*+/, "");
+  const host = /^\.?([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?=[/:*?#]|$)/i.exec(rest)?.[1];
+  if (!host) return "*";
+  return `*${host.toLowerCase()}*`;
+}
+
 async function syncFetch(tabId) {
   const rules = interceptRules.get(tabId) ?? [];
-  if (rules.length) await cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
-  else await cdp(tabId, "Fetch.disable").catch(() => {});
+  if (!rules.length) {
+    await cdp(tabId, "Fetch.disable").catch(() => {});
+    return;
+  }
+  const globs = [...new Set(rules.map((r) => interceptPatternFor(r.urlPattern)))];
+  const patterns = (globs.includes("*") ? ["*"] : globs).map((urlPattern) => ({ urlPattern, requestStage: "Request" }));
+  await cdp(tabId, "Fetch.enable", { patterns });
 }
 
 chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
@@ -36,7 +55,16 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
 });
 chrome.debugger.onDetach.addListener(({ tabId }) => interceptRules.delete(tabId));
 
+/** Requête suspendue : appliquer la règle ; en cas d'erreur, toujours la relâcher (sinon la page attend sans fin). */
 async function handlePausedRequest(tabId, p) {
+  try {
+    await applyInterceptRule(tabId, p);
+  } catch {
+    await chrome.debugger.sendCommand({ tabId }, "Fetch.continueRequest", { requestId: p.requestId }).catch(() => {});
+  }
+}
+
+async function applyInterceptRule(tabId, p) {
   const send = (method, args) => chrome.debugger.sendCommand({ tabId }, method, args);
   const requestId = p.requestId;
   const rule = (interceptRules.get(tabId) ?? []).find(
@@ -173,13 +201,13 @@ async function networkGetBody(agent, { tabId, requestId }) {
  * network_har : l'enregistrement réseau persistant de l'onglet, tenu par le démon (il survit au
  * rechargement de l'extension). L'extension vérifie seulement que l'onglet est à l'agent.
  */
-async function networkHar(agent, { tabId, action = "status", requestId, urlPattern, limit, name, secrets, keep, label, saved }) {
+async function networkHar(agent, { tabId, action = "status", requestId, urlPattern, limit, name, secrets, keep, label, saved, format }) {
   if (action !== "saved") await assertOwned(agent, tabId);
-  const actions = ["status", "list", "body", "bodies", "export", "keep", "clear", "saved"];
+  const actions = ["status", "list", "body", "bodies", "export", "export-code", "keep", "clear", "saved"];
   if (!actions.includes(action)) throw new Error(`action attendue : ${actions.join(", ")}.`);
   if (action === "body" && !requestId) throw new Error("'requestId' requis pour action=\"body\" (colonne id de list).");
   if (urlPattern) compileRegex(urlPattern);
-  return { content: [text("HAR persistant")], _har: { action, tabId, requestId, urlPattern, limit, name, secrets, keep, label, saved } };
+  return { content: [text("HAR persistant")], _har: { action, tabId, requestId, urlPattern, limit, name, secrets, keep, label, saved, format } };
 }
 
 /**
@@ -200,7 +228,7 @@ async function siteApi(agent, { action = "list", tabId, requestId, name, saved, 
   }
   if (action !== "save_call") throw new Error(`Action ${action} : servie par le démon, sans passer par l'extension.`);
   if (!saved) await assertOwned(agent, tabId);
-  if (!requestId) throw new Error("'requestId' requis (colonne id de network_har action=\"list\").");
+  if (!requestId) throw new Error("'requestId' requis (colonne id de devtools action=\"har\" op=\"list\").");
   return { content: [text("Site API")], _siteApi: { action, tabId, requestId, name, saved } };
 }
 
@@ -208,10 +236,21 @@ async function siteApi(agent, { action = "list", tabId, requestId, name, saved, 
 // Stockage : cookies, localStorage, sessionStorage
 // ---------------------------------------------------------------------------
 
-function formatCookie(c) {
+// Cookies dont la valeur vaut une session ou un jeton : masqués par défaut (reveal: true pour les voir).
+const SENSITIVE_COOKIE = /sess|sid|token|auth|jwt|csrf|xsrf|secret|login|remember|passw|key|credential|identity|refresh|bearer|saml|oauth|^__(host|secure)-/i;
+
+/** Cookie à masquer : HttpOnly (illisible par la page elle-même) ou nom typique de session / jeton. */
+function cookieIsSensitive(c) {
+  return !!c.httpOnly || SENSITIVE_COOKIE.test(c.name ?? "");
+}
+
+function formatCookie(c, reveal = false) {
   const flags = [c.httpOnly && "HttpOnly", c.secure && "Secure", c.sameSite && `SameSite=${c.sameSite}`].filter(Boolean).join(" ");
   const expires = c.session ? "session" : new Date(c.expires * 1000).toISOString().slice(0, 16).replace("T", " ");
-  const value = c.value.length > 200 ? `${c.value.slice(0, 200)}… [${c.value.length} car.]` : c.value;
+  const hidden = !reveal && cookieIsSensitive(c);
+  const value = hidden
+    ? `<masqué, ${c.value.length} car.>`
+    : c.value.length > 200 ? `${c.value.slice(0, 200)}… [${c.value.length} car.]` : c.value;
   return `- ${c.name}=${value}\n    ${c.domain}${c.path} · expire : ${expires}${flags ? ` · ${flags}` : ""}`;
 }
 
@@ -225,7 +264,13 @@ async function storage(agent, args) {
       case "get": {
         const { cookies } = await cdp(tabId, "Network.getCookies", { urls: [url] });
         const list = args.name ? cookies.filter((c) => c.name === args.name) : cookies;
-        return ok(text(list.length ? `${list.length} cookie(s) pour ${new URL(url).host} :\n${untrusted(list.map(formatCookie).join("\n"))}` : "Aucun cookie."));
+        if (!list.length) return ok(text("Aucun cookie."));
+        const reveal = args.reveal === true;
+        const masked = reveal ? 0 : list.filter(cookieIsSensitive).length;
+        const note = masked
+          ? `\n(${masked} valeur(s) masquée(s) : cookies HttpOnly ou de session / jeton. reveal: true pour les afficher, seulement si la tâche l'exige.)`
+          : "";
+        return ok(text(`${list.length} cookie(s) pour ${new URL(url).host} :\n${untrusted(list.map((c) => formatCookie(c, reveal)).join("\n"))}${note}`));
       }
       case "set": {
         if (!args.name || args.value === undefined) throw new Error("'name' et 'value' requis.");
@@ -370,11 +415,39 @@ const DEVICES = {
   "pixel-8": {
     width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true,
     userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
+    platform: "Linux armv8l",
+    // Client Hints (Sec-CH-UA-*, navigator.userAgentData) cohérents avec le user-agent Android.
+    userAgentMetadata: {
+      brands: [
+        { brand: "Chromium", version: "140" }, { brand: "Google Chrome", version: "140" }, { brand: "Not=A?Brand", version: "24" },
+      ],
+      fullVersionList: [
+        { brand: "Chromium", version: "140.0.0.0" }, { brand: "Google Chrome", version: "140.0.0.0" }, { brand: "Not=A?Brand", version: "24.0.0.0" },
+      ],
+      fullVersion: "140.0.0.0",
+      platform: "Android", platformVersion: "15.0.0", architecture: "", model: "Pixel 8", mobile: true, bitness: "", wow64: false,
+    },
   },
   ipad: {
     width: 820, height: 1180, deviceScaleFactor: 2, mobile: true,
     userAgent: "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    platform: "iPad",
   },
+};
+DEVICES["iphone-15"].platform = "iPhone";
+// Safari n'envoie pas de Client Hints : sans userAgentMetadata, Chrome les désactive (cohérent pour iPhone et iPad).
+
+/**
+ * État tactile émulé par onglet, lu par le service worker : sous émulation mobile, un tap doit partir
+ * en Input.dispatchTouchEvent (touchstart / touchend) plutôt qu'en clic souris.
+ * Exposé sur globalThis.AbcDevtools (pas de nouveau nom global nu : portée partagée avec bg/).
+ */
+const emulationStates = new Map(); // tabId -> { touch, mobile, device, maxTouchPoints }
+chrome.debugger.onDetach.addListener(({ tabId }) => emulationStates.delete(tabId)); // Chrome a tout effacé
+chrome.tabs.onRemoved.addListener((tabId) => emulationStates.delete(tabId));
+globalThis.AbcDevtools = {
+  emulationStates,
+  touchEnabled: (tabId) => !!emulationStates.get(tabId)?.touch,
 };
 
 // Débits en octets/s, latence en ms (valeurs proches des préréglages DevTools).
@@ -388,15 +461,37 @@ const NETWORKS = {
 
 const originalUserAgents = new Map(); // tabId -> UA d'origine, pour la réinitialisation
 
+// Émulation d'appareil et capture. Après un Page.captureScreenshot sur un onglet émulé (souvent passé devant
+// le temps de la capture), Chrome perd le facteur d'échelle émulé : la page reste à ×3 mais la vue repart à
+// l'échelle de l'écran réel. Les clics arrivent alors réduits (iPhone 15 sur un écran à 125 % : (285, 35)
+// reçu en (118, 14), soit ×1,25/3) et la capture suivante sort en mosaïque. Réappliquer l'émulation avant
+// chaque capture et chaque geste remet la vue en accord avec la page (mêmes valeurs : aucun resize côté page).
+const deviceOverrides = new Map(); // tabId -> paramètres de Emulation.setDeviceMetricsOverride en vigueur
+
+chrome.debugger.onDetach.addListener(({ tabId }) => deviceOverrides.delete(tabId)); // Chrome a tout effacé
+
+/** Réapplique l'émulation d'appareil de l'onglet, s'il en a une (après un passage au premier plan). */
+async function refreshDeviceOverride(tabId) {
+  const params = deviceOverrides.get(tabId);
+  if (params) await cdp(tabId, "Emulation.setDeviceMetricsOverride", params).catch(() => {});
+}
+
 async function emulate(agent, args) {
   const { tabId } = args;
   await assertOwned(agent, tabId);
   const done = [];
 
   if (args.reset) {
+    deviceOverrides.delete(tabId);
+    emulationStates.delete(tabId);
     await cdp(tabId, "Emulation.clearDeviceMetricsOverride");
     await cdp(tabId, "Emulation.setTouchEmulationEnabled", { enabled: false });
-    if (originalUserAgents.has(tabId)) await cdp(tabId, "Emulation.setUserAgentOverride", { userAgent: originalUserAgents.get(tabId) });
+    await cdp(tabId, "Emulation.setEmitTouchEventsForMouse", { enabled: false }).catch(() => {});
+    // userAgent vide : retour au user-agent ET aux Client Hints du navigateur (pas de valeur figée).
+    await cdp(tabId, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(async () => {
+      if (originalUserAgents.has(tabId)) await cdp(tabId, "Emulation.setUserAgentOverride", { userAgent: originalUserAgents.get(tabId) });
+    });
+    originalUserAgents.delete(tabId);
     await cdp(tabId, "Network.emulateNetworkConditions", NETWORKS.none);
     await cdp(tabId, "Emulation.setCPUThrottlingRate", { rate: 1 });
     await cdp(tabId, "Emulation.setEmulatedMedia", { features: [] });
@@ -409,13 +504,23 @@ async function emulate(agent, args) {
     if (args.device && args.device !== "custom" && !preset) throw new Error(`Appareil inconnu. Choix : ${Object.keys(DEVICES).join(", ")}, ou width/height.`);
     const d = { ...preset, ...(args.width && { width: args.width }), ...(args.height && { height: args.height }) };
     if (!d.width || !d.height) throw new Error("'width' et 'height' requis pour un appareil personnalisé.");
-    await cdp(tabId, "Emulation.setDeviceMetricsOverride", {
-      width: d.width, height: d.height, deviceScaleFactor: d.deviceScaleFactor ?? 1, mobile: !!(d.mobile ?? args.mobile),
-    });
-    await cdp(tabId, "Emulation.setTouchEmulationEnabled", { enabled: !!(d.mobile ?? args.mobile), maxTouchPoints: 5 });
+    const metrics = { width: d.width, height: d.height, deviceScaleFactor: d.deviceScaleFactor ?? 1, mobile: !!(d.mobile ?? args.mobile) };
+    await cdp(tabId, "Emulation.setDeviceMetricsOverride", metrics);
+    deviceOverrides.set(tabId, metrics);
+    const touch = !!(d.mobile ?? args.mobile);
+    await cdp(tabId, "Emulation.setTouchEmulationEnabled", touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+    // Pas de Emulation.setEmitTouchEventsForMouse(true) : l'émulateur tactile avale alors les
+    // Input.dispatchMouseEvent du service worker, qui attendent un accusé qui ne vient jamais (clic
+    // bloqué jusqu'au délai). Les taps passent par Input.dispatchTouchEvent (voir touchEnabled).
+    await cdp(tabId, "Emulation.setEmitTouchEventsForMouse", { enabled: false }).catch(() => {});
+    emulationStates.set(tabId, { touch, mobile: metrics.mobile, device: args.device ?? "custom", maxTouchPoints: touch ? 5 : 0 });
     if (d.userAgent) {
       if (!originalUserAgents.has(tabId)) originalUserAgents.set(tabId, await evaluate(tabId, "navigator.userAgent"));
-      await cdp(tabId, "Emulation.setUserAgentOverride", { userAgent: d.userAgent });
+      await cdp(tabId, "Emulation.setUserAgentOverride", {
+        userAgent: d.userAgent,
+        ...(d.platform && { platform: d.platform }),
+        ...(d.userAgentMetadata && { userAgentMetadata: d.userAgentMetadata }),
+      });
     }
     done.push(`appareil ${args.device ?? "personnalisé"} ${d.width}x${d.height}${d.userAgent ? " (user-agent changé : recharger la page pour qu'il s'applique partout)" : ""}`);
   }
@@ -465,7 +570,8 @@ async function pdf(agent, { tabId, filename, landscape = false, printBackground 
 // ---------------------------------------------------------------------------
 
 const MAX_WS_FRAMES = 1000; // par onglet, tous sockets confondus
-const MAX_WS_PAYLOAD = 4000; // caractères gardés par message
+const MAX_WS_PAYLOAD = 4000; // caractères gardés par message (après masquage)
+const MAX_WS_MASK_INPUT = 256_000; // caractères analysés pour le masquage (au-delà : repli regex sur la coupure)
 const wsLogs = new Map(); // tabId -> { sockets: Map(requestId -> { url, opened, closed, sent, received }), frames: [] }
 
 function wsState(tabId) {
@@ -502,7 +608,9 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
       dir,
       t: Date.now(),
       size: binary ? Math.round((payloadData.length * 3) / 4) : payloadData.length,
-      data: binary ? null : globalThis.AbcWsMask.maskBody(payloadData.slice(0, MAX_WS_PAYLOAD)),
+      // Masquer AVANT de tronquer : une coupure au milieu d'un JSON empêcherait son analyse (secret
+      // laissé en clair). La borne de 256 000 car. évite d'analyser une trame géante pour rien.
+      data: binary ? null : String(globalThis.AbcWsMask.maskBody(payloadData.slice(0, MAX_WS_MASK_INPUT))).slice(0, MAX_WS_PAYLOAD),
     });
     if (state.frames.length > MAX_WS_FRAMES) state.frames.splice(0, state.frames.length - MAX_WS_FRAMES);
   }
@@ -585,6 +693,33 @@ async function httpRequest(agent, { url, method = "GET", headers = {}, body, tim
   const status = `${res.status} ${res.statusText}`.trim();
   return {
     content: [text(`${method.toUpperCase()} ${res.url} → ${status} en ${ms} ms\n${shownHeaders}\n\n${untrusted(content)}`)],
-    isError: !res.ok,
+    ...(res.ok ? {} : { isError: true }),
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// devtools : les 12 outils DevTools rarement utilisés en un seul (action + op).
+// Les anciens noms restent enregistrés dans TOOLS (compatibilité des scripts).
+// ---------------------------------------------------------------------------
+
+const DEVTOOLS_ACTIONS = ["console", "network", "body", "intercept", "storage", "perf", "emulate", "pdf", "websocket", "http", "har", "resize"];
+
+async function devtools(agent, args) {
+  const { action, op, ...rest } = args;
+  switch (action) {
+    case "console": return readConsoleMessages(agent, rest);
+    case "network": return readNetworkRequests(agent, rest);
+    case "body": return networkGetBody(agent, rest);
+    case "intercept": return networkIntercept(agent, { ...rest, action: op ?? rest.action });
+    case "storage": return storage(agent, { ...rest, action: op ?? rest.action });
+    case "perf": return performanceMetrics(agent, rest);
+    case "emulate": return emulate(agent, rest);
+    case "pdf": return pdf(agent, rest);
+    case "websocket": return readWebsocketMessages(agent, rest);
+    case "http": return httpRequest(agent, rest);
+    case "har": return networkHar(agent, { ...rest, action: op ?? rest.action ?? "status" });
+    case "resize": return resizeWindow(agent, rest);
+    default: throw new Error(`action attendue : ${DEVTOOLS_ACTIONS.join(", ")}.`);
+  }
 }

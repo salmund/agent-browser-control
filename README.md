@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#les-outils">Les 41 outils</a> ·
+  <a href="#les-outils">Les 34 outils</a> ·
   <a href="#le-panneau">Le panneau</a> ·
   <a href="#sécurité">Sécurité</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Votre vrai navigateur.** Pas un Chromium headless lancé à côté : l'agent travaille dans vos onglets, avec vos
   comptes déjà connectés. Il voit ce que vous voyez.
 - **N'importe quel agent.** Tout passe par [MCP](https://modelcontextprotocol.io) : une ligne de configuration, et
-  l'agent dispose des 41 outils, quel que soit le modèle derrière.
+  l'agent dispose des 34 outils, quel que soit le modèle derrière.
 - **Bien plus qu'un pilote de clics.** Arbre d'accessibilité avec des références stables, iframes (même d'une autre
   origine), réseau, WebSocket, console, cookies, performance, émulation mobile, interception de requêtes,
   enregistrement GIF ou vidéo… L'agent a les DevTools, pas seulement une souris.
@@ -41,17 +41,17 @@
 
 <table>
   <tr>
-    <td width="320"><img src="docs/assets/panel.png" alt="Panneau latéral : arrêt d'urgence, agents, journal" width="300"></td>
+    <td width="320"><img src="docs/assets/panel.png" alt="Panneau latéral : demande en attente, agents au travail avec leurs messages, journal" width="300"></td>
     <td>
-      <p>Un clic sur l'icône de l'extension ouvre le panneau de supervision :</p>
+      <p>Un clic sur l'icône de l'extension ouvre le panneau. Trois vues : Activité, Réglages, Secrets.</p>
       <ul>
-        <li><b>Arrêt d'urgence</b> : coupe toutes les actions en cours et détache les agents ; « Réarmer » pour reprendre.</li>
-        <li><b>Agents</b> : un clic amène à leur groupe d'onglets, quelle que soit la fenêtre.</li>
-        <li><b>Journal</b> : chaque action, sa durée, ses erreurs, filtrable par agent.</li>
-        <li><b>Scripts d'agent</b> : autoriser ou non <code>browser_script</code> (voir plus bas).</li>
-        <li><b>Sites interdits</b> : votre banque, votre gestionnaire de mots de passe… les agents n'y entrent pas.</li>
+        <li><b>En attente de votre réponse</b> : un agent vous passe la main (captcha, 2FA) ou demande un secret ; la carte dit pourquoi et combien de temps il attend. L'icône de l'extension affiche le nombre de demandes.</li>
+        <li><b>Agents</b> : une ligne par agent et par sous-agent, avec ce qu'il fait en mots simples. Sur chaque ligne : lui écrire, afficher ses onglets, le mettre en pause, fermer ses onglets.</li>
+        <li><b>Écrire à un agent</b> : « Reste sur les sources françaises », « Arrête-toi après le résumé »… Le message arrive en tête de la réponse de sa prochaine action ; le panneau affiche « En attente » puis « Lu à 11:30 ».</li>
+        <li><b>Journal</b> : chaque action, son site, sa durée, ses erreurs ; filtrable par agent ou par échecs, chaque ligne se déplie.</li>
+        <li><b>Tout arrêter</b> (ou <kbd>Alt</kbd>+<kbd>Maj</kbd>+<kbd>S</kbd>) : les actions en cours s'arrêtent net et l'agent en est prévenu ; <kbd>Alt</kbd>+<kbd>Maj</kbd>+<kbd>R</kbd> pour reprendre.</li>
+        <li><b>Réglages</b> : premier plan, scripts d'agent, gestes visibles, sites interdits (votre banque, votre gestionnaire de mots de passe…).</li>
       </ul>
-      <p>Sur la page pilotée, une bordure violette et une onde à chaque clic montrent ce que fait l'agent.</p>
     </td>
   </tr>
 </table>
@@ -61,7 +61,7 @@
 > Prérequis : **Node.js 22.18+** et un navigateur Chromium (testé sur Comet, prévu pour Chrome, Edge, Brave…).
 > Facultatif : [yt-dlp](https://github.com/yt-dlp/yt-dlp) et ffmpeg pour `download_media`.
 
-**1. Récupérer le projet**
+**1. Récupérer le projet** (ou en une ligne : voir install.ps1 / install.sh)
 
 ```sh
 git clone https://github.com/salmund/agent-browser-control.git
@@ -90,6 +90,26 @@ Avec Claude Code : `claude mcp add agent-browser-control -- node /chemin/vers/ag
 C'est tout : le démon local démarre de lui-même au premier appel. Le nom de l'agent, qui est aussi celui de son
 groupe d'onglets, est celui qu'annonce le client MCP ; `--agent-name mon-agent` permet de le choisir.
 
+**Ou en HTTP**, si votre client sait parler MCP en Streamable HTTP : le démon sert directement `/mcp`, sans processus
+intermédiaire (il doit alors déjà tourner, par exemple lancé par un agent stdio ou par `node server/daemon.ts`).
+Le nom de l'agent se passe dans l'URL, le jeton est le contenu du fichier `~/.agent-browser-control/token` :
+
+```json
+{
+  "mcpServers": {
+    "agent-browser-control": {
+      "type": "http",
+      "url": "http://127.0.0.1:7878/mcp?agent=mon-agent",
+      "headers": { "Authorization": "Bearer <contenu de ~/.agent-browser-control/token>" }
+    }
+  }
+}
+```
+
+**Première connexion de l'extension.** Le démon retient l'identifiant de la première extension qui s'y connecte et
+refuse ensuite toutes les autres. Si vous rechargez l'extension depuis un autre dossier (son identifiant change),
+lancez `npm run unpin-extension` puis rechargez-la.
+
 **Plusieurs agents en parallèle.** Des sous-agents d'un workflow partagent la connexion de leur parent, donc son
 nom. Chacun passe alors un `label` court à `tabs_context` et `tabs_create` : il a son groupe « agent · label »
 (couleur distincte), sa pastille dans le panneau et ses lignes étiquetées dans le journal. Sans `label`, rien ne
@@ -108,11 +128,11 @@ comportement (onglet de l'agent devant à chaque action).
 
 | | Outils |
 |---|---|
-| **Onglets** | `tabs_context` (avec l'âge de chaque onglet) · `tabs_create` (aussi en navigation privée) · `tabs_close` · `tabs_cleanup` (ferme les inactifs, `dryRun` pour prévisualiser) · `history_search` (retrouver une page visitée) · `navigate` · `resize_window` |
-| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `scroll_extract` (listes à chargement progressif extraites en un appel) · `query` (extraction structurée : sélecteur + filtre + pagination) · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `save_image` · `read_screen_text` (OCR locale) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) |
-| **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `credentials_fill` (remplit identifiants / mots de passe sans jamais les voir : coffre chiffré, section Secrets du panneau) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` |
-| **DevTools** | `replay_paginated` (rejouer une pagination d'API observée, sans scroller) · `javascript` · `read_console_messages` · `read_network_requests` · `site_api` (mémoire par site : routes + appels, pour rejouer vite sans redécouvrir) · `network_har` (enregistrement réseau persistant, export HAR aux secrets masqués) · `network_intercept` · `network_get_body` · `storage` · `performance_metrics` · `emulate` · `pdf` · `read_websocket_messages` · `http_request` |
-| **Enregistrer, automatiser** | `gif_creator` (GIF haute qualité ou vidéo WebM) · `browser_script` · `download_media` (vidéo, audio ou sous-titres d'une page, avec yt-dlp) |
+| **Onglets** | `tabs_context` (avec l'âge de chaque onglet) · `tabs_create` (aussi en navigation privée) · `tabs_close` · `tabs_cleanup` (ferme les inactifs, `dryRun` pour prévisualiser) · `history_search` (retrouver une page visitée) · `navigate` |
+| **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `scroll_extract` (listes à chargement progressif extraites en un appel) · `query` (extraction structurée : sélecteur + filtre + pagination) · `read_tables` (tableaux en Markdown ou CSV) · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `save_image` · `read_screen_text` (OCR locale) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) |
+| **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `credentials_fill` (remplit identifiants / mots de passe sans jamais les voir : coffre chiffré ou votre Vaultwarden / Bitwarden, onglet Secrets du panneau) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` · `ask_human` (passer la main à l'utilisateur : captcha, 2FA, validation) |
+| **DevTools** | `replay_paginated` (rejouer une pagination d'API observée, sans scroller) · `javascript` · `devtools` (console, réseau, interceptions, stockage, perf, émulation, PDF, WebSocket, HTTP, HAR, redimensionnement : 12 outils en un) · `site_api` (mémoire par site : routes + appels, pour rejouer vite sans redécouvrir) |
+| **Enregistrer, automatiser** | `gif_creator` (GIF haute qualité ou vidéo WebM) · `browser_script` · `download_media` (vidéo, audio ou sous-titres d'une page, avec yt-dlp) · `watch` (surveillances persistantes : le démon vérifie seul, périodiquement) · `demo` (l'utilisateur montre le parcours, l'agent le rejoue) |
 
 Quelques détails qui changent tout sur les vrais sites :
 
@@ -152,15 +172,46 @@ Pour que Claude Code préfère Agent Browser Control à Claude in Chrome, copiez
 [`integrations/claude-code/skills/agent-browser-control`](integrations/claude-code/skills/agent-browser-control)
 dans `~/.claude/skills/`. Il lui explique quand et comment utiliser les outils.
 
+### Vaultwarden ou Bitwarden : vos identifiants, sans les donner à l'agent
+
+L'agent peut se connecter à vos sites avec les identifiants de **votre** coffre, sans jamais les voir :
+
+1. Installez une fois le CLI Bitwarden (gratuit, il sert aussi pour Vaultwarden) : `winget install --id Bitwarden.CLI`.
+2. Panneau, onglet **Secrets**, bloc **Vaultwarden / Bitwarden** : l'adresse du serveur est retrouvée dans vos onglets
+   ou votre historique (titre « Vaultwarden Web », hôte `passwords.*`, `vault.*`) puis vérifiée ; saisissez votre
+   e-mail et votre mot de passe maître (et le code en deux étapes s'il est demandé). C'est tout.
+3. L'agent utilise le slot `vaultwarden` : `credentials_fill` prend l'élément du coffre associé au site de l'onglet
+   (règles d'adresse du coffre), vous demande l'autorisation dans le panneau, choisissez le compte s'il y en a
+   plusieurs, et cochez « Toujours autoriser sur ce site » pour ne plus être sollicité. `credentials_list` montre aussi
+   les éléments du coffre associés à la page (`bw-<id>`).
+4. Coffre verrouillé au moment où l'agent en a besoin : une carte apparaît dans le panneau (et une notification) ;
+   saisissez le mot de passe maître, l'agent reprend tout seul (attente de 2 min au plus).
+
+Le CLI tourne dans un profil propre à ABC (`~/.agent-browser-control/bitwarden`) : votre `bw` habituel n'est pas
+déconnecté (`ABC_BW_PROFILE=default` pour partager le même profil). Le mot de passe maître n'est jamais écrit ni
+journalisé : il passe au CLI par une variable d'environnement, et la clé de session reste en mémoire du démon.
+Seule l'origine de la page (pas son chemin) est envoyée au CLI pour trouver les éléments correspondants. Un serveur
+privé (Tailscale, réseau local) doit être joignable depuis ce PC.
+
 ## Sécurité
 
 - **Tout reste sur votre machine.** Le démon écoute sur `127.0.0.1` avec un jeton ; il refuse toute requête venue
-  d'une page web et n'accepte que votre extension.
+  d'une page web (y compris par un nom de domaine qui pointerait vers votre machine) et n'accepte que votre
+  extension, épinglée à sa première connexion.
 - **Le contenu des pages est une donnée, pas une instruction.** Tout ce qui vient d'une page est balisé comme non
-  fiable, pour que l'agent ne suive pas un texte piégé.
+  fiable, pour que l'agent ne suive pas un texte piégé. Les notes de mémoire de site, écrites par des agents, sont
+  servies de la même façon : comme une donnée non vérifiée.
+- **Vos fichiers sensibles ne partent pas.** `file_upload` refuse clés SSH, `.env`, certificats, HAR, profils de
+  navigateur et dossiers de configuration, avant même d'atteindre la page.
+- **Le journal ne garde pas vos saisies** : textes tapés, mots de passe, corps de requêtes et paramètres d'URL y sont
+  réduits à leur longueur ou masqués.
 - **Chaque agent reste dans ses onglets**, et n'entre jamais sur les sites que vous avez interdits.
 - **`http_request` part sans cookies** : l'agent peut interroger une API, pas agir en votre nom sur vos comptes.
-- **L'arrêt d'urgence** coupe tout, y compris un script en cours.
+- **L'arrêt d'urgence** coupe tout, y compris un script en cours ; la pause d'un agent ne coupe que lui.
+- **Les pages de l'extension vous sont réservées** : aucun agent ne peut ouvrir le panneau ni y cliquer, donc
+  aucun ne peut approuver lui-même une demande de secret. Seul le panneau peut écrire un message à un agent.
+- **Vos onglets restent les vôtres** : un onglet que vous ouvrez depuis un onglet d'agent vous revient ; seuls ceux
+  qu'une action d'agent ouvre (lien, popup de connexion) rejoignent son groupe.
 
 ## Architecture
 
@@ -184,7 +235,9 @@ flowchart LR
 ```sh
 npm run typecheck          # vérification TypeScript
 npm run reload-extension   # recharge l'extension après une modification
-node test/smoke.ts         # test de bout en bout sans navigateur
+node scripts/run-tests.ts  # suite rapide sans navigateur (--e2e : tests dans le navigateur)
+node test/smoke.ts         # test de bout en bout sans navigateur (démon de test, dossier temporaire)
+node test/mcp-http.ts      # endpoint MCP HTTP avec le client du SDK
 node test/call.ts <outil> '<json>'   # appeler un outil comme le ferait un agent
 npm run build-icons        # icônes de l'extension depuis les SVG
 npm run build-docs         # visuels de ce README depuis les SVG

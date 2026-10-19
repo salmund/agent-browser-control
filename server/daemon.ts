@@ -1,47 +1,134 @@
 /**
  * Démon Agent Browser Control.
- * Point de rendez-vous entre les shims MCP (HTTP, authentifiés par jeton)
- * et l'extension du navigateur (WebSocket, origine chrome-extension://).
+ * Point de rendez-vous entre les agents (shims MCP via /call, ou MCP HTTP natif via /mcp,
+ * authentifiés par jeton) et l'extension du navigateur (WebSocket, origine chrome-extension://
+ * épinglée à la première connexion acceptée).
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join } from "node:path";
-import { WebSocketServer, type WebSocket } from "ws";
-import { CONFIG_DIR, HOST, PORT, getToken, normalizeSettings, type CallRequest, type CallResult, type UserSettings } from "./common.ts";
+import { join } from "node:path";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { WebSocket, WebSocketServer } from "ws";
+import {
+  BASE_URL,
+  CONFIG_DIR,
+  EXTENSION_ORIGIN_FILE,
+  HOST,
+  PORT,
+  cleanAgent,
+  disabledToolNames,
+  getToken,
+  normalizeSettings,
+  parseCallRequest,
+  timeoutFor,
+  type CallRequest,
+  type CallResult,
+  type ToolContent,
+  type UserSettings,
+} from "./common.ts";
 import {
   addSiteNote,
   deleteSiteCall,
+  deleteSiteMacro,
   deleteSiteNote,
   deleteSiteRoute,
   deriveSiteCall,
   formatMemorySuggestion,
   formatSiteBrief,
+  getSiteMacros,
   getSiteNotes,
   hostHasMemory,
   loadSiteApi,
+  mineMacros,
   setSiteCall,
+  setSiteMacro,
   setSiteRoute,
   shouldSuggestMemory,
-  siteApiPath,
+  wrapSiteMemory,
+  type LogCall,
   type SiteEntry,
 } from "./analysis.ts";
 import { runOcr } from "./ocr.ts";
-import { mediaDownload, mediaInfo, mediaStatus, type MediaRequest } from "./media.ts";
+import { mediaDownload, mediaInfo, mediaStatus, purgeOldJobs, validateMediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
+import {
+  WATCH_MAX_ERRORS,
+  WATCH_MAX_INTERVAL,
+  WATCH_MIN_INTERVAL,
+  condText,
+  describeWatcher,
+  loadWatches,
+  parseProbeResult,
+  probeCode,
+  saveWatches,
+  watchDue,
+  type WatchCond,
+  type Watcher,
+} from "./watch.ts";
 import { LOG_GENERATIONS, LOG_MAX_BYTES, OUTPUT_MAX_AGE_MS, purgeOlderThan, rotateFile } from "./housekeeping.ts";
-import { appendEntry, bodiesText, bodyText, clearTab, closeTab, deleteSaved, exportHar, listText, purgeStale, readEntries, savedRecordings, setKeep, statusText, type HarEntry } from "./har.ts";
+import {
+  appendEntry,
+  bodiesText,
+  bodyText,
+  clearTab,
+  closeTab,
+  deleteSaved,
+  exportCodeText,
+  exportHar,
+  flushMeta,
+  listText,
+  pickEntry,
+  purgeStale,
+  readEntries,
+  savedRecordings,
+  setKeep,
+  statusText,
+  type HarEntry,
+} from "./har.ts";
+import {
+  BW_INSTALL_HINT,
+  BwNeedsCodeError,
+  createBitwardenClient,
+  findBw,
+  isBwField,
+  normalizeServerUrl,
+  probeServer,
+  scrubBwError,
+  type BwField,
+} from "./bitwarden.ts";
+import {
+  LOG_STRING_MAX,
+  checkUploadPaths,
+  hostAllowed,
+  isExtensionOrigin,
+  redactArgs,
+  requestToken,
+  safeFileName,
+  tokenMatches,
+  truncateStrings,
+} from "./security.ts";
+import { createAbcServer } from "./mcp-server.ts";
 
-const VERSION = "0.5.0";
-const CALL_TIMEOUT_MS = 90_000;
-const SCRIPT_TIMEOUT_MS = 295_000;
+const VERSION = "0.8.0";
 const EXTENSION_WAIT_MS = 10_000;
 const LOG_FILE = join(CONFIG_DIR, "actions.log");
-const OUTPUT_DIR = join(homedir(), "Downloads", "agent-browser-control");
+/** Fichiers joints par l'extension (GIF, captures…). ABC_OUTPUT_DIR le remplace (tests). */
+const OUTPUT_DIR = process.env.ABC_OUTPUT_DIR || join(homedir(), "Downloads", "agent-browser-control");
+/** Délai unique imposé à tous les appels (tests de l'expiration seulement). */
+const TIMEOUT_OVERRIDE_MS = Number(process.env.ABC_TIMEOUT_OVERRIDE_MS) || 0;
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
+const SHUTDOWN_GRACE_MS = 10_000;
+/** Réponses tardives attendues au plus ce temps après l'expiration d'un appel. */
+const EXPIRED_KEEP_MS = 15 * 60_000;
+const DISCONNECTED_MESSAGE = "Extension déconnectée pendant l'appel : l'action a pu être exécutée, vérifier avant de relancer.";
 
 const token = getToken();
 
 let extension: WebSocket | null = null;
+/** Version de l'extension connectée (manifest), pour détecter les couples démon/extension désynchronisés. */
+let extensionVersion: string | null = null;
 /**
  * Réglages de l'utilisateur, envoyés par l'extension. Gardés sur disque : après un redémarrage du
  * démon, les agents voient le dernier réglage connu sans attendre que l'extension se reconnecte.
@@ -56,21 +143,67 @@ function loadSettings(): UserSettings {
     return normalizeSettings(undefined);
   }
 }
-let nextId = 1;
-const pending = new Map<number, { resolve: (r: CallResult) => void; timer: NodeJS.Timeout }>();
-const extensionWaiters = new Set<() => void>();
 
+/** Appel transmis à l'extension, rattaché à la socket qui l'a reçu. */
+interface Pending {
+  resolve: (r: CallResult) => void;
+  timer: NodeJS.Timeout;
+  ws: WebSocket;
+  tool: string;
+  agent: string;
+}
+let nextId = 1;
+const pending = new Map<number, Pending>();
+/** Appels expirés : une réponse tardive portant un fichier est quand même enregistrée. */
+const expired = new Map<number, { tool: string; agent: string; at: number }>();
+const extensionWaiters = new Set<() => void>();
+/** Appels en cours (attendus par /shutdown, exposés par /health). */
+let inflight = 0;
+let shuttingDown = false;
+
+const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+// --- Journal et flux d'événements -------------------------------------------------------------------
+
+/** Clients de GET /events (Server-Sent Events). */
+const eventClients = new Set<ServerResponse>();
+let logBytesSinceCheck = 0;
+
+/**
+ * Journal JSONL (chaque chaîne tronquée à 2 Ko, rotation à 5 Mo) ; chaque ligne part aussi,
+ * telle quelle, aux abonnés de /events : rien de plus que ce que le journal masqué contient.
+ */
 function log(entry: Record<string, unknown>) {
-  const line = JSON.stringify({ t: new Date().toISOString(), ...entry });
+  const line = JSON.stringify(truncateStrings({ t: new Date().toISOString(), ...entry }, LOG_STRING_MAX));
   console.error(line);
   try {
     appendFileSync(LOG_FILE, line + "\n");
   } catch {}
+  logBytesSinceCheck += line.length + 1;
+  if (logBytesSinceCheck > 256 * 1024) {
+    logBytesSinceCheck = 0;
+    if (rotateFile(LOG_FILE, LOG_MAX_BYTES, LOG_GENERATIONS)) log({ event: "log_rotated", file: LOG_FILE });
+  }
+  for (const res of eventClients) {
+    try {
+      // Abonné trop lent : on le lâche plutôt que d'accumuler en mémoire.
+      if (res.writableLength > 1_000_000) {
+        eventClients.delete(res);
+        res.end();
+        continue;
+      }
+      res.write(`data: ${line}\n\n`);
+    } catch {
+      eventClients.delete(res);
+    }
+  }
 }
 
 function errorResult(text: string): CallResult {
   return { content: [{ type: "text", text }], isError: true };
 }
+
+// --- Appels vers l'extension ------------------------------------------------------------------------
 
 /** Attend que l'extension soit connectée (le service worker MV3 peut être en train de se réveiller). */
 function waitForExtension(): Promise<boolean> {
@@ -86,6 +219,19 @@ function waitForExtension(): Promise<boolean> {
   });
 }
 
+function rememberExpired(id: number, info: { tool: string; agent: string }) {
+  const now = Date.now();
+  for (const [key, e] of expired) {
+    if (now - e.at < EXPIRED_KEEP_MS) break;
+    expired.delete(key);
+  }
+  expired.set(id, { ...info, at: now });
+}
+
+/**
+ * Transmet un appel à l'extension. Délai propre à l'outil (timeoutFor) ; à l'expiration,
+ * l'extension reçoit {type:"cancel", id} et l'agent un message qui l'invite à vérifier.
+ */
 async function forward(req: CallRequest): Promise<CallResult> {
   if (!(await waitForExtension())) {
     return errorResult(
@@ -93,25 +239,76 @@ async function forward(req: CallRequest): Promise<CallResult> {
         "et que l'extension est chargée et activée.",
     );
   }
+  const ws = extension!;
   const id = nextId++;
-  // Un script d'agent dure plus longtemps qu'un outil : son propre délai, plus une marge.
-  const timeoutMs = req.tool === "browser_script" ? SCRIPT_TIMEOUT_MS : CALL_TIMEOUT_MS;
+  const timeoutMs = TIMEOUT_OVERRIDE_MS || timeoutFor(req.tool, req.args);
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      resolve(errorResult(`Délai dépassé (${timeoutMs / 1000}s) pour l'outil ${req.tool}.`));
+      rememberExpired(id, { tool: req.tool, agent: req.agent });
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: "cancel", id }));
+        } catch {}
+      }
+      log({ event: "call_timeout", id, agent: req.agent, tool: req.tool, ms: timeoutMs });
+      resolve(
+        errorResult(
+          `Délai dépassé (${Math.round(timeoutMs / 1000)} s) pour l'outil ${req.tool}. ` +
+            "L'action a pu s'exécuter en partie : vérifier l'état de la page avant de relancer.",
+        ),
+      );
     }, timeoutMs);
-    pending.set(id, { resolve, timer });
-    extension!.send(JSON.stringify({ id, ...req }));
+    pending.set(id, { resolve, timer, ws, tool: req.tool, agent: req.agent });
+    try {
+      ws.send(JSON.stringify({ id, ...req }));
+    } catch (err) {
+      clearTimeout(timer);
+      pending.delete(id);
+      resolve(errorResult(`Envoi à l'extension impossible : ${errText(err)}`));
+    }
   });
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+/** Rejette les appels en attente d'une socket (fermée ou remplacée) : pas d'orphelins jusqu'au délai. */
+function failPendingFor(ws: WebSocket, message: string) {
+  for (const [id, p] of pending) {
+    if (p.ws !== ws) continue;
+    clearTimeout(p.timer);
+    pending.delete(id);
+    p.resolve(errorResult(message));
+  }
+}
+
+/** Réponse de l'extension ramenée à une forme sûre (contenu en liste, textes en chaînes). */
+function asCallResult(raw: unknown): CallResult | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as CallResult;
+  if (!Array.isArray(r.content)) return null;
+  r.content = r.content.filter(
+    (c): c is ToolContent =>
+      !!c && typeof c === "object" && typeof c.type === "string" && (c.type !== "text" || typeof (c as { text?: unknown }).text === "string"),
+  );
+  return r;
+}
+
+// --- HTTP -------------------------------------------------------------------------------------------
+
+/** Corps de la requête, ou null au-delà de la taille maximale. */
+function readBody(req: IncomingMessage, max = MAX_BODY_BYTES): Promise<string | null> {
   return new Promise((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => resolve(data));
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > max) {
+        resolve(null);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
@@ -121,53 +318,178 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-const server = createServer(async (req, res) => {
+/** Contrôles du démon avant l'extension : file_upload n'envoie jamais un fichier de secrets. */
+function preflight(call: CallRequest): { call: CallRequest } | { error: CallResult } {
+  if (call.tool !== "file_upload") return { call };
+  const check = checkUploadPaths(call.args.paths, CONFIG_DIR);
+  if (!check.ok) return { error: errorResult(check.error) };
+  return { call: { ...call, args: { ...call.args, paths: check.paths } } };
+}
+
+/** Un appel d'outil complet (shim /call ou MCP HTTP /mcp) : outils locaux, extension, post-traitements, journal. */
+async function runCall(input: CallRequest): Promise<CallResult> {
+  inflight++;
+  const started = Date.now();
+  let result: CallResult;
+  try {
+    const checked = preflight(input);
+    if ("error" in checked) result = checked.error;
+    else {
+      const call = checked.call;
+      const local = localTool(call);
+      result = local
+        ? await local.catch((err) => errorResult(`${call.tool} : ${errText(err)}`))
+        : await afterForward(call, await forward(call));
+    }
+    trackTabCall(input, result);
+  } catch (err) {
+    log({ event: "call_error", agent: input.agent, tool: input.tool, error: errText(err) });
+    result = errorResult(`${input.tool} : erreur interne du démon (${errText(err)}).`);
+  } finally {
+    inflight--;
+  }
+  log({ agent: input.agent, tool: input.tool, args: redactArgs(input.tool, input.args), ms: Date.now() - started, error: !!result.isError });
+  return result;
+}
+
+async function afterForward(call: CallRequest, raw: CallResult): Promise<CallResult> {
+  let result = await runAttachedHar(raw);
+  result = await runAttachedSiteApi(result);
+  result = await harFallback(call, result);
+  result = attachSiteBrief(call, result);
+  return maybeSuggestMemory(call, result);
+}
+
+const server = createServer((req, res) => {
+  handleHttp(req, res).catch((err) => {
+    log({ event: "http_error", url: req.url, error: errText(err) });
+    if (!res.headersSent) sendJson(res, 500, { error: "erreur interne du démon" });
+    else res.end();
+  });
+});
+
+async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // Toute requête venant d'une page web porte un en-tête Origin : on refuse.
   if (req.headers.origin) return sendJson(res, 403, { error: "forbidden" });
+  // Host inattendu : page web qui passe par un nom DNS pointant vers 127.0.0.1 (DNS rebinding).
+  if (!hostAllowed(req.headers.host, PORT)) return sendJson(res, 403, { error: "bad host" });
+  const url = new URL(req.url ?? "/", BASE_URL);
+  const path = url.pathname;
 
-  if (req.method === "GET" && req.url === "/health") {
-    return sendJson(res, 200, { ok: true, version: VERSION, extensionConnected: extension !== null, settings });
+  if (req.method === "GET" && path === "/health") {
+    return sendJson(res, 200, {
+      ok: true,
+      version: VERSION,
+      extensionConnected: extension !== null,
+      extensionVersion,
+      versionMismatch: extensionVersion !== null && extensionVersion !== VERSION,
+      settings,
+      inflight,
+      shuttingDown,
+    });
   }
 
-  if (req.method === "POST" && req.url === "/reload-extension") {
-    if (req.headers["x-abc-token"] !== token) return sendJson(res, 401, { error: "bad token" });
+  const authed = tokenMatches(requestToken(req.headers), token);
+  const known = ["/mcp", "/events", "/reload-extension", "/shutdown", "/call"];
+  if (!known.includes(path)) return sendJson(res, 404, { error: "not found" });
+  if (!authed) return sendJson(res, 401, { error: "bad token" });
+
+  if (path === "/mcp") return handleMcpHttp(req, res, url);
+
+  if (req.method === "GET" && path === "/events") return openEvents(res);
+
+  if (req.method === "POST" && path === "/reload-extension") {
     if (!extension) return sendJson(res, 503, { error: "extension non connectée" });
     extension.send(JSON.stringify({ type: "reload" }));
     log({ event: "extension_reload_requested" });
     return sendJson(res, 200, { ok: true });
   }
 
-  if (req.method === "POST" && req.url === "/call") {
-    if (req.headers["x-abc-token"] !== token) return sendJson(res, 401, { error: "bad token" });
-    let call: CallRequest;
+  if (req.method === "POST" && path === "/shutdown") {
+    const first = !shuttingDown;
+    shuttingDown = true;
+    sendJson(res, 200, { ok: true, inflight });
+    if (first) void shutdown();
+    return;
+  }
+
+  if (req.method === "POST" && path === "/call") {
+    if (shuttingDown) return sendJson(res, 503, { error: "démon en cours d'arrêt" });
+    const body = await readBody(req);
+    if (body === null) return sendJson(res, 413, { error: "corps trop volumineux" });
+    let parsed: unknown;
     try {
-      call = JSON.parse(await readBody(req));
+      parsed = JSON.parse(body);
     } catch {
       return sendJson(res, 400, { error: "bad json" });
     }
-    const started = Date.now();
-    const local = localTool(call);
-    const result = local
-      ? await local.catch((err) => errorResult(`${call.tool} : ${err instanceof Error ? err.message : err}`))
-      : maybeSuggestMemory(call, attachSiteBrief(call, harFallback(call, runAttachedSiteApi(runAttachedHar(await forward(call))))));
-    trackTabCall(call, result);
-    log({ agent: call.agent, tool: call.tool, args: redact(call), ms: Date.now() - started, error: !!result.isError });
-    return sendJson(res, 200, result);
+    const call = parseCallRequest(parsed);
+    if (!call) return sendJson(res, 400, { error: "corps invalide : objet {agent, tool, args} attendu (tool : chaîne)" });
+    return sendJson(res, 200, await runCall(call));
   }
 
-  sendJson(res, 404, { error: "not found" });
-});
+  sendJson(res, 405, { error: "méthode non autorisée" });
+}
 
-/** Évite d'écrire le texte saisi et les query en clair dans le journal. */
-function redact(call: CallRequest) {
-  const args = call.args ?? {};
-  if (typeof args?.text === "string" && args.action === "type") return { ...args, text: `<${args.text.length} car.>` };
-  if (args?.value !== undefined) return { ...args, value: "<masqué>" };
-  if (call.tool === "site_api" && typeof args.url === "string") {
-    const q = args.url.indexOf("?");
-    return { ...args, url: q < 0 ? args.url : `${args.url.slice(0, q)}?<query masquée>` };
+/**
+ * MCP natif en Streamable HTTP, sans état : un serveur et un transport par requête POST,
+ * mêmes outils et même filtrage que le shim. Nom d'agent : ?agent=<nom> (ou en-tête x-abc-agent).
+ * GET et DELETE répondent 405 (pas de flux serveur ni de session à fermer), comme le prévoit la spec.
+ */
+async function handleMcpHttp(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (req.method !== "POST") {
+    res.writeHead(405, { "content-type": "application/json", allow: "POST" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Serveur MCP sans état : POST uniquement." }, id: null }));
+    return;
   }
-  return args;
+  if (shuttingDown) return sendJson(res, 503, { error: "démon en cours d'arrêt" });
+  const agent = cleanAgent(url.searchParams.get("agent") ?? req.headers["x-abc-agent"]);
+  const mcp = createAbcServer({
+    info: { name: "agent-browser-control", version: VERSION },
+    listChanged: false,
+    disabled: () => new Set(disabledToolNames(settings)),
+    call: (tool, args) => runCall({ agent, tool, args: args && typeof args === "object" && !Array.isArray(args) ? args : {} }),
+  });
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, maxRequestBodySize: MAX_BODY_BYTES });
+  res.on("close", () => {
+    transport.close().catch(() => {});
+    mcp.close().catch(() => {});
+  });
+  await mcp.connect(transport);
+  await transport.handleRequest(req, res);
+}
+
+/** GET /events : une ligne JSON du journal (déjà masquée) par événement, en Server-Sent Events. */
+function openEvents(res: ServerResponse) {
+  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" });
+  res.write(`: Agent Browser Control ${VERSION}, flux d'événements\n\n`);
+  eventClients.add(res);
+  const ping = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch {}
+  }, 15_000);
+  ping.unref();
+  res.on("close", () => {
+    clearInterval(ping);
+    eventClients.delete(res);
+  });
+}
+
+/** Arrêt propre : attend la fin des appels en cours (10 s au plus), puis ferme tout. */
+async function shutdown() {
+  log({ event: "daemon_stopping", inflight });
+  const deadline = Date.now() + SHUTDOWN_GRACE_MS;
+  while (inflight > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  log({ event: "daemon_stopped", abandoned: inflight });
+  for (const res of eventClients) res.end();
+  eventClients.clear();
+  try {
+    extension?.close(1001, "arrêt du démon");
+  } catch {}
+  flushMeta();
+  server.close();
+  setTimeout(() => process.exit(0), 200);
 }
 
 const untrusted = (body: string) =>
@@ -201,12 +523,13 @@ async function readAttachedOcr(result: CallResult): Promise<CallResult> {
         untrusted(rows.map((r) => `${r.texte}  (${r.x}, ${r.y})`).join("\n"))
       : "OCR : aucun texte reconnu à l'écran.";
   } catch (err) {
-    block = `OCR impossible : ${err instanceof Error ? err.message : err}`;
+    block = `OCR impossible : ${errText(err)}`;
   }
   let replaced = false;
   for (const item of result.content) {
     if (item.type === "text" && item.text.includes("{ocr}")) {
-      item.text = item.text.replace("{ocr}", block);
+      // Remplacement par fonction : les « $& » d'un texte lu à l'écran ne sont pas des motifs.
+      item.text = item.text.replace("{ocr}", () => block);
       replaced = true;
     }
   }
@@ -223,6 +546,9 @@ function localTool(call: CallRequest): Promise<CallResult> | null {
   if (call.tool === "site_api" && !siteApiNeedsExtension(call)) {
     return Promise.resolve().then(() => siteApiLocal(args));
   }
+  if (call.tool === "watch") {
+    return watchLocal(call);
+  }
   if (call.tool === "read_document") {
     // Le contenu d'un document vient de l'extérieur : non fiable, comme une page web.
     return readDocument({ path: String(args.path ?? ""), pages: args.pages as string | undefined })
@@ -233,51 +559,61 @@ function localTool(call: CallRequest): Promise<CallResult> | null {
 
 /**
  * download_media : l'extension a vérifié l'URL (onglet de l'agent, sites interdits) et la renvoie sous
- * `_media` ; le démon, qui a accès au système, lance yt-dlp.
+ * `_media` ; le démon la valide à nouveau (URL http(s), listes blanches) puis lance yt-dlp.
  */
 async function runAttachedMedia(result: CallResult): Promise<CallResult> {
-  const req = result._media as MediaRequest | undefined;
-  if (!req) return result;
+  if (result._media === undefined) return result;
+  const raw = result._media;
   delete result._media;
+  const req = validateMediaRequest(raw);
+  if (typeof req === "string") return errorResult(req);
   try {
     const body = req.action === "info" ? await mediaInfo(req) : await mediaDownload(req);
-    return { content: [{ type: "text", text: body }], isError: /^Échec/.test(body) };
+    if (/^Échec/.test(body)) return { content: [{ type: "text", text: body }], isError: true };
+    return { content: [{ type: "text", text: body }] };
   } catch (err) {
-    return errorResult(`download_media : ${err instanceof Error ? err.message : err}`);
+    return errorResult(`download_media : ${errText(err)}`);
   }
 }
 
 /**
- * network_har : l'extension a vérifié que l'onglet appartient à l'agent et renvoie la demande sous `_har` ;
- * le démon, qui tient l'enregistrement sur disque, répond.
+ * devtools action="har" (ancien nom network_har) : l'extension a vérifié que l'onglet appartient
+ * à l'agent et renvoie la demande sous `_har` ; le démon, qui tient l'enregistrement sur disque, répond.
  */
-function runAttachedHar(result: CallResult): CallResult {
+async function runAttachedHar(result: CallResult): Promise<CallResult> {
   const req = result._har as
-    | { action: string; tabId: number; requestId?: string; urlPattern?: string; limit?: number; name?: string; secrets?: boolean; keep?: boolean; label?: string; saved?: string }
+    | { action: string; tabId: number; requestId?: string; urlPattern?: string; limit?: number; name?: string; secrets?: boolean; keep?: boolean; label?: string; saved?: string; format?: string }
     | undefined;
   if (!req) return result;
   delete result._har;
-  const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
+  const reply = (text: string, isError = false): CallResult =>
+    isError ? { content: [{ type: "text", text }], isError } : { content: [{ type: "text", text }] };
   try {
     const entries = () => readEntries(req.tabId, req.saved);
     switch (req.action) {
       case "status":
-        return reply(statusText(req.tabId));
+        return reply(await statusText(req.tabId));
       case "list": {
-        const t = listText(entries(), req.urlPattern, req.limit ?? 100);
+        const t = listText(await entries(), req.urlPattern, req.limit ?? 100);
         return reply(t ? untrusted(t) : `Aucune requête enregistrée${req.urlPattern ? " correspondante" : ""}.`);
       }
       case "body": {
-        const b = bodyText(entries(), String(req.requestId ?? ""));
+        const b = bodyText(await entries(), String(req.requestId ?? ""));
         if (!b) return reply(`Requête ${req.requestId} absente du HAR persistant.`, true);
         return reply(typeof b === "string" ? b : `${b.header}\n${untrusted(b.body)}`);
       }
       case "bodies": {
-        const t = bodiesText(entries(), req.urlPattern, req.limit ?? 5);
+        const t = bodiesText(await entries(), req.urlPattern, req.limit ?? 5);
         return reply(t ? untrusted(t) : `Aucun corps enregistré${req.urlPattern ? " correspondant" : ""}.`);
       }
+      case "export-code": {
+        if (!req.requestId && !req.urlPattern) return reply("export-code : 'requestId' ou 'urlPattern' requis (la plus récente qui matche).", true);
+        const picked = pickEntry(await entries(), { requestId: req.requestId, urlPattern: req.urlPattern });
+        if (!picked) return reply(`Aucune requête ${req.requestId ? `d'id ${req.requestId}` : `pour ${JSON.stringify(req.urlPattern)}`} dans le HAR persistant.`, true);
+        return reply(untrusted(exportCodeText(picked, req.format)));
+      }
       case "export": {
-        const list = entries();
+        const list = await entries();
         if (!list.length) return reply("Rien à exporter : aucune requête enregistrée.", true);
         const path = exportHar(list, req.name ?? "", req.secrets === true);
         return reply(`HAR exporté (${list.length} requêtes) : ${path}\n` + (req.secrets === true
@@ -295,16 +631,13 @@ function runAttachedHar(result: CallResult): CallResult {
     }
     return reply(`Action inconnue : ${req.action}`, true);
   } catch (err) {
-    return errorResult(`network_har : ${err instanceof Error ? err.message : err}`);
+    return errorResult(`network_har : ${errText(err)}`);
   }
 }
 
-/**
- * Après un rechargement de l'extension, sa mémoire réseau est vide : network_get_body et
- * read_network_requests répondent alors depuis le HAR persistant, sans que l'agent ait à s'en soucier.
- */
+/** Mémoire par site (routes, appels, macros, notes), dans le dossier de configuration. */
 function siteApiFile(): string {
-  return siteApiPath(homedir());
+  return join(CONFIG_DIR, "site-api.json");
 }
 
 function readSiteApi(): Record<string, SiteEntry> {
@@ -316,7 +649,7 @@ function readSiteApi(): Record<string, SiteEntry> {
 }
 
 function writeSiteApi(api: Record<string, SiteEntry>): void {
-  mkdirSync(dirname(siteApiFile()), { recursive: true });
+  mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(siteApiFile(), JSON.stringify(api, null, 2) + "\n", { mode: 0o600 });
 }
 
@@ -337,15 +670,19 @@ function siteApiListText(api: Record<string, SiteEntry>): string {
     for (const [name, url] of Object.entries(routes)) lines.push(`  route « ${name} » → ${url}`);
     const calls = Array.isArray(entry) ? entry : (entry.calls ?? []);
     for (const c of calls) {
-      lines.push(`  appel « ${c.name} » — ${c.method} ${c.path}${c.params?.length ? ` (params : ${c.params.join(", ")})` : ""}`);
+      lines.push(`  appel « ${c.name} » : ${c.method} ${c.path}${c.params?.length ? ` (params : ${c.params.join(", ")})` : ""}`);
+    }
+    for (const m of getSiteMacros(entry)) {
+      lines.push(`  macro « ${m.name} » : ${m.steps.length} étapes (browser_script) :`);
+      for (const s of m.steps.slice(0, 8)) lines.push(`    ${s}`);
     }
     for (const n of getSiteNotes(entry)) lines.push(`  playbook : ${n}`);
   }
-  lines.push(
-    "Rejouer vite : navigate vers une route, http_request pour un appel. " +
-    "Si le site a changé : save_call/save_route sous le même nom écrase, delete retire le périmé.",
+  return (
+    `${wrapSiteMemory(lines.join("\n"))}\n` +
+    "Rejouer vite : navigate vers une route, devtools action='http' pour un appel. " +
+    "Si le site a changé : save_call/save_route sous le même nom écrase, delete retire le périmé."
   );
-  return lines.join("\n");
 }
 
 /**
@@ -360,7 +697,8 @@ function siteApiNeedsExtension(call: CallRequest): boolean {
 
 /** site_api sans le navigateur : list, save_route, delete, note avec site. */
 function siteApiLocal(args: Record<string, unknown>): CallResult {
-  const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
+  const reply = (text: string, isError = false): CallResult =>
+    isError ? { content: [{ type: "text", text }], isError } : { content: [{ type: "text", text }] };
   const action = String(args.action ?? "list");
   if (action === "list") return reply(siteApiListText(readSiteApi()));
   if (action === "save_route") {
@@ -400,26 +738,283 @@ function siteApiLocal(args: Record<string, unknown>): CallResult {
         ? deleteSiteRoute(before, site, name)
         : kind === "note"
           ? deleteSiteNote(before, site, name)
-          : deleteSiteCall(before, site, name);
+          : kind === "macro"
+            ? deleteSiteMacro(before, site, name)
+            : deleteSiteCall(before, site, name);
     if (!removed) return reply(`Rien à supprimer : ${kind} « ${name} » introuvable pour ${site}.`, true);
     writeSiteApi(api);
-    return reply(`${kind === "route" ? "Route" : kind === "note" ? "Note" : "Appel"} « ${name} » supprimé pour ${site}.`);
+    const label = kind === "route" ? "Route" : kind === "note" ? "Note" : kind === "macro" ? "Macro" : "Appel";
+    return reply(`${label} « ${name} » supprimé pour ${site}.`);
   }
-  return reply(`Action inconnue : ${action} (list, save_call, save_route, note, delete).`, true);
+  if (action === "suggest_macros") {
+    return reply(suggestMacrosText(args.site == null ? undefined : String(args.site), Number(args.minOccurs) || 2));
+  }
+  if (action === "save_macro") {
+    const site = String(args.site ?? "").trim();
+    const name = String(args.name ?? "").trim().slice(0, 80);
+    const code = String(args.code ?? "");
+    if (!site || !name || !code.trim()) return reply("save_macro : 'site', 'name' et 'code' requis.", true);
+    if (code.length > 20_000) return reply("save_macro : code trop long (20 000 car. max).", true);
+    const steps = code.split("\n").filter((l) => l.trim().startsWith("await ")).slice(0, 12);
+    writeSiteApi(setSiteMacro(readSiteApi(), site, { name, code, steps, updated: new Date().toISOString().slice(0, 10) }));
+    return reply(`Macro enregistrée pour ${site} : « ${name} » (${steps.length} étapes).\nRejouer : browser_script avec le code (revoir les À-COMPLÉTER).`);
+  }
+  return reply(`Action inconnue : ${action} (list, save_call, save_route, note, delete, suggest_macros, save_macro).`, true);
 }
 
 /**
+ * Macros apprises : fouille le journal (20 000 dernières lignes) à la recherche de
+ * séquences réussies répétées, et génère le code browser_script correspondant.
+ * Valeurs déjà masquées au journal (saisies) : placeholders, jamais de secrets.
+ */
+function suggestMacrosText(site: string | undefined, minOccurs: number): string {
+  let lines: string[];
+  try {
+    lines = readFileSync(LOG_FILE, "utf8").split("\n").slice(-20_000);
+  } catch {
+    return "Journal vide ou illisible : aucune macro à apprendre pour l'instant.";
+  }
+  const calls: LogCall[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const o = JSON.parse(line) as { agent?: unknown; tool?: unknown; args?: unknown; error?: unknown };
+      if (typeof o.tool !== "string" || typeof o.agent !== "string") continue;
+      calls.push({ agent: o.agent, tool: o.tool, args: (o.args ?? {}) as Record<string, unknown>, error: o.error === true });
+    } catch {}
+  }
+  const found = mineMacros(calls, { site, minOccurs });
+  if (!found.length) {
+    return (
+      `Aucune séquence répétée (${calls.length} appels lus${site ? `, site ${site}` : ""}). ` +
+      "Les macros naissent des parcours réussis répétés (même agent, même hôte, 3 à 6 étapes, 2 fois ou plus)."
+    );
+  }
+  const blocks = found.map((m, i) => {
+    const steps = m.steps.map((s) => macroStepText(s.tool, s.args)).join(" → ");
+    return (
+      `${i + 1}. « ${m.host} » : ${m.occurs} occurrences (${m.agent}). Étapes : ${steps}.\n` +
+      `   Placeholders : ${m.placeholders} (saisies masquées, refs de session : à revoir).\n` +
+      "   Code browser_script :\n```js\n" +
+      `${m.code}\n` +
+      "```\n" +
+      `   Enregistrer : site_api save_macro { site: "${m.host}", name: "…", code: <ci-dessus> }.`
+    );
+  });
+  return `Macros apprises (${calls.length} appels lus) :\n${blocks.join("\n")}`;
+}
+
+/** Une étape de macro en une ligne lisible (outil + paramètres structurels). */
+function macroStepText(tool: string, args: Record<string, unknown>): string {
+  if (tool === "navigate") return `navigate ${String(args.url ?? "").slice(0, 60)}`;
+  if (tool === "computer") return `computer ${String(args.action ?? "?")}`;
+  if (tool === "find") return `find ${JSON.stringify(String(args.query ?? ""))}`;
+  if (tool === "javascript") return `javascript (${String(args.code ?? "").length} car.)`;
+  if (tool === "wait_for") return `wait_for (${Object.keys(args).filter((k) => k !== "tabId").join(", ")})`;
+  return tool;
+}
+
+/**
+ * Surveillances persistantes : declare (vérifie aussitôt, sans déclencher),
+ * list, check (force), cancel. Un agent ne voit que ses surveillances.
+ */
+async function watchLocal(call: CallRequest): Promise<CallResult> {
+  const args = call.args ?? {};
+  const reply = (text: string, isError = false): CallResult =>
+    isError ? { content: [{ type: "text", text }], isError } : { content: [{ type: "text", text }] };
+  const action = String(args.action ?? "list");
+  const own = () => loadWatches().filter((w) => w.agent === call.agent);
+  if (action === "list") {
+    const all = own();
+    if (!all.length) return reply("Aucune surveillance. declare : tabId + text|selector|js, interval (s), expiresIn (s, optionnel).");
+    return reply(`Surveillances (${all.length}) :\n${all.map((w) => `- ${describeWatcher(w)}`).join("\n")}`);
+  }
+  if (action === "declare") {
+    const tabId = Number(args.tabId);
+    if (!Number.isInteger(tabId)) return reply("declare : 'tabId' requis.", true);
+    const conds = ["text", "selector", "js"].filter((k) => typeof args[k] === "string" && (args[k] as string).trim());
+    if (conds.length !== 1) return reply("declare : exactement une condition parmi 'text', 'selector', 'js'.", true);
+    const cond = { [conds[0]]: (args[conds[0]] as string).trim() } as WatchCond;
+    const intervalSec = Math.min(Math.max(Number(args.interval ?? 60) || 60, WATCH_MIN_INTERVAL), WATCH_MAX_INTERVAL);
+    const expiresIn = Number(args.expiresIn ?? 0) || 0;
+    if (expiresIn < 0) return reply("declare : 'expiresIn' en secondes (>= 0).", true);
+    const now = Date.now();
+    const w: Watcher = {
+      id: `w${now.toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, "0")}`,
+      name: String(args.name ?? condText(cond)).slice(0, 80) || condText(cond),
+      agent: call.agent,
+      tabId,
+      cond,
+      intervalSec,
+      createdAt: now,
+      expiresAt: expiresIn > 0 ? now + expiresIn * 1000 : null,
+      state: "armed",
+      stateNote: "",
+      lastCheckAt: null,
+      nextCheckAt: now + intervalSec * 1000,
+      errors: 0,
+      triggers: 0,
+      lastValue: "",
+    };
+    // Vérification immédiate : valide aussi la propriété de l'onglet (l'extension
+    // refuse sinon). Jamais de déclenchement ici : simple état initial.
+    const probe = await probeWatcher(w);
+    if (probe.error) return reply(`declare : ${probe.error}`, true);
+    w.lastCheckAt = now;
+    w.lastValue = probe.value;
+    w.stateNote = probe.match ? "armée (condition déjà vraie)" : "armée";
+    addWatcher(w);
+    return reply(
+      `Surveillance ${w.id} « ${w.name} » armée : ${describeWatcher(w)}.\n` +
+        `État initial : ${probe.match ? "condition déjà vraie" : "condition absente"}. Prochaine vérification automatique dans ${intervalSec} s.`,
+    );
+  }
+  if (action === "check" || action === "cancel") {
+    const id = String(args.id ?? "").trim();
+    const w = own().find((x) => x.id === id);
+    if (!w) return reply(`Surveillance ${JSON.stringify(id)} inconnue.`, true);
+    if (action === "cancel") {
+      saveWatches(loadWatches().filter((x) => x.id !== id));
+      return reply(`Surveillance ${id} « ${w.name} » supprimée.`);
+    }
+    const before = w.state;
+    const probe = await probeWatcher(w);
+    if (probe.error) {
+      w.errors++;
+      w.lastCheckAt = Date.now();
+      w.state = "error";
+      w.stateNote = probe.error.slice(0, 200);
+      if (!updateWatcher(w)) return reply(`check ${id} : surveillance supprimée pendant la vérification.`, true);
+      return reply(`check ${id} : ${probe.error}`, true);
+    }
+    applyProbe(w, probe.match, probe.value);
+    w.lastCheckAt = Date.now();
+    if (!updateWatcher(w)) return reply(`check ${id} : surveillance supprimée pendant la vérification.`, true);
+    const transition = before !== w.state ? ` (était ${before})` : "";
+    return reply(`check ${id} : ${w.state}${transition} : ${describeWatcher(w)}`);
+  }
+  return reply(`Action inconnue : ${action} (declare, list, check, cancel).`, true);
+}
+
+/** Ajoute une surveillance (declare). */
+function addWatcher(w: Watcher): void {
+  saveWatches([...loadWatches().filter((x) => x.id !== w.id), w]);
+}
+
+/**
+ * Met à jour une surveillance en rechargeant frais (pas d'écrasement entre deux vérifications).
+ * Une surveillance annulée pendant une sonde n'est pas ressuscitée : renvoie false.
+ */
+function updateWatcher(updated: Watcher): boolean {
+  const all = loadWatches();
+  const idx = all.findIndex((w) => w.id === updated.id);
+  if (idx < 0) return false;
+  all[idx] = updated;
+  saveWatches(all);
+  return true;
+}
+
+/** Une évaluation : sonde JS dans l'onglet (propriété vérifiée par l'extension). */
+async function probeWatcher(w: Watcher): Promise<{ match: boolean; value: string; error?: string }> {
+  const res = await forward({ agent: w.agent, tool: "javascript", args: { tabId: w.tabId, code: probeCode(w.cond) } });
+  const first = res.content.find((c) => c.type === "text");
+  const text = first && first.type === "text" ? first.text : "";
+  if (res.isError) return { match: false, value: "", error: text.slice(0, 300) || "évaluation impossible" };
+  return parseProbeResult(text, w.cond);
+}
+
+/** Transitions : déclenchement, réarmement si la condition retombe, erreurs. */
+function applyProbe(w: Watcher, match: boolean, value: string): void {
+  w.errors = 0;
+  w.lastValue = value;
+  if (match && w.state !== "triggered") {
+    w.state = "triggered";
+    w.triggers++;
+    w.stateNote = `déclenchée le ${new Date().toLocaleString("fr-FR")}`;
+    log({ event: "watch_triggered", id: w.id, agent: w.agent, tabId: w.tabId, cond: condText(w.cond).slice(0, 120) });
+  } else if (match) {
+    w.stateNote = `déclenchée le ${new Date().toLocaleString("fr-FR")}`;
+  } else if (w.state === "triggered") {
+    w.state = "armed";
+    w.stateNote = "réarmée (condition retombée)";
+  } else if (w.state !== "armed") {
+    w.state = "armed";
+    w.stateNote = "";
+  }
+}
+
+/** Tick : vérifie les surveillances dues, supprime les expirées. Erreurs isolées. */
+async function tickWatches(): Promise<void> {
+  const now = Date.now();
+  let all = loadWatches();
+  const alive = all.filter((w) => !(w.expiresAt && now >= w.expiresAt));
+  if (alive.length !== all.length) {
+    saveWatches(alive);
+    log({ event: "watches_expired", count: all.length - alive.length });
+    all = alive;
+  }
+  for (const w of all) {
+    if (!watchDue(w, now)) continue;
+    // L'extension s'est déconnectée en cours de tick : on s'arrête là (reporté au prochain).
+    if (!extension || shuttingDown) return;
+    try {
+      const probe = await probeWatcher(w);
+      if (probe.error) {
+        // Navigateur fermé : on reporte sans compter (pas une panne de la surveillance).
+        if (/n'est pas connectée|Extension déconnectée/.test(probe.error)) {
+          w.nextCheckAt = Date.now() + w.intervalSec * 1000;
+          updateWatcher(w);
+          continue;
+        }
+        w.errors++;
+        w.lastCheckAt = Date.now();
+        w.nextCheckAt = Date.now() + w.intervalSec * 1000;
+        if (w.errors >= WATCH_MAX_ERRORS) {
+          w.state = "paused";
+          w.stateNote = `mise en pause après ${w.errors} erreurs (onglet fermé ?) : check pour réessayer`;
+          log({ event: "watch_paused", id: w.id, agent: w.agent, errors: w.errors });
+        } else {
+          w.state = "error";
+          w.stateNote = probe.error.slice(0, 200);
+        }
+        updateWatcher(w);
+        continue;
+      }
+      applyProbe(w, probe.match, probe.value);
+      w.lastCheckAt = Date.now();
+      w.nextCheckAt = Date.now() + w.intervalSec * 1000;
+      updateWatcher(w);
+    } catch (err) {
+      log({ event: "watch_tick_error", id: w.id, error: errText(err) });
+    }
+  }
+}
+
+/** Anti-réentrance : un tick lent (sondes de 90 s) n'en empile pas d'autres. */
+let ticking = false;
+setInterval(() => {
+  if (ticking || !extension || shuttingDown) return;
+  ticking = true;
+  tickWatches()
+    .catch((err) => log({ event: "watch_tick_error", error: errText(err) }))
+    .finally(() => {
+      ticking = false;
+    });
+}, 15_000).unref();
+
+/**
  * site_api save_call : l'extension a vérifié l'onglet et renvoie la demande sous `_siteApi` ;
- * le démon dérive le SiteCall (méthode, chemin, noms des params — jamais de valeurs) et le persiste.
+ * le démon dérive le SiteCall (méthode, chemin, noms des params, jamais de valeurs) et le persiste.
  * Réenregistrer sous le même nom met à jour quand le site change.
  */
-function runAttachedSiteApi(result: CallResult): CallResult {
+async function runAttachedSiteApi(result: CallResult): Promise<CallResult> {
   const req = result._siteApi as
     | { action: string; tabId: number; requestId?: string; name?: string; saved?: string; site?: string; text?: string }
     | undefined;
   if (!req) return result;
   delete result._siteApi;
-  const reply = (text: string, isError = false): CallResult => ({ content: [{ type: "text", text }], isError });
+  const reply = (text: string, isError = false): CallResult =>
+    isError ? { content: [{ type: "text", text }], isError } : { content: [{ type: "text", text }] };
   try {
     if (req.action === "note") {
       const site = String(req.site ?? "").trim();
@@ -431,27 +1026,27 @@ function runAttachedSiteApi(result: CallResult): CallResult {
       return reply(`Noté pour ${site} : « ${note.trim().slice(0, 280)} »`);
     }
     if (req.action !== "save_call") return reply(`Action inconnue : ${req.action}`, true);
-    const entries = readEntries(req.tabId, req.saved);
+    const entries = await readEntries(req.tabId, req.saved);
     const entry = [...entries].reverse().find((e) => e.id === req.requestId);
-    if (!entry) return reply(`Requête ${req.requestId} absente du HAR persistant. D'abord network_har action="list" pour l'id.`, true);
+    if (!entry) return reply(`Requête ${req.requestId} absente du HAR persistant. D'abord devtools action="har" op="list" pour l'id.`, true);
     const derived = deriveSiteCall(entry, typeof req.name === "string" ? req.name : undefined);
     if (!derived) return reply("URL invalide : appel non enregistré.", true);
     writeSiteApi(setSiteCall(readSiteApi(), derived.site, derived.call));
     const params = derived.call.params?.length ? ` (params : ${derived.call.params.join(", ")})` : "";
     return reply(
-      `Appel enregistré pour ${derived.site} : « ${derived.call.name} » — ${derived.call.method} ${derived.call.path}${params}.\n` +
-        `Prochaine fois : site_api action="list", puis http_request pour rejouer au lieu de redécouvrir en cliquant.`,
+      `Appel enregistré pour ${derived.site} : « ${derived.call.name} » : ${derived.call.method} ${derived.call.path}${params}.\n` +
+        `Prochaine fois : site_api action="list", puis devtools action="http" pour rejouer au lieu de redécouvrir en cliquant.`,
     );
   } catch (err) {
-    return errorResult(`site_api : ${err instanceof Error ? err.message : err}`);
+    return errorResult(`site_api : ${errText(err)}`);
   }
 }
 
 /**
  * À l'arrivée sur un site connu (navigate, tabs_create, tabs_context), sert son
  * brief EN TÊTE de réponse : routes d'abord (l'action la plus rentable), puis
- * appels, puis notes. La mémoire est servie, pas cherchée. Noms d'hôtes lus
- * dans le texte.
+ * appels, puis notes. La mémoire est servie, pas cherchée, et encadrée comme une
+ * donnée non vérifiée (écrite par des agents). Noms d'hôtes lus dans le texte.
  */
 function attachSiteBrief(call: CallRequest, result: CallResult): CallResult {
   if (call.tool !== "navigate" && call.tool !== "tabs_create" && call.tool !== "tabs_context") return result;
@@ -472,7 +1067,7 @@ function attachSiteBrief(call: CallRequest, result: CallResult): CallResult {
     if (brief) blocks.push(brief);
   }
   if (!blocks.length) return result;
-  first.text = `${blocks.join("\n")}\n\n${first.text}`;
+  first.text = `${wrapSiteMemory(blocks.join("\n"))}\n\n${first.text}`;
   return result;
 }
 
@@ -539,41 +1134,106 @@ function maybeSuggestMemory(call: CallRequest, result: CallResult): CallResult {
   return result;
 }
 
-function harFallback(call: CallRequest, result: CallResult): CallResult {
+/**
+ * Après un rechargement de l'extension, sa mémoire réseau est vide : devtools body et network
+ * (anciens noms network_get_body, read_network_requests) répondent alors depuis le HAR persistant.
+ */
+async function harFallback(call: CallRequest, result: CallResult): Promise<CallResult> {
   const args = call.args ?? {};
   const tabId = Number(args.tabId);
   if (!Number.isInteger(tabId)) return result;
-  const first = result.content.find((c) => c.type === "text")?.text ?? "";
-  if (call.tool === "network_get_body" && result.isError && /Corps indisponible/.test(first)) {
-    const b = bodyText(readEntries(tabId), String(args.requestId ?? ""));
+  // devtools action="body"/"network" ou anciens noms directs : même repli.
+  const eff = call.tool === "devtools" ? String(args.action ?? "") : call.tool;
+  const first = result.content.find((c) => c.type === "text");
+  const text = first && first.type === "text" ? first.text : "";
+  if ((eff === "network_get_body" || eff === "body") && result.isError && /Corps indisponible/.test(text)) {
+    const b = bodyText(await readEntries(tabId), String(args.requestId ?? ""));
     if (b) return { content: [{ type: "text", text: typeof b === "string" ? b : `${b.header}\n${untrusted(b.body)}` }] };
   }
-  if (call.tool === "read_network_requests" && /^Aucune requête capturée/.test(first)) {
-    const t = listText(readEntries(tabId), args.urlPattern as string | undefined, Number(args.limit) || 100);
+  if ((eff === "read_network_requests" || eff === "network") && /^Aucune requête capturée/.test(text)) {
+    const t = listText(await readEntries(tabId), args.urlPattern as string | undefined, Number(args.limit) || 100);
     if (t) return { content: [{ type: "text", text: untrusted(t) }] };
   }
   return result;
 }
 
 /**
- * L'extension peut joindre un fichier (ex. GIF) sous `_file` : le démon l'écrit dans
- * ~/Downloads/agent-browser-control/ et remplace `{path}` dans le texte par le chemin final.
+ * Écrit un fichier joint par l'extension dans ~/Downloads/agent-browser-control/ (nom assaini,
+ * 100 caractères au plus, jamais d'écrasement) et renvoie son chemin.
  */
-function saveAttachedFile(result: CallResult): CallResult {
-  const file = result._file as { name: string; base64: string } | undefined;
-  if (!file) return result;
-  delete result._file;
-  mkdirSync(OUTPUT_DIR, { recursive: true });
-  const ext = extname(file.name);
-  const stem = basename(file.name, ext).replace(/[^\w.-]+/g, "_") || "fichier";
-  let path = join(OUTPUT_DIR, stem + ext);
-  for (let i = 2; existsSync(path); i++) path = join(OUTPUT_DIR, `${stem}-${i}${ext}`);
-  writeFileSync(path, Buffer.from(file.base64, "base64"));
-  for (const item of result.content) if (item.type === "text") item.text = item.text.replace("{path}", path);
-  return result;
+async function writeOutputFile(file: unknown): Promise<string> {
+  const f = file as { name?: unknown; base64?: unknown } | null;
+  if (!f || typeof f !== "object" || typeof f.base64 !== "string") throw new Error("fichier joint invalide");
+  await mkdir(OUTPUT_DIR, { recursive: true });
+  const name = safeFileName(f.name);
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  const data = Buffer.from(f.base64, "base64");
+  for (let i = 1; i < 1000; i++) {
+    const path = join(OUTPUT_DIR, i === 1 ? name : `${stem}-${i}${ext}`);
+    try {
+      await writeFile(path, data, { flag: "wx" });
+      return path;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error("trop de fichiers du même nom");
 }
 
-// Ménage (HAR abandonnés, rotation du journal, sorties de plus de 30 jours) : au démarrage puis toutes les heures.
+/**
+ * L'extension peut joindre un fichier (ex. GIF) sous `_file` : le démon l'écrit et remplace
+ * `{path}` dans le texte par le chemin final. Une écriture impossible devient une erreur d'outil.
+ */
+async function saveAttachedFile(result: CallResult): Promise<CallResult> {
+  if (result._file === undefined) return result;
+  const file = result._file;
+  delete result._file;
+  try {
+    const path = await writeOutputFile(file);
+    for (const item of result.content) if (item.type === "text") item.text = item.text.replace("{path}", () => path);
+    return result;
+  } catch (err) {
+    return errorResult(`Fichier produit mais non enregistré dans ${OUTPUT_DIR} : ${errText(err)}`);
+  }
+}
+
+/** Post-traitements d'une réponse de l'extension : fichier joint, OCR, téléchargement média. */
+function processResult(result: CallResult): Promise<CallResult> {
+  return saveAttachedFile(result).then(readAttachedOcr).then(runAttachedMedia);
+}
+
+/** Réponse arrivée après l'expiration de l'appel : journalisée, et son fichier joint enregistré. */
+async function handleLateResult(id: number, raw: unknown): Promise<void> {
+  const info = expired.get(id);
+  if (!info) return;
+  const result = asCallResult(raw);
+  let file: string | undefined;
+  let fileError: string | undefined;
+  if (result && result._file !== undefined) {
+    // Gardé jusque-là : une extension qui ne connaît pas encore « cancel » y répond d'abord par une erreur.
+    expired.delete(id);
+    try {
+      file = await writeOutputFile(result._file);
+    } catch (err) {
+      fileError = errText(err);
+    }
+  }
+  log({
+    event: "late_result",
+    id,
+    agent: info.agent,
+    tool: info.tool,
+    lateMs: Date.now() - info.at,
+    error: result?.isError === true,
+    ...(file ? { file } : {}),
+    ...(fileError ? { fileError } : {}),
+  });
+}
+
+// Ménage (HAR abandonnés, rotation du journal, sorties de plus de 30 jours, jobs média de plus de 24 h) :
+// au démarrage puis toutes les heures.
 function housekeep(): void {
   try {
     purgeStale();
@@ -581,6 +1241,7 @@ function housekeep(): void {
   if (rotateFile(LOG_FILE, LOG_MAX_BYTES, LOG_GENERATIONS)) log({ event: "log_rotated", file: LOG_FILE });
   const purged = purgeOlderThan(OUTPUT_DIR, OUTPUT_MAX_AGE_MS);
   if (purged.length) log({ event: "outputs_purged", count: purged.length });
+  purgeOldJobs();
 }
 try {
   housekeep();
@@ -591,78 +1252,343 @@ setInterval(() => {
   } catch {}
 }, 3600_000).unref();
 
-const wss = new WebSocketServer({ noServer: true });
+/**
+ * Appels extension -> démon (demandes de l'extension, ex. résolution Bitwarden) :
+ * l'extension envoie {type:"daemon-rpc", reqId, op, params}, le démon répond
+ * {type:"daemon-rpc", reqId, ok, result?, error?} sur le même WebSocket local.
+ * Règle d'or : les valeurs sensibles (mots de passe, clés) ne sont ni loguées
+ * ni persistées ; la clé de session Bitwarden vit en mémoire du démon uniquement.
+ */
+let bwPath: { path: string | null; at: number } | null = null;
+let bwSessionKey: string | null = null;
+const BW_RETRY_MS = 60_000;
+
+/**
+ * Profil du CLI réservé à ABC (ABC_BW_PROFILE=default pour garder celui de l'utilisateur) : la connexion
+ * au serveur choisi dans le panneau (Vaultwarden, par exemple) ne déconnecte pas le `bw` du terminal.
+ */
+const BW_APPDATA_DIR = process.env.ABC_BW_PROFILE === "default" ? undefined : join(CONFIG_DIR, "bitwarden");
+
+/** Client Bitwarden : chemin du CLI gardé en cache, sauf « introuvable », réessayé après 60 s. */
+async function bwClient() {
+  if (!bwPath || (!bwPath.path && Date.now() - bwPath.at > BW_RETRY_MS)) bwPath = { path: await findBw(), at: Date.now() };
+  if (!bwPath.path) throw new Error(BW_INSTALL_HINT);
+  if (BW_APPDATA_DIR) mkdirSync(BW_APPDATA_DIR, { recursive: true });
+  return createBitwardenClient(bwPath.path, undefined, { appDataDir: BW_APPDATA_DIR });
+}
+
+const BW_LOCKED_MESSAGE = "Coffre verrouillé : déverrouillez-le dans le panneau latéral (onglet Secrets).";
+const BW_LOGGED_OUT_MESSAGE = "Coffre non connecté : connectez-vous une fois dans le panneau latéral (onglet Secrets, serveur, e-mail et mot de passe maître).";
+
+/** Une session périmée côté CLI retombe proprement en "verrouillé". */
+function bwLocked(err: unknown): boolean {
+  return /vault is locked|session.*(invalid|expired)/i.test(errText(err));
+}
+
+/** Profil jamais connecté (ou déconnecté) : il faut se connecter, pas seulement déverrouiller. */
+function bwLoggedOut(err: unknown): boolean {
+  return /not logged in|unauthenticated|logout required/i.test(errText(err));
+}
+
+async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unknown; params?: unknown }) {
+  const reqId = msg.reqId;
+  const op = typeof msg.op === "string" ? msg.op : "";
+  const params = (msg.params && typeof msg.params === "object" && !Array.isArray(msg.params) ? msg.params : {}) as Record<string, unknown>;
+  const reply = (ok: boolean, result?: unknown, error?: string) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "daemon-rpc", reqId, ok, ...(result !== undefined ? { result } : {}), ...(error ? { error } : {}) }));
+  };
+  // Contrôle des fichiers à envoyer (file_upload appelé depuis browser_script, qui ne passe pas par le démon).
+  if (op === "upload-check") {
+    const check = checkUploadPaths(params.paths, CONFIG_DIR);
+    log({ event: "upload-check", ok: check.ok, count: Array.isArray(params.paths) ? params.paths.length : 0 });
+    return check.ok ? reply(true, { paths: check.paths }) : reply(false, undefined, check.error);
+  }
+  try {
+    const client = await bwClient();
+    switch (op) {
+      case "bw-status": {
+        const st = await client.status().catch(() => ({ state: "unknown" as const }));
+        // `bw status` sans clé de session dit « locked » même si le démon détient une session valide.
+        if (st.state === "locked" && bwSessionKey) st.state = "unlocked";
+        if (st.state === "unauthenticated") bwSessionKey = null;
+        log({ event: "bw-rpc", op, ok: true, cli: true, state: st.state });
+        return reply(true, { cli: true, profile: BW_APPDATA_DIR ? "abc" : "default", ...st });
+      }
+      case "bw-probe": {
+        // Vérifie l'adresse saisie dans le panneau avant de configurer quoi que ce soit.
+        const info = await probeServer(params.serverUrl);
+        log({ event: "bw-rpc", op, ok: true, kind: info.kind });
+        return reply(true, info);
+      }
+      case "bw-configure": {
+        const serverUrl = normalizeServerUrl(params.serverUrl);
+        const info = await probeServer(serverUrl);
+        const st = await client.status();
+        if ((st.serverUrl ?? "") !== serverUrl) {
+          // Le CLI n'accepte un changement de serveur qu'une fois déconnecté (profil propre à ABC).
+          if (st.state !== "unauthenticated") {
+            bwSessionKey = null;
+            await client.logout();
+          }
+          await client.configServer(serverUrl);
+        }
+        log({ event: "bw-rpc", op, ok: true, kind: info.kind });
+        return reply(true, { ...info, state: (await client.status()).state });
+      }
+      case "bw-login": {
+        const email = typeof params.email === "string" ? params.email : "";
+        const password = typeof params.password === "string" ? params.password : "";
+        const code = typeof params.code === "string" ? params.code : "";
+        const st = await client.status();
+        // Déjà connecté avec ce compte : un simple déverrouillage suffit (pas de nouvelle connexion).
+        if (st.state !== "unauthenticated" && st.email && st.email.toLowerCase() === email.trim().toLowerCase()) {
+          const { status, sessionKey } = await client.unlock(password);
+          bwSessionKey = sessionKey;
+          log({ event: "bw-rpc", op, ok: true, state: status.state, mode: "unlock" });
+          return reply(true, { state: status.state, email: status.email, serverUrl: status.serverUrl });
+        }
+        if (st.state !== "unauthenticated") {
+          bwSessionKey = null;
+          await client.logout();
+        }
+        const { status, sessionKey } = await client.login(email, password, code);
+        bwSessionKey = sessionKey;
+        log({ event: "bw-rpc", op, ok: true, state: status.state, mode: "login" });
+        return reply(true, { state: status.state, email: status.email, serverUrl: status.serverUrl });
+      }
+      case "bw-logout": {
+        bwSessionKey = null;
+        await client.logout();
+        log({ event: "bw-rpc", op, ok: true });
+        return reply(true, {});
+      }
+      case "bw-match": {
+        if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
+        const items = await client.matchUrl(bwSessionKey, String(params.url ?? ""));
+        log({ event: "bw-rpc", op, ok: true, count: items.length });
+        return reply(true, { items: items.slice(0, 20) });
+      }
+      case "bw-unlock": {
+        const password = typeof params.password === "string" ? params.password : "";
+        if (!password) return reply(false, undefined, "Mot de passe maître vide.");
+        // `bw unlock` invalide les clés précédentes : on remplace le cache.
+        const { status, sessionKey } = await client.unlock(password);
+        bwSessionKey = sessionKey;
+        log({ event: "bw-rpc", op, ok: true, state: status.state });
+        return reply(true, { state: status.state, email: status.email });
+      }
+      case "bw-lock": {
+        bwSessionKey = null;
+        await client.lock().catch(() => {});
+        log({ event: "bw-rpc", op, ok: true });
+        return reply(true, {});
+      }
+      case "bw-sync": {
+        if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
+        await client.sync(bwSessionKey);
+        log({ event: "bw-rpc", op, ok: true });
+        return reply(true, {});
+      }
+      case "bw-search": {
+        if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
+        const items = await client.search(bwSessionKey, String(params.query ?? ""));
+        log({ event: "bw-rpc", op, ok: true, count: items.length });
+        return reply(true, { items });
+      }
+      case "bw-resolve": {
+        if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
+        const field = params.field as BwField;
+        if (!isBwField(field)) return reply(false, undefined, `Champ invalide : ${JSON.stringify(params.field)}.`);
+        const value = await client.resolve(bwSessionKey, String(params.itemId ?? ""), field);
+        log({ event: "bw-rpc", op, ok: true, field });
+        return reply(true, { value });
+      }
+      default:
+        return reply(false, undefined, `Opération inconnue : ${op || "(vide)"}.`);
+    }
+  } catch (err) {
+    const locked = bwLocked(err);
+    const loggedOut = !locked && bwLoggedOut(err) && op !== "bw-configure";
+    if (locked || loggedOut) bwSessionKey = null;
+    const installMissing = err instanceof Error && err.message === BW_INSTALL_HINT;
+    if (op === "bw-status" && installMissing) {
+      log({ event: "bw-rpc", op, ok: true, cli: false });
+      return reply(true, { cli: false, state: "unknown" });
+    }
+    // reason : l'extension sait ainsi s'il faut demander un déverrouillage, une connexion ou un code.
+    const reason = err instanceof BwNeedsCodeError ? "needs-code" : locked ? "locked" : loggedOut ? "unauthenticated" : installMissing ? "no-cli" : undefined;
+    const message = locked ? BW_LOCKED_MESSAGE : loggedOut ? BW_LOGGED_OUT_MESSAGE : installMissing ? BW_INSTALL_HINT : scrubBwError(err);
+    log({ event: "bw-rpc", op, ok: false, ...(reason && { reason }) });
+    return reply(false, reason ? { reason } : undefined, message);
+  }
+}
+
+// --- Extension : WebSocket épinglé ------------------------------------------------------------------
+
+const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 * 1024 });
+wss.on("error", (err) => log({ event: "ws_server_error", error: errText(err) }));
+
+/** Repli en mémoire si l'épinglage n'a pas pu être écrit sur disque. */
+let pinnedFallback: string | null = null;
+/** Dernier refus journalisé par origine (une extension refusée se reconnecte en boucle). */
+const refusalsLogged = new Map<string, number>();
+
+function readPinnedOrigin(): string | null {
+  try {
+    return readFileSync(EXTENSION_ORIGIN_FILE, "utf8").trim() || null;
+  } catch {
+    return pinnedFallback;
+  }
+}
+
+function pinOrigin(origin: string) {
+  try {
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(EXTENSION_ORIGIN_FILE, origin + "\n", { mode: 0o600 });
+  } catch (err) {
+    pinnedFallback = origin;
+    log({ event: "extension_pin_error", error: errText(err) });
+  }
+  log({ event: "extension_pinned", origin, file: EXTENSION_ORIGIN_FILE });
+}
 
 server.on("upgrade", (req, socket, head) => {
-  const origin = req.headers.origin ?? "";
-  if (req.url !== "/ext" || !origin.startsWith("chrome-extension://")) {
+  const origin = String(req.headers.origin ?? "");
+  const path = new URL(req.url ?? "/", BASE_URL).pathname;
+  if (path !== "/ext" || !hostAllowed(req.headers.host, PORT) || !isExtensionOrigin(origin) || shuttingDown) {
     socket.destroy();
     return;
   }
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    // Confiance au premier usage : la première extension acceptée est épinglée, les autres refusées.
+    const pinned = readPinnedOrigin();
+    if (pinned && pinned !== origin) {
+      const last = refusalsLogged.get(origin) ?? 0;
+      if (Date.now() - last > 60_000) {
+        refusalsLogged.set(origin, Date.now());
+        log({
+          event: "extension_refused",
+          origin,
+          pinned,
+          message:
+            `Connexion refusée pour ${origin} : le démon n'accepte que l'extension épinglée (${pinned}). ` +
+            `Si l'extension a été réinstallée (nouvel identifiant), lancer « npm run unpin-extension » ` +
+            `(ou supprimer ${EXTENSION_ORIGIN_FILE}), puis recharger l'extension.`,
+        });
+      }
+      ws.close(4003, "origine non autorisée : npm run unpin-extension pour réinitialiser");
+      return;
+    }
+    if (!pinned) pinOrigin(origin);
+    acceptExtension(ws, origin);
+  });
 });
 
-wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
-  if (extension && extension !== ws) extension.close(1000, "replaced");
+/** Connexion acceptée : une reconnexion de la même origine (service worker redémarré) remplace l'ancienne. */
+function acceptExtension(ws: WebSocket, origin: string) {
+  const previous = extension;
   extension = ws;
-  log({ event: "extension_connected", origin: req.headers.origin });
+  if (previous && previous !== ws) {
+    failPendingFor(previous, DISCONNECTED_MESSAGE);
+    try {
+      previous.close(1000, "replaced");
+    } catch {}
+  }
+  ws.send(JSON.stringify({ type: "hello", version: VERSION }));
+  log({ event: "extension_connected", origin, replaced: !!previous });
   for (const w of [...extensionWaiters]) w();
 
+  ws.on("error", (err) => log({ event: "extension_socket_error", error: errText(err) }));
+
   ws.on("message", (raw) => {
-    let msg: { id?: number; result?: CallResult; type?: string; settings?: { scriptsEnabled?: boolean }; tabId?: number; entry?: unknown };
+    let msg: unknown;
     try {
       msg = JSON.parse(raw.toString());
     } catch {
       return;
     }
-    if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong" }));
-    if (msg.type === "har") {
-      try {
-        appendEntry(Number(msg.tabId), msg.entry as HarEntry);
-      } catch {}
-      return;
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
+    try {
+      handleExtensionMessage(ws, msg as Record<string, unknown>);
+    } catch (err) {
+      log({ event: "extension_message_error", error: errText(err) });
     }
-    if (msg.type === "har-close") {
-      try {
-        closeTab(Number(msg.tabId));
-      } catch {}
-      return;
-    }
-    if (msg.type === "settings") {
-      settings = normalizeSettings(msg.settings);
-      try {
-        writeFileSync(SETTINGS_FILE, JSON.stringify(settings));
-      } catch {}
-      log({ event: "settings", ...settings });
-      return;
-    }
-    if (typeof msg.id !== "number") return;
-    const p = pending.get(msg.id);
-    if (!p) return;
-    clearTimeout(p.timer);
-    pending.delete(msg.id);
-    if (!msg.result) return p.resolve(errorResult("Réponse vide de l'extension."));
-    readAttachedOcr(saveAttachedFile(msg.result)).then(runAttachedMedia).then(p.resolve);
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code) => {
+    failPendingFor(ws, DISCONNECTED_MESSAGE);
     if (extension !== ws) return;
     extension = null;
-    log({ event: "extension_disconnected" });
-    for (const [id, p] of pending) {
-      clearTimeout(p.timer);
-      p.resolve(errorResult("L'extension s'est déconnectée pendant l'appel."));
-      pending.delete(id);
-    }
+    // Version inconnue jusqu'au prochain message settings (une extension rechargée peut avoir changé).
+    extensionVersion = null;
+    log({ event: "extension_disconnected", code });
   });
-});
+}
+
+function handleExtensionMessage(ws: WebSocket, msg: Record<string, unknown>) {
+  if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong" }));
+  if (msg.type === "daemon-rpc") {
+    handleDaemonRpc(ws, msg).catch((err) => log({ event: "bw-rpc", op: String(msg.op ?? ""), ok: false, error: scrubBwError(err) }));
+    return;
+  }
+  if (msg.type === "har") {
+    try {
+      appendEntry(Number(msg.tabId), msg.entry as HarEntry);
+    } catch {}
+    return;
+  }
+  if (msg.type === "har-close") {
+    const tabId = Number(msg.tabId);
+    try {
+      closeTab(tabId);
+    } catch {}
+    // Laisse à tabs_close le temps de lire le compteur (suggestion de mémorisation), puis oublie l'onglet.
+    if (Number.isInteger(tabId)) setTimeout(() => tabActivity.delete(tabId), 60_000).unref();
+    return;
+  }
+  if (msg.type === "settings") {
+    settings = normalizeSettings(msg.settings);
+    try {
+      writeFileSync(SETTINGS_FILE, JSON.stringify(settings));
+    } catch {}
+    const ext = typeof msg.extensionVersion === "string" ? msg.extensionVersion : null;
+    if (ext !== extensionVersion) {
+      extensionVersion = ext;
+      if (ext && ext !== VERSION) {
+        log({ event: "version_mismatch", daemon: VERSION, extension: ext });
+      }
+    }
+    log({ event: "settings", ...settings });
+    return;
+  }
+  if (typeof msg.id !== "number") return;
+  const id = msg.id;
+  const p = pending.get(id);
+  if (!p) {
+    void handleLateResult(id, msg.result);
+    return;
+  }
+  clearTimeout(p.timer);
+  pending.delete(id);
+  const result = asCallResult(msg.result);
+  if (!result) return p.resolve(errorResult("Réponse vide ou invalide de l'extension."));
+  processResult(result).then(p.resolve, (err) => p.resolve(errorResult(`Traitement de la réponse impossible : ${errText(err)}`)));
+}
+
+// --- Filets globaux et démarrage --------------------------------------------------------------------
+
+// Une erreur imprévue sur une requête ne tue pas le démon : elle est journalisée.
+process.on("unhandledRejection", (reason) => log({ event: "unhandled_rejection", error: errText(reason) }));
+process.on("uncaughtException", (err) => log({ event: "uncaught_exception", error: errText(err), stack: err?.stack?.slice(0, 1500) }));
+process.on("exit", () => flushMeta());
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
     console.error(`Port ${PORT} déjà utilisé : un démon tourne probablement déjà.`);
     process.exit(0);
   }
-  throw err;
+  log({ event: "server_error", error: errText(err) });
+  process.exit(1);
 });
 
-server.listen(PORT, HOST, () => log({ event: "daemon_started", version: VERSION, port: PORT }));
+server.listen(PORT, HOST, () => log({ event: "daemon_started", version: VERSION, port: PORT, configDir: CONFIG_DIR }));

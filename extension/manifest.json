@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Browser Control",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "description": "Permet à n'importe quel agent MCP de piloter le navigateur (équivalent de Claude in Chrome).",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -14,7 +14,8 @@
     "sidePanel",
     "offscreen",
     "downloads",
-    "history"
+    "history",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -27,6 +28,16 @@
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"
+    }
+  },
+  "commands": {
+    "stop-all": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Tout arrêter (arrêt d'urgence des agents)"
+    },
+    "resume-all": {
+      "suggested_key": { "default": "Alt+Shift+R" },
+      "description": "Laisser les agents reprendre"
     }
   },
   "side_panel": {

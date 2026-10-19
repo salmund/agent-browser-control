@@ -4,7 +4,7 @@
  */
 import { existsSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 
-export const LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const LOG_MAX_BYTES = 5 * 1024 * 1024;
 export const LOG_GENERATIONS = 3;
 export const OUTPUT_MAX_AGE_MS = 30 * 24 * 3600_000;
 

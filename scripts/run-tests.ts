@@ -10,13 +10,16 @@ const FAST: { name: string; cmd: string; args: string[]; shell?: boolean }[] = [
   // npx est un .cmd sur Windows : passe par le shell (sans ça, ENOENT silencieux).
   { name: "typecheck", cmd: "npx", args: ["tsc", "--noEmit"], shell: true },
   { name: "syntaxe extension", cmd: process.execPath, args: ["scripts/check-extension-syntax.ts"] },
-  ...["settings", "analysis", "har-bodies", "history", "housekeeping", "js-eval", "readme", "ws-mask", "credentials", "tabs-cleanup", "smoke"].map(
+  ...["extension-load", "devtools-unit", "settings", "analysis", "har-bodies", "har-export-code", "history", "housekeeping", "js-eval", "macros", "readme", "version", "watch", "ws-mask", "credentials", "bitwarden", "tabs-cleanup", "hardening", "smoke", "mcp-http"].map(
     (t) => ({ name: `test/${t}`, cmd: process.execPath, args: [`test/${t}.ts`] }),
   ),
 ];
 
 const E2E = [
   "e2e-readpage",
+  "e2e-agent-control",
+  "e2e-sandbox",
+  "e2e-reader-wiki",
   "e2e-dropdowns",
   "e2e-compound",
   "e2e-aisites",
@@ -31,6 +34,21 @@ const E2E = [
   "e2e-replay",
   "e2e-site-brief",
   "e2e-action-effect",
+  "e2e-visibility",
+  "e2e-wait-settle",
+  "e2e-js-refs",
+  "e2e-ref-heal",
+  "e2e-devtools",
+  "e2e-read-tables",
+  "e2e-navigate-spa",
+  "e2e-script-resume",
+  "e2e-form-rich",
+  "e2e-api-hint",
+  "e2e-macros",
+  "e2e-ask-human",
+  "e2e-watch",
+  "e2e-demo",
+  "e2e-front-queue",
 ].map((t) => ({ name: `test/${t}`, cmd: process.execPath, args: [`test/${t}.ts`] }));
 
 const mode = process.argv[2] ?? "";

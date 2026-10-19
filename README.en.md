@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#the-tools">The 41 tools</a> ·
+  <a href="#the-tools">The 34 tools</a> ·
   <a href="#the-side-panel">The side panel</a> ·
   <a href="#security">Security</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Your real browser.** Not a headless Chromium running on the side: the agent works in your tabs, with the
   accounts you're already signed in to. It sees what you see.
 - **Any agent.** Everything goes through [MCP](https://modelcontextprotocol.io): one line of configuration and the
-  agent gets all 41 tools, whatever model runs behind it.
+  agent gets all 34 tools, whatever model runs behind it.
 - **Far more than a click driver.** Accessibility tree with stable references, iframes (even cross-origin),
   network, WebSocket, console, cookies, performance, mobile emulation, request interception, GIF or video
   recording… The agent gets the DevTools, not just a mouse.
@@ -41,17 +41,17 @@
 
 <table>
   <tr>
-    <td width="320"><img src="docs/assets/panel.png" alt="Side panel: emergency stop, agents, activity log" width="300"></td>
+    <td width="320"><img src="docs/assets/panel.png" alt="Side panel: pending request, working agents with their messages, activity log" width="300"></td>
     <td>
-      <p>Click the extension icon to open the supervision panel (the interface is currently in French):</p>
+      <p>Click the extension icon to open the panel (the interface is in French). Three views: Activité (activity), Réglages (settings), Secrets.</p>
       <ul>
-        <li><b>Emergency stop</b>: cuts every running action and detaches the agents; “Réarmer” (re-arm) to resume.</li>
-        <li><b>Agents</b>: one click takes you to an agent's tab group, whichever window it's in.</li>
-        <li><b>Activity log</b>: every action, its duration and its errors, filterable by agent.</li>
-        <li><b>Agent scripts</b>: allow <code>browser_script</code> or not (see below).</li>
-        <li><b>Blocked sites</b>: your bank, your password manager… agents never get in.</li>
+        <li><b>Waiting for you</b>: an agent hands over (captcha, 2FA) or asks for a secret; the card says why and how long it will wait. The extension icon shows the number of pending requests.</li>
+        <li><b>Agents</b>: one row per agent and sub-agent, with what it is doing in plain words. On each row: write to it, show its tabs, pause it, close its tabs.</li>
+        <li><b>Write to an agent</b>: "Stick to French sources", "Stop after the summary"… The message reaches the agent at the top of the result of its next action; the panel shows "En attente" (pending), then "Lu à 11:30" (read at).</li>
+        <li><b>Activity log</b>: every action, its site, duration and errors; filter by agent or failures, expand any line.</li>
+        <li><b>Tout arrêter</b> (stop everything, or <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>): running actions stop at once and the agent is told; <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> resumes.</li>
+        <li><b>Settings</b>: foreground mode, agent scripts, visible gestures, blocked sites (your bank, your password manager…).</li>
       </ul>
-      <p>On the controlled page, a purple outline and a ripple on every click show what the agent is doing.</p>
     </td>
   </tr>
 </table>
@@ -61,7 +61,7 @@
 > Requirements: **Node.js 22.18+** and a Chromium-based browser (tested on Comet, meant for Chrome, Edge, Brave…).
 > Optional: [yt-dlp](https://github.com/yt-dlp/yt-dlp) and ffmpeg for `download_media`.
 
-**1. Get the project**
+**1. Get the project** (one-liner: see install.ps1 / install.sh)
 
 ```sh
 git clone https://github.com/salmund/agent-browser-control.git
@@ -90,6 +90,26 @@ With Claude Code: `claude mcp add agent-browser-control -- node /path/to/agent-b
 That's all: the local daemon starts by itself on the first call. The agent's name, which is also the name of its
 tab group, is the one announced by the MCP client; use `--agent-name my-agent` to pick your own.
 
+**Or over HTTP**, if your client speaks Streamable HTTP MCP: the daemon serves `/mcp` directly, with no intermediate
+process (it must already be running, for instance started by a stdio agent or by `node server/daemon.ts`). The
+agent's name goes in the URL; the token is the content of the `~/.agent-browser-control/token` file:
+
+```json
+{
+  "mcpServers": {
+    "agent-browser-control": {
+      "type": "http",
+      "url": "http://127.0.0.1:7878/mcp?agent=my-agent",
+      "headers": { "Authorization": "Bearer <content of ~/.agent-browser-control/token>" }
+    }
+  }
+}
+```
+
+**First extension connection.** The daemon remembers the ID of the first extension that connects and then rejects
+all others. If you load the extension from another folder (its ID changes), run `npm run unpin-extension`, then
+reload it.
+
 **Several agents in parallel.** Sub-agents of a workflow share their parent's connection, hence its name. Each one
 passes a short `label` to `tabs_context` and `tabs_create`: it gets its own "agent · label" group (distinct
 colour), its own chip in the panel and labelled lines in the log. Without `label`, nothing changes. Tabs still
@@ -107,11 +127,11 @@ nothing. The "Foreground" switch in the panel restores the old behaviour (agent 
 
 | | Tools |
 |---|---|
-| **Tabs** | `tabs_context` (with each tab's age) · `tabs_create` (incognito too) · `tabs_close` · `tabs_cleanup` (closes idle tabs, `dryRun` to preview) · `history_search` (find a visited page) · `navigate` · `resize_window` |
-| **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `scroll_extract` (infinite lists extracted in a single call) · `query` (structured extraction: selector + filter + pagination) · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `save_image` · `read_screen_text` (local OCR) · `transcript` (the text of a YouTube video, without downloading anything) · `downloads` (download a file with your session, follow a download) · `read_document` (PDF, even scanned, Word, PowerPoint, Excel) |
-| **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `credentials_fill` (fills logins / passwords without ever seeing them: encrypted vault, extension side panel Secrets section) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` |
-| **DevTools** | `replay_paginated` (replay an observed API pagination, no scrolling) · `javascript` · `read_console_messages` · `read_network_requests` · `site_api` (per-site memory: routes + calls, replay fast without rediscovering) · `network_har` (persistent network recording, HAR export with secrets masked) · `network_intercept` · `network_get_body` · `storage` · `performance_metrics` · `emulate` · `pdf` · `read_websocket_messages` · `http_request` |
-| **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` · `download_media` (a page's video, audio or subtitles, with yt-dlp) |
+| **Tabs** | `tabs_context` (with each tab's age) · `tabs_create` (incognito too) · `tabs_close` · `tabs_cleanup` (closes idle tabs, `dryRun` to preview) · `history_search` (find a visited page) · `navigate` |
+| **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `scroll_extract` (infinite lists extracted in a single call) · `query` (structured extraction: selector + filter + pagination) · `read_tables` (tables as Markdown or CSV) · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `save_image` · `read_screen_text` (local OCR) · `transcript` (the text of a YouTube video, without downloading anything) · `downloads` (download a file with your session, follow a download) · `read_document` (PDF, even scanned, Word, PowerPoint, Excel) |
+| **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `credentials_fill` (fills logins / passwords without ever seeing them: encrypted vault or your Vaultwarden / Bitwarden, side panel Secrets tab) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` · `ask_human` (hand over to the user: captcha, 2FA, validation) |
+| **DevTools** | `replay_paginated` (replay an observed API pagination, no scrolling) · `javascript` · `devtools` (console, network, interceptions, storage, perf, emulation, PDF, WebSocket, HTTP, HAR, resize: 12 tools in one) · `site_api` (per-site memory: routes + calls, replay fast without rediscovering) |
+| **Record, automate** | `gif_creator` (high-quality GIF or WebM video) · `browser_script` · `download_media` (a page's video, audio or subtitles, with yt-dlp) · `watch` (persistent watches: the daemon checks on its own, periodically) · `demo` (the user shows the flow once, the agent replays it) |
 
 A few details that make all the difference on real websites:
 
@@ -149,15 +169,44 @@ To make Claude Code prefer Agent Browser Control over Claude in Chrome, copy the
 [`integrations/claude-code/skills/agent-browser-control`](integrations/claude-code/skills/agent-browser-control)
 to `~/.claude/skills/`. It tells Claude when and how to use the tools (written in French).
 
+### Vaultwarden or Bitwarden: your logins, never handed to the agent
+
+The agent can sign in to your sites with the logins stored in **your** vault, without ever seeing them:
+
+1. Install the Bitwarden CLI once (free, it also works with Vaultwarden): `winget install --id Bitwarden.CLI`.
+2. Side panel, **Secrets** tab, **Vaultwarden / Bitwarden** block: the server address is found in your tabs or history
+   (title "Vaultwarden Web", host `passwords.*`, `vault.*`) and checked; enter your email and master password (and the
+   two-step code if asked). That's it.
+3. The agent uses the `vaultwarden` slot: `credentials_fill` picks the vault item matching the tab's site (the vault's
+   URI rules), asks for your approval in the panel, lets you choose the account when there are several, and "Always
+   allow on this site" stops further prompts. `credentials_list` also shows the vault items matching the page (`bw-<id>`).
+4. Vault locked when the agent needs it: a card shows up in the panel (and a notification); type your master password
+   and the agent resumes on its own (2 min wait at most).
+
+The CLI runs in a profile of its own (`~/.agent-browser-control/bitwarden`), so your usual `bw` stays logged in
+(`ABC_BW_PROFILE=default` to share it). The master password is never written or logged: it reaches the CLI through an
+environment variable, and the session key stays in the daemon's memory. Only the page origin (not its path) is sent to
+the CLI to find matching items. A private server (Tailscale, local network) must be reachable from this PC.
+
 ## Security
 
 - **Everything stays on your machine.** The daemon listens on `127.0.0.1` with a token; it rejects any request
-  coming from a web page and only accepts your extension.
+  coming from a web page (including through a domain name pointing to your machine) and only accepts your
+  extension, pinned on its first connection.
 - **Page content is data, not instructions.** Everything coming from a page is marked as untrusted, so the agent
-  doesn't follow booby-trapped text.
+  doesn't follow booby-trapped text. Site memory notes, written by agents, are served the same way: as unverified
+  data.
+- **Your sensitive files stay put.** `file_upload` refuses SSH keys, `.env`, certificates, HAR files, browser
+  profiles and configuration folders, before anything reaches the page.
+- **The log doesn't keep what you type**: typed text, passwords, request bodies and URL parameters are reduced to
+  their length or masked.
 - **Each agent stays in its own tabs**, and never enters the sites you've blocked.
 - **`http_request` is sent without cookies**: the agent can query an API, not act on your behalf on your accounts.
-- **The emergency stop** cuts everything, including a running script.
+- **The emergency stop** cuts everything, including a running script; pausing an agent only stops that agent.
+- **The extension's pages are yours only**: no agent can open the panel or click in it, so none can approve its own
+  secret request. Only the panel can write a message to an agent.
+- **Your tabs stay yours**: a tab you open from an agent's tab comes back to you; only tabs opened by an agent's
+  action (link, sign-in popup) join its group.
 
 ## Architecture
 
@@ -181,7 +230,9 @@ flowchart LR
 ```sh
 npm run typecheck          # TypeScript check
 npm run reload-extension   # reload the extension after a change
-node test/smoke.ts         # end-to-end test without a browser
+node scripts/run-tests.ts  # fast suite without a browser (--e2e: in-browser tests)
+node test/smoke.ts         # end-to-end test without a browser (test daemon, temporary folder)
+node test/mcp-http.ts      # HTTP MCP endpoint with the SDK client
 node test/call.ts <tool> '<json>'   # call a tool the way an agent would
 npm run build-icons        # extension icons from the SVGs
 npm run build-docs         # this README's visuals from the SVGs

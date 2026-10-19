@@ -7,13 +7,15 @@
  * - un fichier par onglet dans ~/.agent-browser-control/har/, droits 0600, jamais dans le dépôt ;
  * - supprimé à la fermeture de l'onglet, sauf `keep` ; un fichier abandonné (navigateur fermé) est purgé
  *   après 24 h ;
- * - l'export vers Téléchargements masque les secrets par défaut.
+ * - l'export vers Téléchargements masque les secrets par défaut ;
+ * - les corps d'envoi (postData) sont masqués dès l'écriture (clés sensibles : mots de passe, jetons).
  */
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./common.ts";
-import { inferSchema } from "./analysis.ts";
+import { buildCurl, buildPython, inferSchema } from "./analysis.ts";
 
 export const HAR_DIR = join(CONFIG_DIR, "har");
 const KEPT_DIR = join(HAR_DIR, "gardes");
@@ -56,7 +58,21 @@ function ensureDir(dir: string) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-function readMeta(tabId: number): Meta | null {
+/**
+ * État en mémoire des onglets enregistrés : métadonnées (écrites en différé), taille du
+ * fichier et existence. Une requête ne coûte plus qu'une écriture disque : l'ajout.
+ */
+interface TabState {
+  meta: Meta;
+  size: number;
+  fileExists: boolean;
+  dirty: boolean;
+}
+const tabs = new Map<number, TabState>();
+const META_FLUSH_MS = 2000;
+let flushTimer: NodeJS.Timeout | null = null;
+
+function readMetaFile(tabId: number): Meta | null {
   try {
     return JSON.parse(readFileSync(metaFile(tabId), "utf8"));
   } catch {
@@ -64,29 +80,81 @@ function readMeta(tabId: number): Meta | null {
   }
 }
 
+function readMeta(tabId: number): Meta | null {
+  return tabs.get(tabId)?.meta ?? readMetaFile(tabId);
+}
+
 function writeMeta(meta: Meta) {
   writeFileSync(metaFile(meta.tabId), JSON.stringify(meta), { mode: 0o600 });
 }
 
-/** Ajoute une requête terminée à l'enregistrement de l'onglet. */
-export function appendEntry(tabId: number, entry: HarEntry) {
-  if (!Number.isInteger(tabId) || !entry?.url) return;
-  ensureDir(HAR_DIR);
-  const file = entriesFile(tabId);
-  const fresh = !existsSync(file);
-  if (!fresh && entry.body && statSync(file).size > MAX_FILE_BYTES) {
-    entry = { ...entry, body: undefined, bodyTruncated: true };
+function tabState(tabId: number): TabState {
+  let state = tabs.get(tabId);
+  if (!state) {
+    let size = 0;
+    let fileExists = false;
+    try {
+      size = statSync(entriesFile(tabId)).size;
+      fileExists = true;
+    } catch {}
+    const meta = readMetaFile(tabId) ?? { tabId, created: Date.now(), updated: 0, keep: false };
+    state = { meta, size, fileExists, dirty: false };
+    tabs.set(tabId, state);
   }
-  appendFileSync(file, JSON.stringify(entry) + "\n", { mode: 0o600 });
-  if (fresh) chmodSync(file, 0o600);
-  const meta = readMeta(tabId) ?? { tabId, created: Date.now(), updated: 0, keep: false };
-  meta.updated = Date.now();
-  writeMeta(meta);
+  return state;
+}
+
+/** Écrit les métadonnées en attente (en différé, et à l'arrêt du démon). */
+export function flushMeta() {
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  for (const state of tabs.values()) {
+    if (!state.dirty) continue;
+    state.dirty = false;
+    try {
+      ensureDir(HAR_DIR);
+      writeMeta(state.meta);
+    } catch {}
+  }
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(flushMeta, META_FLUSH_MS);
+  flushTimer.unref();
+}
+
+/** Ajoute une requête terminée à l'enregistrement de l'onglet (corps d'envoi masqué dès l'écriture). */
+export function appendEntry(tabId: number, entry: HarEntry) {
+  if (!Number.isInteger(tabId) || !entry || typeof entry !== "object" || typeof entry.url !== "string" || !entry.url) return;
+  const state = tabState(tabId);
+  let e: HarEntry = typeof entry.postData === "string" ? { ...entry, postData: maskBody(entry.postData) } : entry;
+  if (state.fileExists && e.body && state.size > MAX_FILE_BYTES) e = { ...e, body: undefined, bodyTruncated: true };
+  const line = JSON.stringify(e) + "\n";
+  const file = entriesFile(tabId);
+  try {
+    appendFileSync(file, line, { mode: 0o600 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    ensureDir(HAR_DIR);
+    appendFileSync(file, line, { mode: 0o600 });
+  }
+  if (!state.fileExists) {
+    state.fileExists = true;
+    try {
+      chmodSync(file, 0o600);
+    } catch {}
+  }
+  state.size += Buffer.byteLength(line);
+  state.meta.updated = Date.now();
+  state.dirty = true;
+  scheduleFlush();
 }
 
 /** Onglet fermé : l'enregistrement est supprimé, sauf s'il a été gardé (il part dans gardes/). */
 export function closeTab(tabId: number) {
   const meta = readMeta(tabId);
+  tabs.delete(tabId);
   if (!meta) return;
   if (meta.keep) {
     ensureDir(KEPT_DIR);
@@ -116,11 +184,17 @@ export function purgeStale() {
   }
 }
 
-export function readEntries(tabId: number, saved?: string): HarEntry[] {
+/** Requêtes enregistrées d'un onglet (ou d'un enregistrement gardé), lues sans bloquer le démon. */
+export async function readEntries(tabId: number, saved?: string): Promise<HarEntry[]> {
   const file = saved ? join(KEPT_DIR, `${saved.replace(/[\\/]/g, "")}.jsonl`) : entriesFile(tabId);
-  if (!existsSync(file)) return [];
+  let raw: string;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    return [];
+  }
   const out: HarEntry[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
+  for (const line of raw.split("\n")) {
     if (!line) continue;
     try {
       out.push(JSON.parse(line));
@@ -137,10 +211,10 @@ export function savedRecordings(): string[] {
 // --- Secrets ----------------------------------------------------------------------------------------
 
 const SENSITIVE = /(cookie|token|csrf|xsrf|authoriz|auth[-_]|password|passwd|secret|api[-_]?key|session|sessid|jwt|signature)/i;
-const mask = (v: string) => `<masqué, ${v.length} car.>`;
+const mask = (v: string) => (/^<masqué, \d+ car\.>$/.test(v) ? v : `<masqué, ${v.length} car.>`);
 
 /** Dans un texte quelconque (URL, chemin, en-tête Referer…), les paramètres `clé=valeur` sensibles. */
-function maskPairs(text: string) {
+export function maskPairs(text: string) {
   return text.replace(/([?&;,\s]|^)([\w.\[\]-]+)=([^&#\s"';,]*)/g, (all, sep, key, value) =>
     SENSITIVE.test(key) && value ? `${sep}${key}=${encodeURIComponent(mask(decodeURIComponentSafe(value)))}` : all);
 }
@@ -153,7 +227,7 @@ function decodeURIComponentSafe(v: string) {
   }
 }
 
-function maskHeaders(h: Record<string, string> = {}) {
+export function maskHeaders(h: Record<string, string> = {}) {
   return Object.fromEntries(Object.entries(h).map(([k, v]) => [k, SENSITIVE.test(k) ? mask(String(v)) : maskPairs(String(v))]));
 }
 
@@ -163,7 +237,7 @@ const maskUrl = maskPairs;
  * Corps JSON ou formulaire : valeurs des clés sensibles masquées, y compris dans les JSON glissés dans une
  * chaîne et les URL citées dans le texte ; un autre format passe par le masquage des couples clé=valeur.
  */
-function maskBody(body?: string): string | undefined {
+export function maskBody(body?: string): string | undefined {
   if (!body) return body;
   const walk = (o: unknown): unknown => {
     if (Array.isArray(o)) return o.map(walk);
@@ -198,7 +272,7 @@ export function listText(entries: HarEntry[], urlPattern?: string, limit = 100) 
     return `${e.id}  ${e.method} ${status} ${e.type ? `[${e.type}] ` : ""}${e.url.slice(0, 300)}${e.body ? "  (corps enregistré)" : ""}`;
   });
   const header = `${shown.length < list.length ? `${shown.length} dernières sur ${list.length}` : `${list.length}`} requête(s) du HAR persistant`;
-  return `${header} (id, méthode, statut, type, URL ; corps via network_har action="body") :\n${lines.join("\n")}`;
+  return `${header} (id, méthode, statut, type, URL ; corps via devtools action="har" op="body") :\n${lines.join("\n")}`;
 }
 
 /**
@@ -227,10 +301,45 @@ export function bodiesText(entries: HarEntry[], urlPattern?: string, limit = 5) 
   return `${shown.length} dernier(s) corps sur ${list.length} correspondant(s) (secrets masqués) :\n${lines.join("\n")}`;
 }
 
+/** Choisit une requête : requestId exact, sinon la plus récente qui matche urlPattern. */
+export function pickEntry(entries: HarEntry[], opts: { requestId?: string; urlPattern?: string }): HarEntry | null {
+  if (opts.requestId) return [...entries].reverse().find((x) => x.id === opts.requestId) ?? null;
+  if (opts.urlPattern) {
+    let re: RegExp;
+    try {
+      re = new RegExp(opts.urlPattern, "i");
+    } catch {
+      return null;
+    }
+    return [...entries].reverse().find((x) => re.test(x.url)) ?? null;
+  }
+  return null;
+}
+
+/**
+ * Requête rejouable en curl et/ou Python requests : l'agent repart avec un script au lieu
+ * de re-cliquer. URL, en-têtes et corps d'envoi masqués comme à l'export (clés sensibles) ;
+ * cookies du navigateur jamais copiés (à reprendre de la session).
+ */
+export function exportCodeText(entry: HarEntry, format = "both"): string {
+  const req = {
+    method: entry.method || "GET",
+    url: maskUrl(entry.url),
+    headers: maskHeaders(entry.requestHeaders),
+    ...(entry.postData ? { body: maskBody(entry.postData) } : {}),
+  };
+  const head = `${entry.method} ${maskUrl(entry.url).slice(0, 300)}${entry.status ? ` → ${entry.status}` : ""}`;
+  const f = (format || "both").toLowerCase();
+  if (f === "curl") return `${head}\n\n${buildCurl(req)}`;
+  if (f === "python") return `${head}\n\n${buildPython(req)}`;
+  return `${head}\n\n--- curl ---\n${buildCurl(req)}\n\n--- python ---\n${buildPython(req)}`;
+}
+
 export function bodyText(entries: HarEntry[], requestId: string) {
   const e = [...entries].reverse().find((x) => x.id === requestId);
   if (!e) return null;
-  let body = e.body ?? "";
+  // Masqué comme dans bodiesText : jetons et mots de passe des corps JSON ou formulaires.
+  let body = maskBody(e.body) ?? "";
   if (!body) return `${e.method} ${e.status ?? ""} ${e.url}\nCorps de réponse non enregistré (${e.bodyTruncated ? "enregistrement trop volumineux" : e.mimeType || "type non textuel ou ressource statique"}).`;
   if (/json/i.test(e.mimeType ?? "")) {
     try {
@@ -241,11 +350,11 @@ export function bodyText(entries: HarEntry[], requestId: string) {
   return { header: `${e.method} ${e.status ?? ""} ${e.url}\nType : ${e.mimeType || "inconnu"} (HAR persistant)${cut || e.bodyTruncated ? " (tronqué)" : ""}`, body: cut ? body.slice(0, 50_000) : body };
 }
 
-export function statusText(tabId: number) {
+export async function statusText(tabId: number) {
   const meta = readMeta(tabId);
-  const entries = readEntries(tabId);
+  const entries = await readEntries(tabId);
   const saved = savedRecordings();
-  const size = existsSync(entriesFile(tabId)) ? statSync(entriesFile(tabId)).size : 0;
+  const size = tabs.get(tabId)?.size ?? (existsSync(entriesFile(tabId)) ? statSync(entriesFile(tabId)).size : 0);
   const head = meta
     ? `HAR de l'onglet ${tabId} : ${entries.length} requête(s), ${(size / 1024 / 1024).toFixed(1).replace(".", ",")} Mo, ` +
       `du ${new Date(meta.created).toLocaleString("fr-FR")} au ${new Date(meta.updated).toLocaleString("fr-FR")}. ` +
@@ -255,11 +364,14 @@ export function statusText(tabId: number) {
 }
 
 export function setKeep(tabId: number, keep: boolean, label?: string) {
-  const meta = readMeta(tabId) ?? { tabId, created: Date.now(), updated: Date.now(), keep: false };
+  const state = tabState(tabId);
+  const meta = state.meta;
+  if (!meta.updated) meta.updated = Date.now();
   meta.keep = keep;
   if (label) meta.label = label;
   ensureDir(HAR_DIR);
   writeMeta(meta);
+  state.dirty = false;
   return keep
     ? `Le HAR de l'onglet ${tabId} sera gardé à sa fermeture (dans ${KEPT_DIR}). Il contient des sessions : à supprimer quand il ne sert plus.`
     : `Le HAR de l'onglet ${tabId} sera supprimé à sa fermeture.`;
@@ -275,6 +387,7 @@ export function deleteSaved(name: string) {
 
 export function clearTab(tabId: number) {
   const meta = readMeta(tabId);
+  tabs.delete(tabId);
   for (const f of [entriesFile(tabId), metaFile(tabId)]) if (existsSync(f)) unlinkSync(f);
   return meta ? `HAR de l'onglet ${tabId} effacé.` : `Rien à effacer pour l'onglet ${tabId}.`;
 }
@@ -286,7 +399,7 @@ export function exportHar(entries: HarEntry[], name: string, includeSecrets: boo
   const har = {
     log: {
       version: "1.2",
-      creator: { name: "Agent Browser Control", version: "0.6" },
+      creator: { name: "Agent Browser Control", version: "0.8.0" },
       pages: [],
       entries: entries.map((e) => {
         const url = includeSecrets ? e.url : maskUrl(e.url);

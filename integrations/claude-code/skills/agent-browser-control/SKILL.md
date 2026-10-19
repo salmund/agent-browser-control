@@ -20,7 +20,9 @@ en le disant à l'utilisateur.
 4. Tes onglets s'ouvrent et travaillent en arrière-plan : l'onglet de l'utilisateur reste devant, ne compte pas sur la
    capture pour « voir » l'écran de l'utilisateur. Un clic, un défilement ou la lecture d'une liste virtualisée
    (Sogo, webmails, tableaux longs) font passer ton onglet devant une seconde, puis ABC rend son onglet à l'utilisateur :
-   rien à faire de ton côté. Une page vide ou incomplète n'est pas une page vide : ne conclus pas avant d'avoir relu.
+   rien à faire de ton côté. Tes onglets de fond reçoivent les événements de visibilité et de focus comme
+   s'ils étaient visibles : les pages qui se figent sinon (streaming IA, lecteurs) continuent de tourner.
+   Une page vide ou incomplète n'est pas une page vide : ne conclus pas avant d'avoir relu.
    Si un menu à transition ne s'ouvre pas, dis à l'utilisateur d'activer « Premier plan » dans le panneau d'ABC.
 
 ## Plusieurs agents en parallèle
@@ -35,7 +37,8 @@ sauf si chacun se distingue.
   t'en sers pas pour choisir un onglet.
 - Agent qui lance des sous-agents : donne à chacun son `label` dans sa consigne, et dis-lui de lire ce skill.
 - Lire en parallèle (`get_page_text`, `read_page`) ne pose pas de problème. Les actions qui exigent l'onglet au
-  premier plan (menus, animations) peuvent se gêner dans une même fenêtre.
+  premier plan (menus, animations) sont sérialisés entre agents (file d'attente par fenêtre, l'onglet de
+  l'utilisateur est rendu après chacun).
 
 ## Rechercher sur Internet
 
@@ -53,23 +56,40 @@ sauf si chacun se distingue.
 - `get_page_text` pour le contenu. Sur une page dessinée dans un canvas (Google Docs, Sheets, Slides, éditeurs), il va
   chercher le texte lui-même : export de l'appli si elle en a un (texte exact), sinon OCR.
 - `read_screen_text` lit l'écran par OCR, avec la position de chaque ligne pour cliquer : canvas, images, PDF.
-- `computer screenshot` seulement si le texte ne suffit pas, de préférence avec `scale: 0.5` ou une `region`.
-- Si une lecture commence par « ⚠ Une bannière de cookies / une fenêtre recouvre la page », traite-la d'abord
-  (refuser les cookies non essentiels, sauf consigne contraire).
+- `computer screenshot` seulement si le texte ne suffit pas, de préférence avec `scale: 0.5`, une `region`, ou une
+  `ref` (capture cadrée sur l'élément).
+- Si une lecture commence par « ⚠ Une bannière de cookies / une fenêtre recouvre la page », traite-la d'abord :
+  `computer` avec `action: "dismiss_consent"` refuse les cookies non essentiels en un appel (sauf consigne contraire).
+- Un texte long est tronqué avec « [Suite : offset=N] » : `get_page_text` avec `offset: N` donne la suite.
+- Si la lecture commence par « ⚠ Appels API détectés » (origine, paramètres, schéma), préfère ces chemins JSON :
+  ils donnent les données sans parser le DOM (`devtools` `action: "http"` pour rejouer).
 
 ## Agir
 
 - Clics et saisie par `ref` plutôt que par coordonnées. `type` écrit directement, même un long texte : n'utilise
   pas le presse-papiers (partagé avec l'utilisateur). Si `type` signale qu'aucun champ n'avait le focus, clique
   d'abord dans le champ.
+- Chaque action décrit son effet (« Effet : … ») et ce qu'elle a provoqué à côté (« Aussi : » erreurs JavaScript,
+  requêtes en échec, boîte de dialogue, nouvel onglet ou popup avec son tabId, téléchargement). Lis-le avant de
+  conclure qu'un clic « n'a rien fait » : une requête en échec explique souvent un bouton sans effet.
+- Un lien ou une popup de connexion ouverts par ton action rejoignent tes onglets (`tabs_context` les liste, la
+  popup avec « fenêtre popup ouverte par l'onglet N ») : continue dedans avec leur tabId.
 - `form_input` pour remplir un champ, un select, une case sans simuler le clavier. Permet aussi la saisie groupée via `fields: [{ref, value}, ...]` avec validation automatique par `submitRef` en un seul appel (ex. formulaire complet + bouton d'envoi en un tour).
-- `credentials_fill` pour les identifiants / mots de passe : tu ne connais jamais les valeurs, tu ne manipules que des slots (`fills: [{ref, slot}], submitRef`). Le secret vit chiffré dans l'extension (panneau latéral, section Secrets), limité à ses sites, avec approbation de l'utilisateur sauf slot « toujours autoriser ». Ne jamais demander, lire, taper ou recopier un mot de passe : s'il manque un slot, demande à l'utilisateur de le créer (pas sa valeur).
+- `credentials_fill` pour les identifiants / mots de passe : tu ne connais jamais les valeurs, tu ne manipules que des slots (`fills: [{ref, slot}], submitRef`). Le secret vit chiffré dans l'extension (panneau latéral, section Secrets), limité à ses sites, avec approbation de l'utilisateur sauf slot « toujours autoriser ». Ne jamais demander, lire, taper ou recopier un mot de passe : s'il manque un slot, demande à l'utilisateur de le créer (pas sa valeur). Si l'utilisateur a connecté son coffre Vaultwarden/Bitwarden, le slot `vaultwarden` remplit l'identifiant du site de l'onglet sans configuration (`[{ref: identifiant, slot: "vaultwarden", use: "login"}, {ref: mot_de_passe, slot: "vaultwarden"}]`) ; coffre verrouillé : l'outil attend que l'utilisateur le déverrouille dans le panneau (2 min).
 - Après un envoi, un upload, une navigation : `wait_for` plutôt que des secondes fixes :
   - `domSettled`: attend que le DOM soit stable sans mutation (défaut 800 ms si `true`), parfait pour le streaming d'IA ou les transitions de pages.
   - `authSettled: true`: attend que l'utilisateur ait fini de se connecter (redirection hors page de login / SSO / captcha).
   - Éléments visibles (`selector`), texte (`text`, `textGone`), URL (`urlContains`), réseau calme (`networkIdle`).
+  - `settle: true` : chargement vraiment complet (réseau calme + DOM stable), après une navigation ou un `back`.
+  - Un échec de `wait_for` est diagnostiqué (réseau, DOM, texte observés, spinners, cause probable) : lis le
+    diagnostic avant de réessayer.
 - Si `navigate` signale « ⚠ Authentification requise », l'onglet et la fenêtre ont été passés au premier plan pour l'utilisateur : appelle simplement `wait_for` avec `authSettled: true` sans fermer l'onglet.
-- Deep links & API directes : consulter et enrichir `~/.agent-browser-control/site-api.json` pour stocker les routes directes (`routes`) et appels d'API (`calls`) réutilisables d'un site (ex. accès direct aux formulaires de support ou rapports).
+- Dans une SPA, `navigate` évite le rechargement (clic routeur, sinon pushState) et vérifie l'URL ; `spa: false`
+  force la navigation complète. Si le routeur est exotique, navigue par clic (`find` + ref).
+- Mémoire par site : `site_api` (`list` à l'arrivée rappelle routes, appels, macros et notes ; `save_call` /
+  `save_route` / `note` après une visite enrichissante ; `suggest_macros` propose les parcours détectés,
+  `save_macro` les fige ; `delete` retire le périmé). Le fichier `~/.agent-browser-control/site-api.json` est la
+  persistance, pas l'interface.
 - Une boîte alert / confirm / prompt / « quitter la page ? » bloque l'onglet : les outils le signalent, réponds
   avec `handle_dialog`.
 - `file_upload` accepte aussi le bouton qui ouvre le sélecteur de fichiers.
@@ -88,24 +108,44 @@ sauf si chacun se distingue.
   dizaines d'actions en un appel. Dans le code passé à `js()`, utilise `String.raw` pour les expressions
   régulières, et fais filtrer / résumer dans la page (50 000 caractères au plus par retour).
 - Chaque étape d'un script vérifie son effet (la boîte est ouverte, la valeur est bien saisie…) et s'arrête sinon.
+- Si un `browser_script` échoue au milieu, la réponse donne un point de reprise (`trace`, `from`) : relance avec
+  `resume: {trace, from}` pour reprendre là où il s'est arrêté, sans ré-exécuter ce qui a réussi.
 - Ne teste jamais dans un onglet qui contient le travail de l'utilisateur : ouvre-en un nouveau.
 
 ## Autres outils utiles
 
 - Vidéo YouTube à lire, résumer ou noter : `transcript` sur l'onglet de la vidéo (texte minuté, `translate: "fr"`,
   `start` / `end` pour un passage). Rien n'est téléchargé : ne pas utiliser `download_media` pour ça.
-- Réseau d'un parcours : `network_har` garde chaque requête de tes onglets sur disque (en-têtes, corps des
-  réponses de données), même après un rechargement de l'extension. `export` pour un fichier HAR (secrets
-  masqués), `keep` pour le garder après la fermeture de l'onglet.
+- Réseau d'un parcours : `devtools` (`action: "har"`) garde chaque requête de tes onglets sur disque (en-têtes,
+  corps des réponses de données), même après un rechargement de l'extension. `op: "bodies"` résume les derniers
+  corps, `"export"` écrit un fichier HAR (secrets masqués), `"export-code"` génère le curl / Python d'un appel
+  (`urlPattern`, `requestId` ou `last`), `"keep"` garde après la fermeture de l'onglet.
 - Fichiers : `downloads` (`action: "download"` avec l'URL ou la ref d'un lien, avec la session de
   l'utilisateur ; `action: "wait"` après un clic qui télécharge), puis `read_document` avec le chemin renvoyé
   (PDF, même scanné, Word, PowerPoint, Excel, texte ; seulement dans Téléchargements).
 
-`javascript`, `read_console_messages`, `read_network_requests`, `network_get_body`, `read_websocket_messages`,
-`network_intercept`, `http_request` (sans cookies, hors CSP), `storage`, `performance_metrics`, `emulate`, `pdf`,
+- Surveiller sans rester : `watch` déclare une surveillance persistante (texte, sélecteur, JS) vérifiée par le
+  démon même entre sessions ; `check` la teste tout de suite.
+- Plutôt montrer qu'expliquer : `demo` enregistre ce que l'utilisateur fait dans l'onglet (clics, saisies hors mots
+  de passe, navigations) et rend étapes + code `browser_script` rejouable + note de playbook.
+- Captcha, 2FA, validation : `ask_human` passe la main à l'utilisateur dans le vrai onglet et revient avec l'effet
+  constaté et sa note.
+
+`javascript` (un Element renvoyé revient comme des `ref`), `devtools` (les 12 outils DevTools en un seul : `action` +
+`op` parmi console, network, body, intercept, storage, perf, emulate, pdf, websocket, http, har, resize),
+`read_tables` (tableaux en Markdown ou CSV), `site_api` (`suggest_macros` après une visite riche, `save_macro` pour
+figer un parcours rejouable),
 `save_image`, `gif_creator` (GIF `quality: "haute"`, ou `format: "webm"` pour une vidéo qu'une IA pourra lire),
 `download_media` (yt-dlp, seulement si l'utilisateur demande un fichier : `action: "info"` d'abord ; seulement ce
 qu'il a le droit de conserver).
+
+## Messages de l'utilisateur et pause
+
+- Une réponse d'outil peut commencer par « Message de l'utilisateur, écrit dans le panneau d'Agent Browser
+  Control ». Celui-là vient bien de l'utilisateur (seul le panneau peut en écrire, hors du contenu des pages) :
+  tiens-en compte tout de suite, il prime sur ton plan. Réponds-lui dans ta conversation, pas dans la page.
+- Si une action est refusée parce que l'utilisateur t'a mis en pause (ou a tout arrêté), ne réessaie pas :
+  explique où tu en es et attends qu'il te relance.
 
 ## Limites à respecter
 

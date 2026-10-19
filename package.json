@@ -1,6 +1,6 @@
 {
   "name": "agent-browser-control",
-  "version": "0.5.0",
+  "version": "0.8.0",
   "description": "The controls of your real browser, for any AI agent: Chrome extension + MCP server.",
   "scripts": {
     "daemon": "node server/daemon.ts",
@@ -10,6 +10,8 @@
     "test:e2e": "node scripts/run-tests.ts --e2e",
     "test:all": "node scripts/run-tests.ts --all",
     "reload-extension": "node scripts/reload-extension.ts",
+    "update": "node scripts/update.ts",
+    "unpin-extension": "node scripts/unpin-extension.ts",
     "build-icons": "node scripts/build-icons.ts",
     "build-docs": "node scripts/build-docs-assets.ts",
     "build-readme": "node scripts/build-readme.ts"

@@ -63,7 +63,7 @@ try {
   });
   const seeded = textOf(await client.callTool({ name: "wait_for", arguments: { tabId, text: "SEED:10", timeout: 15 } }));
   assert.ok(seeded.includes("Condition remplie"), "graine chargée");
-  const net = textOf(await client.callTool({ name: "read_network_requests", arguments: { tabId, urlPattern: "api/items" } }));
+  const net = textOf(await client.callTool({ name: "devtools", arguments: { tabId, action: "network", urlPattern: "api/items" } }));
   assert.ok(net.includes("/api/items?page=1"), "appel graine capturé dans le trafic");
 
   console.log("\n3. Replay de la pagination (3 pages, 30 items)...");
@@ -92,6 +92,16 @@ try {
   const missText = miss.content.map((b) => b.text ?? "").join("\n");
   console.log(missText.split("\n").slice(0, 2).join("\n"));
   assert.ok(missText.includes("Aucun appel capturé"), "diagnostic clair");
+
+  console.log("\n5. export-code : l'appel graine rejouable en curl/Python...");
+  const code = textOf(await client.callTool({
+    name: "devtools",
+    arguments: { tabId, action: "har", op: "export-code", urlPattern: "api/items", format: "both" },
+  }));
+  console.log(code.split("\n").slice(0, 4).join("\n") + "\n...");
+  assert.ok(code.includes("curl -X GET"), "export curl");
+  assert.ok(code.includes("requests.get("), "export python");
+  assert.ok(code.includes("/api/items"), "URL de l'appel graine");
 
   console.log("\n✅ TOUS LES TESTS E2E DE REPLAY_PAGINATED ONT RÉUSSI !");
 } finally {

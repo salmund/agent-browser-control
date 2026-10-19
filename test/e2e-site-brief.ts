@@ -31,7 +31,8 @@ try {
   const created = await call("tabs_create", {});
   tabId = Number((created.match(/tabId\s+(\d+)/) as RegExpMatchArray)[1]);
   const nav = await call("navigate", { tabId, url: "https://example.com/" });
-  assert.ok(nav.startsWith("Playbook example.com ("), "brief en tête de navigate : " + nav.slice(0, 120));
+  // Brief encadré comme une donnée non vérifiée (écrit par des agents).
+  assert.ok(nav.startsWith("<site_memory ") && nav.includes("\nPlaybook example.com ("), "brief en tête de navigate : " + nav.slice(0, 200));
   assert.ok(nav.includes(NOTE), "note servie par navigate");
   assert.ok(nav.includes(ROUTE), "route servie par navigate");
   assert.ok(nav.indexOf(ROUTE) < nav.indexOf(NOTE), "routes avant notes");
@@ -40,7 +41,7 @@ try {
   // 2. tabs_create avec url : même brief (déclencheur ajouté).
   const created2 = await call("tabs_create", { url: "https://example.com/" });
   tabId2 = Number((created2.match(/tabId\s+(\d+)/) as RegExpMatchArray)[1]);
-  assert.ok(created2.startsWith("Playbook example.com ("), "brief en tête de tabs_create : " + created2.slice(0, 120));
+  assert.ok(created2.startsWith("<site_memory ") && created2.includes("\nPlaybook example.com ("), "brief en tête de tabs_create : " + created2.slice(0, 200));
   assert.ok(created2.includes(NOTE), "note servie par tabs_create");
   console.log("tabs_create : brief en tête OK.");
 

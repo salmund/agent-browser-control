@@ -38,7 +38,7 @@ const step1 = J.jsRetry("const probe = 2; return probe;", "SyntaxError: Illegal 
 assert.strictEqual(await vm.runInContext(step1, ctx), 2);
 
 // Identifiant en clair : renvoyé tel quel, erreur claire s'il est absent.
-assert.strictEqual(J.credentialLogin({ id: "sso-rouen", login: "dumonlo1" }), "dumonlo1");
+assert.strictEqual(J.credentialLogin({ id: "sso-rouen", login: "etu12345" }), "etu12345");
 assert.throws(() => J.credentialLogin({ id: "sso-rouen" }), /aucun identifiant enregistré/);
 assert.throws(() => J.credentialLogin({ id: "sso-rouen", login: "" }), /aucun identifiant enregistré/);
 

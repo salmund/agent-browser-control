@@ -5,7 +5,10 @@
  *    d'animation) : clic refusé avec diagnostic, pas de clic dans le vide.
  * 3. Un bouton recouvert par une modale : clic refusé, recouvrement nommé.
  * 4. find exclut les éléments fixes hors écran (avec compteur).
- * 5. read_page signale les refs hors écran par « (hors écran) ».
+ * 5. read_page omet un élément garé hors du document à gauche ou à droite (invisible,
+ *    comme un menu hors canevas) et signale par « (hors écran) » un fixe sorti par le
+ *    haut (toujours dans l'arbre : on peut vouloir savoir qu'il existe). La ref du
+ *    fantôme horizontal reste accessible par find css: (intention explicite).
  *
  * La livraison physique du clic (le gestionnaire a-t-il tiré ?) dépend de
  * l'environnement : onglet volé qui ne peint pas, navigateur en arrière-plan
@@ -84,6 +87,12 @@ try {
         ghost.style.left = "-9999px";
         ghost.style.top = "160px";
         document.body.appendChild(ghost);
+        // Fantôme vertical : fixe, sorti par le haut (reste dans l'arbre, marqué hors écran).
+        const ghostUp = mk("btn-ghost-up", "Bouton parti vers le haut");
+        ghostUp.style.position = "fixed";
+        ghostUp.style.left = "20px";
+        ghostUp.style.top = "-9999px";
+        document.body.appendChild(ghostUp);
         // Bouton recouvert : modale opaque par-dessus, dans le même conteneur.
         const wrap = document.createElement("div");
         wrap.style.cssText = "position:relative;display:inline-block;margin:20px;";
@@ -109,13 +118,16 @@ try {
   console.log("\n2. Lecture de l'arbre + extraction des refs...");
   const tree = textOf(await client.callTool({ name: "read_page", arguments: { tabId, filter: "interactive" } }));
   const refOk = refOf(tree, "Bouton cliquable témoin");
-  const refGhost = refOf(tree, "Charger plus de messages fantôme");
+  // Garé à left:-9999px : hors du document, donc absent de l'arbre ; sa ref vient de find css:.
+  assert.ok(!tree.includes("Charger plus de messages fantôme"), "fantôme horizontal absent de read_page");
+  const viaCss = textOf(await client.callTool({ name: "find", arguments: { tabId, query: "css:#btn-ghost" } }));
+  const refGhost = refOf(viaCss, "Charger plus de messages fantôme");
   const refCovered = refOf(tree, "Bouton recouvert témoin");
   const refFold = refOf(tree, "Bouton sous la ligne de flottaison");
   console.log(`refs : ok=${refOk} fantôme=${refGhost} recouvert=${refCovered} fold=${refFold}`);
 
-  console.log("\n3. read_page signale le bouton fantôme « (hors écran) »...");
-  assert.ok(tree.includes("(hors écran)"), "suffixe (hors écran) présent dans l'arbre");
+  console.log("\n3. read_page signale le fantôme vertical « (hors écran) »...");
+  assert.ok(/"Bouton parti vers le haut" \[ref_\d+\][^\n]*\(hors écran\)/.test(tree), "suffixe (hors écran) sur le fixe sorti par le haut");
 
   console.log("\n4. Clic normal : accepté (garde passante)...");
   const clickOk = textOf(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refOk } }));

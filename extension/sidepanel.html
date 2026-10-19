@@ -3,133 +3,261 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <title>Agent Browser Control</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
-  <header class="status" id="status" data-state="off">
-    <span class="status-lamp" aria-hidden="true"></span>
-    <p class="status-text">
-      <strong id="status-title">Démon arrêté</strong>
-      <span id="status-hint">Il démarre tout seul dès qu'un agent se connecte.</span>
-    </p>
-    <button id="reconnect" class="quiet-button" type="button">Réessayer</button>
+  <div class="top" id="top">
+  <header class="bar" id="bar" data-state="off" data-paused="false">
+    <div class="conn">
+      <span class="conn-dot" aria-hidden="true"></span>
+      <p class="conn-text" aria-live="polite">
+        <strong id="conn-title">Démon arrêté</strong>
+        <span id="conn-hint">Il démarre dès qu'un agent se connecte.</span>
+      </p>
+      <button id="reconnect" class="text-button" type="button">Réessayer</button>
+    </div>
+    <button id="stop" class="stop" type="button" aria-describedby="stop-help">
+      <span class="stop-square" aria-hidden="true"></span>
+      <span>Tout arrêter</span>
+    </button>
+    <p id="stop-help" class="visually-hidden">Coupe les actions en cours de tous les agents et libère leurs onglets.</p>
   </header>
 
-  <section class="estop" id="estop" data-paused="false" aria-labelledby="estop-caption">
-    <div class="plate">
-      <svg class="plate-ring" viewBox="0 0 200 200" aria-hidden="true">
-        <defs><path id="ring-path" d="M 100,100 m -80,0 a 80,80 0 1,1 160,0 a 80,80 0 1,1 -160,0"></path></defs>
-        <text><textPath href="#ring-path" textLength="486" lengthAdjust="spacing">ARRÊT D'URGENCE • ARRÊT D'URGENCE •</textPath></text>
-      </svg>
-      <button class="mushroom" id="stop" type="button" aria-describedby="estop-caption">
-        <span class="visually-hidden" id="stop-label">Arrêter tous les agents</span>
-      </button>
-    </div>
-    <div class="estop-copy">
-      <p id="estop-caption">Coupe les actions en cours et libère les onglets pilotés.</p>
-      <button id="resume" class="rearm" type="button" hidden>Réarmer</button>
-    </div>
-  </section>
+  <div class="paused" id="paused" role="alert" hidden>
+    <p><strong>Agents arrêtés.</strong> Leurs demandes sont refusées jusqu'à la reprise.</p>
+    <button id="resume" class="solid-button" type="button">Reprendre</button>
+  </div>
 
-  <section class="agents" aria-labelledby="agents-title">
-    <h2 id="agents-title">Agents</h2>
-    <div id="agent-chips" class="agent-chips" role="group" aria-label="Aller aux onglets d'un agent"></div>
-  </section>
+  <nav class="views" role="tablist" aria-label="Vues du panneau">
+    <button class="view-tab" role="tab" id="tab-activity" aria-controls="view-activity" aria-selected="true" type="button">
+      Activité <span class="tab-badge" id="badge-activity" hidden></span>
+    </button>
+    <button class="view-tab" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false" tabindex="-1" type="button">Réglages</button>
+    <button class="view-tab" role="tab" id="tab-secrets" aria-controls="view-secrets" aria-selected="false" tabindex="-1" type="button">
+      Secrets <span class="tab-badge" id="badge-secrets" hidden></span>
+    </button>
+  </nav>
+  </div>
 
-  <section class="journal" aria-labelledby="journal-title">
-    <div class="section-head">
-      <h2 id="journal-title">Journal</h2>
-      <select id="agent-filter" aria-label="Filtrer le journal par agent">
-        <option value="">Tous les agents</option>
-      </select>
-    </div>
-    <ol id="activity" class="activity" aria-live="polite"></ol>
-    <p id="activity-empty" class="empty">Aucune action pour l'instant. Les actions des agents s'affichent ici en direct.</p>
-  </section>
+  <main>
+    <!-- ============================== Activité ============================== -->
+    <section class="view" id="view-activity" role="tabpanel" aria-labelledby="tab-activity">
+      <section class="requests" id="requests" aria-labelledby="requests-title" hidden>
+        <h2 id="requests-title">En attente de votre réponse</h2>
+        <div id="unlocks"></div>
+        <div id="asks"></div>
+        <div id="approvals"></div>
+      </section>
 
-  <section class="focus" aria-labelledby="focus-title">
-    <h2 id="focus-title">Premier plan</h2>
-    <label class="switch-row">
-      <span class="switch-text">
-        <span>Amener l'onglet de l'agent devant</span>
-        <span class="section-hint" id="focus-hint">Désactivé : les agents travaillent en arrière-plan. Leur onglet ne passe devant que le temps d'un clic ou d'un défilement, puis vous retrouvez le vôtre.</span>
-      </span>
-      <input id="focus-toggle" type="checkbox" role="switch">
-      <span class="switch" aria-hidden="true"></span>
-    </label>
-  </section>
+      <section class="block" aria-labelledby="agents-title">
+        <div class="block-head">
+          <h2 id="agents-title">Agents</h2>
+          <span class="block-meta" id="agents-meta"></span>
+        </div>
+        <ul class="lanes" id="lanes"></ul>
+        <p class="empty" id="lanes-empty">Aucun agent pour l'instant. Un agent apparaît ici dès qu'il ouvre son premier onglet.</p>
+      </section>
 
-  <section class="scripts" aria-labelledby="scripts-title">
-    <h2 id="scripts-title">Scripts d'agent</h2>
-    <label class="switch-row">
-      <span class="switch-text">
-        <span>Autoriser les scripts</span>
-        <span class="section-hint" id="scripts-hint">Activé : un agent peut enchaîner des dizaines d'actions en un appel, sans voir les pages entre deux.</span>
-      </span>
-      <input id="scripts-toggle" type="checkbox" role="switch" checked>
-      <span class="switch" aria-hidden="true"></span>
-    </label>
-  </section>
+      <section class="block" aria-labelledby="journal-title">
+        <div class="block-head">
+          <h2 id="journal-title">Journal</h2>
+          <div class="journal-tools">
+            <label class="visually-hidden" for="agent-filter">Agent affiché</label>
+            <select id="agent-filter">
+              <option value="">Tous les agents</option>
+            </select>
+            <button id="errors-only" class="toggle-chip" type="button" aria-pressed="false">Échecs</button>
+            <button id="clear-journal" class="icon-button" type="button" aria-label="Effacer le journal" title="Effacer le journal"></button>
+          </div>
+        </div>
+        <ol class="entries" id="entries" aria-live="polite"></ol>
+        <p class="empty" id="entries-empty">Rien pour l'instant. Chaque action d'un agent s'affiche ici, en direct.</p>
+      </section>
+    </section>
 
-  <section class="blocklist" aria-labelledby="blocklist-title">
-    <h2 id="blocklist-title">Sites interdits</h2>
-    <p class="section-hint">Les agents ne peuvent ni ouvrir ni manipuler ces domaines, sous-domaines compris.</p>
-    <form id="block-form" class="block-form">
-      <label class="visually-hidden" for="block-input">Domaine à interdire</label>
-      <input id="block-input" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="mabanque.fr">
-      <button type="submit">Interdire</button>
-    </form>
-    <ul id="blocked" class="blocked"></ul>
-    <p id="blocked-empty" class="empty">Aucun site interdit : les agents peuvent ouvrir toutes les pages.</p>
-  </section>
-
-  <section class="secrets" aria-labelledby="secrets-title">
-    <div class="section-head">
-      <h2 id="secrets-title">Secrets</h2>
-      <span id="secrets-state" class="pill" data-locked="true">verrouillé</span>
-    </div>
-    <p class="section-hint">Mots de passe que les agents peuvent utiliser sans jamais les voir (outil credentials_fill, par slot). Chiffrés dans ce navigateur, jamais envoyés nulle part. Première utilisation : la phrase choisie ci-dessous crée le coffre.</p>
-    <div id="approvals"></div>
-    <form id="unlock-form" class="block-form">
-      <label class="visually-hidden" for="unlock-input">Phrase secrète du coffre</label>
-      <input id="unlock-input" type="password" autocomplete="off" spellcheck="false" placeholder="Phrase secrète du coffre">
-      <button type="submit">Déverrouiller</button>
-    </form>
-    <p id="unlock-error" class="error" hidden></p>
-    <div id="secrets-open" hidden>
-      <button id="lock-button" class="quiet-button" type="button">Verrouiller</button>
-      <form id="slot-form" class="slot-form">
-        <label>Nom affiché <input id="slot-label" type="text" autocomplete="off" spellcheck="false" placeholder="SSO université"></label>
-        <label>Nom technique (sans espaces, ex. sso-rouen-login, sso-rouen-mdp) <input id="slot-id" type="text" autocomplete="off" spellcheck="false" placeholder="sso-rouen-mdp"></label>
-        <label>Sites autorisés
-          <span class="field-hint">Domaine ou URL complète, séparés par des espaces. « univ-rouen.fr » couvre aussi sso.univ-rouen.fr.</span>
-          <span class="hosts-row">
-            <input id="slot-hosts" type="text" autocomplete="off" spellcheck="false" placeholder="univ-rouen.fr (séparés par des espaces)">
-            <button id="slot-current-site" class="quiet-button" type="button" title="Ajouter le site de l'onglet actuel">Site actuel</button>
+    <!-- ============================== Réglages ============================== -->
+    <section class="view" id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <section class="block" aria-labelledby="behavior-title">
+        <h2 id="behavior-title">Pendant que les agents travaillent</h2>
+        <label class="switch-row">
+          <span class="switch-text">
+            <span class="switch-label">Amener l'onglet de l'agent devant</span>
+            <span class="hint" id="focus-hint"></span>
           </span>
-          <span id="slot-hosts-preview" class="hosts-preview" aria-live="polite"></span>
+          <input id="focus-toggle" type="checkbox" role="switch">
+          <span class="switch" aria-hidden="true"></span>
         </label>
-        <label>Identifiant (login, gardé en clair, optionnel)
-          <span class="field-hint">Rempli dans les champs non secrets. Seul le secret ci-dessous reste chiffré et aveugle.</span>
-          <input id="slot-login" type="text" autocomplete="off" spellcheck="false" placeholder="ex. dumonlo1">
+        <label class="switch-row">
+          <span class="switch-text">
+            <span class="switch-label">Autoriser les scripts d'agent</span>
+            <span class="hint" id="scripts-hint"></span>
+          </span>
+          <input id="scripts-toggle" type="checkbox" role="switch" checked>
+          <span class="switch" aria-hidden="true"></span>
         </label>
-        <label>Secret (mot de passe, chiffré, jamais visible) <input id="slot-secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="Mot de passe"></label>
-        <label>Usage
-          <select id="slot-policy">
-            <option value="ask">Demander à chaque fois</option>
-            <option value="always">Toujours autoriser</option>
-          </select>
+        <label class="switch-row">
+          <span class="switch-text">
+            <span class="switch-label">Montrer les gestes des agents sur la page</span>
+            <span class="hint" id="overlay-hint"></span>
+          </span>
+          <input id="overlay-toggle" type="checkbox" role="switch" checked>
+          <span class="switch" aria-hidden="true"></span>
         </label>
-        <button type="submit">Enregistrer le secret</button>
-      </form>
-      <p id="slot-error" class="error" hidden></p>
-      <ul id="slots" class="blocked"></ul>
-      <p id="slots-empty" class="empty">Aucun secret enregistré.</p>
-    </div>
-  </section>
+      </section>
+
+      <section class="block" aria-labelledby="blocklist-title">
+        <h2 id="blocklist-title">Sites interdits</h2>
+        <p class="hint">Les agents ne peuvent ni ouvrir ni manipuler ces domaines, sous-domaines compris.</p>
+        <form id="block-form" class="inline-form">
+          <label class="visually-hidden" for="block-input">Domaine à interdire</label>
+          <input id="block-input" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="mabanque.fr">
+          <button type="submit" class="plain-button">Interdire</button>
+          <button id="block-current" type="button" class="plain-button" title="Interdire le site de l'onglet affiché">Site affiché</button>
+        </form>
+        <ul id="blocked" class="tokens"></ul>
+        <p id="blocked-empty" class="empty">Aucun site interdit : les agents peuvent ouvrir toutes les pages.</p>
+      </section>
+
+      <section class="block" aria-labelledby="shortcut-title">
+        <h2 id="shortcut-title">Raccourcis clavier</h2>
+        <dl class="facts" id="shortcuts"></dl>
+        <button id="edit-shortcuts" type="button" class="plain-button">Modifier les raccourcis</button>
+      </section>
+
+      <section class="block" aria-labelledby="about-title">
+        <h2 id="about-title">Extension</h2>
+        <dl class="facts" id="about"></dl>
+        <div class="button-row">
+          <button id="copy-diagnostic" type="button" class="plain-button">Copier le diagnostic</button>
+          <button id="reload-extension" type="button" class="plain-button">Recharger l'extension</button>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============================== Secrets ============================== -->
+    <section class="view" id="view-secrets" role="tabpanel" aria-labelledby="tab-secrets" hidden>
+      <p class="intro">Des identifiants que les agents remplissent sans jamais les voir (outil <code>credentials_fill</code>). Rien ne quitte ce PC, sauf vers votre propre coffre (Vaultwarden ou Bitwarden).</p>
+
+      <section class="block" aria-labelledby="bw-title">
+        <div class="block-head">
+          <h2 id="bw-title">Vaultwarden / Bitwarden</h2>
+          <span id="bw-state" class="state" data-on="false">inconnu</span>
+        </div>
+        <p class="hint" id="bw-intro">Vos identifiants restent dans votre coffre. Un agent demande celui du site affiché (slot <code>vaultwarden</code>), vous approuvez ici, il ne voit jamais le mot de passe.</p>
+
+        <form id="bw-login-form" class="slot-form" hidden>
+          <label>Adresse du serveur
+            <input id="bw-server" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://passwords.exemple.fr">
+            <span id="bw-server-status" class="hint" aria-live="polite"></span>
+          </label>
+          <label>E-mail du compte
+            <input id="bw-login-email" type="email" autocomplete="email" spellcheck="false" placeholder="vous@exemple.fr">
+          </label>
+          <label>Mot de passe maître <span class="hint">Envoyé seulement au CLI Bitwarden de ce PC, jamais enregistré.</span>
+            <input id="bw-login-password" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <label id="bw-code-label" hidden>Code de connexion en deux étapes
+            <input id="bw-login-code" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" placeholder="123456">
+          </label>
+          <button type="submit" class="solid-button" id="bw-login-submit">Connecter mon coffre</button>
+          <button type="button" class="text-button" id="bw-open-web" hidden>Ouvrir le coffre web (création de compte)</button>
+        </form>
+
+        <form id="bw-unlock-form" class="inline-form" hidden>
+          <label class="visually-hidden" for="bw-unlock-input">Mot de passe maître</label>
+          <input id="bw-unlock-input" type="password" autocomplete="off" spellcheck="false" placeholder="Mot de passe maître">
+          <button type="submit" class="plain-button">Déverrouiller</button>
+        </form>
+        <div id="bw-open" class="bw-open" hidden>
+          <span class="button-row">
+            <button id="bw-sync-button" class="plain-button" type="button">Synchroniser</button>
+            <button id="bw-lock-button" class="plain-button" type="button">Verrouiller</button>
+          </span>
+        </div>
+        <p id="bw-account" class="bw-account" hidden>
+          <span id="bw-account-text"></span>
+          <button id="bw-logout-button" class="text-button" type="button">Changer de compte ou de serveur</button>
+        </p>
+        <p id="bw-error" class="error" hidden></p>
+      </section>
+
+      <section class="block" aria-labelledby="vault-title">
+        <div class="block-head">
+          <h2 id="vault-title">Coffre intégré</h2>
+          <span id="secrets-state" class="state" data-on="false">verrouillé</span>
+        </div>
+        <form id="unlock-form" class="inline-form">
+          <label class="visually-hidden" for="unlock-input">Phrase secrète du coffre</label>
+          <input id="unlock-input" type="password" autocomplete="off" spellcheck="false" placeholder="Phrase secrète du coffre">
+          <button type="submit" class="plain-button">Déverrouiller</button>
+        </form>
+        <p class="hint" id="unlock-hint">Première fois : la phrase choisie ici crée le coffre (8 caractères au moins). Elle n'est jamais enregistrée.</p>
+        <p id="unlock-error" class="error" hidden></p>
+        <button id="lock-button" class="plain-button" type="button" hidden>Verrouiller le coffre</button>
+      </section>
+
+      <section class="block" aria-labelledby="slots-title">
+        <h2 id="slots-title">Secrets enregistrés</h2>
+        <ul id="slots" class="slots"></ul>
+        <p id="slots-empty" class="empty">Aucun secret enregistré.</p>
+
+        <details class="add-slot" id="add-slot">
+          <summary>Ajouter un secret</summary>
+          <form id="slot-form" class="slot-form">
+            <label>Source
+              <select id="slot-source">
+                <option value="vault">Coffre intégré (vous saisissez le mot de passe)</option>
+                <option value="bitwarden">Vaultwarden / Bitwarden (un élément existant)</option>
+              </select>
+            </label>
+            <div id="slot-bw-box" hidden>
+              <label>Élément du coffre
+                <span class="field-row">
+                  <input id="slot-bw-search" type="text" autocomplete="off" spellcheck="false" placeholder="ex. univ rouen">
+                  <button id="slot-bw-go" class="plain-button" type="button">Rechercher</button>
+                </span>
+              </label>
+              <ul id="slot-bw-results" class="bw-results"></ul>
+              <p id="slot-bw-error" class="error" hidden></p>
+            </div>
+            <label>Nom affiché <input id="slot-label" type="text" autocomplete="off" spellcheck="false" placeholder="SSO université"></label>
+            <label>Nom technique
+              <span class="hint">Celui que l'agent utilise : minuscules, chiffres et tirets.</span>
+              <input id="slot-id" type="text" autocomplete="off" spellcheck="false" placeholder="sso-rouen">
+            </label>
+            <label>Sites autorisés
+              <span class="hint">« univ-rouen.fr » couvre aussi sso.univ-rouen.fr. Plusieurs : séparés par des espaces.</span>
+              <span class="field-row">
+                <input id="slot-hosts" type="text" autocomplete="off" spellcheck="false" placeholder="univ-rouen.fr">
+                <button id="slot-current-site" class="plain-button" type="button" title="Ajouter le site de l'onglet affiché">Site affiché</button>
+              </span>
+              <span id="slot-hosts-preview" class="tokens small" aria-live="polite"></span>
+            </label>
+            <label id="slot-login-label">Identifiant <span class="hint">Optionnel, gardé en clair.</span>
+              <input id="slot-login" type="text" autocomplete="off" spellcheck="false" placeholder="ex. prenom.nom">
+            </label>
+            <label id="slot-secret-label">Mot de passe <span class="hint">Chiffré, jamais affiché.</span>
+              <input id="slot-secret" type="password" autocomplete="new-password" spellcheck="false">
+            </label>
+            <label>Quand un agent veut l'utiliser
+              <select id="slot-policy">
+                <option value="ask">Me demander à chaque fois</option>
+                <option value="always">Toujours autoriser</option>
+              </select>
+            </label>
+            <button type="submit" class="solid-button">Enregistrer le secret</button>
+            <p id="slot-error" class="error" hidden></p>
+          </form>
+        </details>
+      </section>
+    </section>
+  </main>
+
+  <p class="toast" id="toast" role="status" hidden></p>
 
   <script src="slots-crypto.js"></script>
-  <script src="sidepanel.js"></script></script>
+  <script type="module" src="panel/main.js"></script>
 </body>
 </html>

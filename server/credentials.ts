@@ -25,10 +25,30 @@ export interface SlotMeta {
   lastUsed?: string;
 }
 
+/** Référence vers un secret hébergé hors du coffre intégré (aucune valeur stockée). */
+export interface ExternalSlotRef {
+  provider: "bitwarden";
+  /** Id d'item Bitwarden (UUID). */
+  itemId: string;
+  /** Nom d'affichage capturé à la création (rappel, non utilisé pour résoudre). */
+  itemName?: string;
+}
+
 export interface SlotRecord extends SlotMeta {
-  /** Charge chiffrée (AES-GCM) : jamais de secret en clair ici. */
-  iv: string;
-  data: string;
+  /** Charge chiffrée (AES-GCM) : jamais de secret en clair ici. Absente pour les slots externes. */
+  iv?: string;
+  data?: string;
+  /** Présent pour les slots externes (Bitwarden) : résolu au remplissage, jamais stocké. */
+  external?: ExternalSlotRef;
+}
+
+/** Un slot externe n'a pas besoin de la clé du coffre intégré pour être rempli. */
+export function isExternalSlot(slot: Pick<SlotRecord, "external">): boolean {
+  return slot.external?.provider === "bitwarden" && typeof slot.external.itemId === "string" && !!slot.external.itemId;
+}
+
+export function slotNeedsVaultKey(slot: Pick<SlotRecord, "external">): boolean {
+  return !isExternalSlot(slot);
 }
 
 export interface SlotStore {
