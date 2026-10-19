@@ -10,7 +10,7 @@ const FAST: { name: string; cmd: string; args: string[]; shell?: boolean }[] = [
   // npx est un .cmd sur Windows : passe par le shell (sans ça, ENOENT silencieux).
   { name: "typecheck", cmd: "npx", args: ["tsc", "--noEmit"], shell: true },
   { name: "syntaxe extension", cmd: process.execPath, args: ["scripts/check-extension-syntax.ts"] },
-  ...["extension-load", "devtools-unit", "settings", "analysis", "har-bodies", "har-export-code", "history", "housekeeping", "js-eval", "macros", "readme", "version", "watch", "ws-mask", "credentials", "bitwarden", "bw-keep", "relay", "tabs-cleanup", "hardening", "smoke", "mcp-http", "pointer"].map(
+  ...["extension-load", "devtools-unit", "settings", "analysis", "har-bodies", "har-export-code", "history", "housekeeping", "js-eval", "macros", "readme", "version", "watch", "ws-mask", "credentials", "bitwarden", "bw-keep", "bw-serve", "relay", "tabs-cleanup", "hardening", "smoke", "mcp-http", "pointer"].map(
     (t) => ({ name: `test/${t}`, cmd: process.execPath, args: [`test/${t}.ts`] }),
   ),
 ];

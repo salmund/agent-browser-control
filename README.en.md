@@ -193,7 +193,9 @@ The agent can sign in to your sites with the logins stored in **your** vault, wi
 
 The CLI runs in a profile of its own (`~/.agent-browser-control/bitwarden`), so your usual `bw` stays logged in
 (`ABC_BW_PROFILE=default` to share it). The master password is never written or logged: it reaches the CLI through an
-environment variable, and the session key stays in the daemon's memory. Only the page origin (not its path) is sent to
+environment variable, and the session key stays in the daemon's memory.
+While the vault is open, the daemon keeps a `bw serve` on a private socket (never a network port): listing then filling
+a login takes a few milliseconds instead of 3 to 4 s per CLI call (`ABC_BW_SERVE=0` to do without it). Only the page origin (not its path) is sent to
 the CLI to find matching items. A private server (Tailscale, local network) must be reachable from this PC.
 
 ## Security

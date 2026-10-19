@@ -198,6 +198,8 @@ L'agent peut se connecter à vos sites avec les identifiants de **votre** coffre
 Le CLI tourne dans un profil propre à ABC (`~/.agent-browser-control/bitwarden`) : votre `bw` habituel n'est pas
 déconnecté (`ABC_BW_PROFILE=default` pour partager le même profil). Le mot de passe maître n'est jamais écrit ni
 journalisé : il passe au CLI par une variable d'environnement, et la clé de session reste en mémoire du démon.
+Coffre ouvert, le démon garde un `bw serve` sur un socket privé (jamais un port réseau) : lister puis remplir un
+identifiant prend quelques millisecondes au lieu de 3 à 4 s par appel au CLI (`ABC_BW_SERVE=0` pour s'en passer).
 Seule l'origine de la page (pas son chemin) est envoyée au CLI pour trouver les éléments correspondants. Un serveur
 privé (Tailscale, réseau local) doit être joignable depuis ce PC.
 

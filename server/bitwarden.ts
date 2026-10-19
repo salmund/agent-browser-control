@@ -77,7 +77,11 @@ export function parseBwStatus(text: string): BwStatus {
  * avant même de quitter ce module. Les items sans id sont ignorés.
  */
 export function parseBwItems(text: string): BwCandidate[] {
-  const raw = JSON.parse(text) as unknown;
+  return bwCandidates(JSON.parse(text) as unknown);
+}
+
+/** Même expurgation, sur une liste déjà décodée (réponse de `bw serve`). */
+export function bwCandidates(raw: unknown): BwCandidate[] {
   if (!Array.isArray(raw)) throw new BwError("Réponse inattendue du CLI Bitwarden (liste).");
   const out: BwCandidate[] = [];
   for (const item of raw) {

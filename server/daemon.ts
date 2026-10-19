@@ -100,6 +100,7 @@ import {
   type BwField,
 } from "./bitwarden.ts";
 import { createBwKeep } from "./bw-keep.ts";
+import { createBwServe } from "./bw-serve.ts";
 import { createRelay } from "./relay.ts";
 import {
   LOG_STRING_MAX,
@@ -503,6 +504,7 @@ async function shutdown() {
     extension?.close(1001, "arrêt du démon");
   } catch {}
   flushMeta();
+  bwServe.stop();
   server.close();
   setTimeout(() => process.exit(0), 200);
 }
@@ -1316,11 +1318,15 @@ const relay = createRelay({
 /** Change la session en mémoire et, si le réglage est actif, sur disque (chiffrée par Windows). */
 function setBwSession(key: string | null) {
   bwSessionKey = key;
+  bwServe.setSession(key);
   bwKeep.store(key).catch((err) => log({ event: "bw-keep", ok: false, error: errText(err).slice(0, 200) }));
 }
 // Démarrage : session gardée par le démon précédent, si le réglage est actif.
 const bwSessionLoaded = bwKeep.load().then((key) => {
-  if (key && !bwSessionKey) bwSessionKey = key;
+  if (key && !bwSessionKey) {
+    bwSessionKey = key;
+    bwServe.setSession(key);
+  }
   if (key) log({ event: "bw-keep", restored: true });
   if (key) void bwSyncNow("restauration");
 }).catch(() => {});
@@ -1339,7 +1345,7 @@ function bwSyncNow(reason: string): Promise<boolean> {
   if (!bwSessionKey) return Promise.resolve(false);
   bwSyncing ??= (async () => {
     try {
-      await (await bwClient()).sync(bwSessionKey!);
+      if (!(await bwServe.sync())) await (await bwClient()).sync(bwSessionKey!);
       bwLastSync = Date.now();
       log({ event: "bw-sync", ok: true, reason });
       return true;
@@ -1364,13 +1370,32 @@ const BW_RETRY_MS = 60_000;
  */
 const BW_APPDATA_DIR = process.env.ABC_BW_PROFILE === "default" ? undefined : join(CONFIG_DIR, "bitwarden");
 
-/** Client Bitwarden : chemin du CLI gardé en cache, sauf « introuvable », réessayé après 60 s. */
-async function bwClient() {
+/** Chemin du CLI, gardé en cache, sauf « introuvable », réessayé après 60 s. */
+async function bwExe(): Promise<string | null> {
   if (!bwPath || (!bwPath.path && Date.now() - bwPath.at > BW_RETRY_MS)) bwPath = { path: await findBw(), at: Date.now() };
-  if (!bwPath.path) throw new Error(BW_INSTALL_HINT);
-  if (BW_APPDATA_DIR) mkdirSync(BW_APPDATA_DIR, { recursive: true });
-  return createBitwardenClient(bwPath.path, undefined, { appDataDir: BW_APPDATA_DIR });
+  return bwPath.path;
 }
+
+/** Client Bitwarden (CLI lancé à chaque appel) : connexion, déverrouillage, et secours du serveur ci-dessous. */
+async function bwClient() {
+  const path = await bwExe();
+  if (!path) throw new Error(BW_INSTALL_HINT);
+  if (BW_APPDATA_DIR) mkdirSync(BW_APPDATA_DIR, { recursive: true });
+  return createBitwardenClient(path, undefined, { appDataDir: BW_APPDATA_DIR });
+}
+
+/**
+ * `bw serve` persistant tant que le coffre est ouvert (bw-serve.ts) : quelques millisecondes par appel au lieu de
+ * 3 à 4 s pour le CLI. Socket privé, jamais de port TCP. ABC_BW_SERVE=0 revient au CLI seul.
+ */
+const bwServe = createBwServe({
+  bwPath: bwExe,
+  appDataDir: BW_APPDATA_DIR,
+  configDir: CONFIG_DIR,
+  log,
+  enabled: process.env.ABC_BW_SERVE !== "0",
+});
+process.on("exit", () => bwServe.stop());
 
 const BW_LOCKED_MESSAGE = "Coffre verrouillé : déverrouillez-le dans le panneau latéral (onglet Secrets).";
 const BW_LOGGED_OUT_MESSAGE = "Coffre non connecté : connectez-vous une fois dans le panneau latéral (onglet Secrets, serveur, e-mail et mot de passe maître).";
@@ -1413,6 +1438,12 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
         return reply(true, { keep: on });
       }
       case "bw-status": {
+        // Coffre ouvert : le serveur répond tout de suite ; sinon (ou s'il fait défaut), le CLI.
+        const fast = bwSessionKey ? await bwServe.status().catch(() => undefined) : undefined;
+        if (fast?.state === "unlocked") {
+          log({ event: "bw-rpc", op, ok: true, cli: true, state: fast.state, serve: true });
+          return reply(true, { cli: true, profile: BW_APPDATA_DIR ? "abc" : "default", ...fast });
+        }
         const st = await client.status().catch(() => ({ state: "unknown" as const }));
         // `bw status` sans clé de session dit « locked » même si le démon détient une session valide.
         if (st.state === "locked" && bwSessionKey) st.state = "unlocked";
@@ -1470,10 +1501,12 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
       }
       case "bw-match": {
         if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
-        let items = await client.matchUrl(bwSessionKey, String(params.url ?? ""));
+        const url = String(params.url ?? "");
+        const match = async (key: string) => (await bwServe.matchUrl(url)) ?? (await client.matchUrl(key, url));
+        let items = await match(bwSessionKey);
         // Aucun compte : peut-être ajouté depuis peu sur un autre appareil. Une synchro, puis on recommence.
         if (!items.length && Date.now() - bwLastSync > BW_SYNC_ON_MISS_MS && (await bwSyncNow("site sans compte")) && bwSessionKey) {
-          items = await client.matchUrl(bwSessionKey, String(params.url ?? ""));
+          items = await match(bwSessionKey);
         }
         log({ event: "bw-rpc", op, ok: true, count: items.length });
         return reply(true, { items: items.slice(0, 20) });
@@ -1502,7 +1535,8 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
       }
       case "bw-search": {
         if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
-        const items = await client.search(bwSessionKey, String(params.query ?? ""));
+        const query = String(params.query ?? "");
+        const items = (await bwServe.search(query)) ?? (await client.search(bwSessionKey, query));
         log({ event: "bw-rpc", op, ok: true, count: items.length });
         return reply(true, { items });
       }
@@ -1510,7 +1544,8 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
         if (!bwSessionKey) return reply(false, { reason: "locked" }, BW_LOCKED_MESSAGE);
         const field = params.field as BwField;
         if (!isBwField(field)) return reply(false, undefined, `Champ invalide : ${JSON.stringify(params.field)}.`);
-        const value = await client.resolve(bwSessionKey, String(params.itemId ?? ""), field);
+        const itemId = String(params.itemId ?? "");
+        const value = (await bwServe.resolve(itemId, field)) ?? (await client.resolve(bwSessionKey, itemId, field));
         log({ event: "bw-rpc", op, ok: true, field });
         return reply(true, { value });
       }

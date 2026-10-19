@@ -139,6 +139,15 @@ extension -> démon (`daemon-rpc` sur le WebSocket local : `bw-resolve`),
 qui l'obtient du CLI `bw` (`bw get password|username <id> --raw`) et la renvoie.
 `use: "login"` donne l'identifiant Bitwarden, sinon le mot de passe.
 
+- **Serveur persistant** (`server/bw-serve.ts`, `test/bw-serve.ts`) : chaque lancement du CLI coûte 3 à 4 s
+  (démarrage de Node, déchiffrement du coffre). Tant que le démon détient une session, il garde un `bw serve`
+  (lancé à l'ouverture du coffre, préchauffé, arrêté au verrouillage et à l'arrêt du démon) : état, correspondance,
+  recherche, valeurs et synchro passent par lui en quelques millisecondes. Son API n'ayant pas d'authentification,
+  il n'écoute jamais sur un port TCP : socket unix dans `bw-serve/` (0700) sous Linux et macOS, tube nommé aléatoire
+  sous Windows ; protection d'origine de `bw` active, session par l'environnement. Toute panne (démarrage, transport,
+  réponse illisible) fait passer l'appel par le CLI, et le serveur est relancé (5 s, 30 s, puis 2 min) ; une erreur
+  du coffre (verrouillé, élément introuvable) est rendue comme par le CLI. `ABC_BW_SERVE=0` revient au CLI seul.
+
 - **Session** : le mot de passe maître est saisi dans le panneau, sert une fois
   à `bw unlock` et est abandonné ; la clé de session vit en mémoire du démon
   uniquement (`bw lock` à la demande). `bw login` reste manuel, une fois par poste.
