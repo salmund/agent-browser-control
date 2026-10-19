@@ -179,8 +179,10 @@ chrome.runtime.onInstalled.addListener(connect);
 // un banc d'essai) ne tournerait qu'après un rechargement à la main, et l'ancien code répondrait sans rien dire.
 // L'empreinte des scripts est notée à l'événement install du service worker, le seul moment où Chrome vient de les
 // lire sur le disque (runtime.onInstalled ne convient pas : avec --load-extension, il revient à chaque démarrage,
-// code en cache compris). Au démarrage du navigateur, l'empreinte du disque lui est comparée : différente,
+// code en cache compris, et onStartup ne vient pas). Au démarrage du navigateur (onStartup, ou onInstalled avec
+// --load-extension), un service worker sorti du cache compare l'empreinte du disque à la sienne : différente,
 // l'extension se recharge (une fois par empreinte : pas de boucle).
+let codeFreshlyRead = false; // ce service worker vient d'être installé : ses scripts sortent du disque
 async function diskCodeStamp() {
   const texts = await Promise.all(["background.js", ...SW_SCRIPTS].map((f) =>
     fetch(chrome.runtime.getURL(f), { cache: "no-store" }).then((r) => r.text())));
@@ -188,9 +190,11 @@ async function diskCodeStamp() {
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 self.addEventListener("install", () => {
+  codeFreshlyRead = true;
   diskCodeStamp().then((codeStamp) => chrome.storage.local.set({ codeStamp })).catch(() => {});
 });
-chrome.runtime.onStartup.addListener(async () => {
+async function reloadIfCodeChanged() {
+  if (codeFreshlyRead) return;
   try {
     const [{ codeStamp, codeReloadFor }, disk] = await Promise.all([chrome.storage.local.get(["codeStamp", "codeReloadFor"]), diskCodeStamp()]);
     if (codeStamp === disk) return;
@@ -198,7 +202,9 @@ chrome.runtime.onStartup.addListener(async () => {
     await chrome.storage.local.set({ codeReloadFor: disk });
     chrome.runtime.reload();
   } catch {}
-});
+}
+chrome.runtime.onStartup.addListener(reloadIfCodeChanged);
+chrome.runtime.onInstalled.addListener(reloadIfCodeChanged);
 
 // Raccourcis (chrome://extensions/shortcuts) : l'arrêt d'urgence marche même panneau fermé.
 chrome.commands.onCommand.addListener((command) => {
