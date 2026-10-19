@@ -270,7 +270,7 @@ async function navigateSpa(tabId, targetUrl, { force = false } = {}) {
   if (await waitUrl(tabId, target.href, 2000)) {
     await waitDomSettle(tabId, 300, 2500, t1).catch(() => {});
     const after = await inPage(tabId, "pageDigest").catch(() => null);
-    const same = (a, b) => a && b && a.title === b.title && a.textLen === b.textLen && a.interactive === b.interactive;
+    const same = (a, b) => a.title === b.title && a.textLen === b.textLen && a.textHash === b.textHash && a.interactive === b.interactive;
     if (before && after && !same(before, after)) return "navigation SPA (pushState)";
     // Rien n'a suivi : on retire l'entrée ajoutée, pour que la navigation complète charge bien la cible
     // (vers l'adresse affichée, un #fragment ne ferait que défiler) et que « retour » ne tombe pas dessus.

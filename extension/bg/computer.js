@@ -66,6 +66,7 @@ function formatDelta(a, b) {
   if (a.title !== b.title) parts.push(`titre → « ${pageLabel(b.title, 40)} »`);
   const dt = b.textLen - a.textLen;
   if (dt) parts.push(`${dt > 0 ? "+" : ""}${dt} car.`);
+  else if (a.textHash !== undefined && a.textHash !== b.textHash) parts.push("texte modifié (même longueur)");
   const df = (b.formLen || 0) - (a.formLen || 0);
   if (df) parts.push(`champs ${df > 0 ? "+" : ""}${df} car.`);
   const di = b.interactive - a.interactive;

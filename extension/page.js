@@ -1407,14 +1407,18 @@
     } catch {}
     const body = document.body;
     let textLen = 0;
+    let textHash = 0; // empreinte du texte : un changement à longueur égale (« Vue 1 » → « Vue 3 ») se voit aussi
     if (body) {
       if (!digestMode) digestMode = body.textContent.length > 150_000 ? "dom" : "inner";
-      textLen = digestMode === "inner" ? (body.innerText || "").length : body.textContent.length;
+      const t = digestMode === "inner" ? body.innerText || "" : body.textContent;
+      textLen = t.length;
+      for (let i = 0; i < t.length; i++) textHash = (Math.imul(textHash, 31) + t.charCodeAt(i)) | 0;
     }
     return {
       url: location.href,
       title: (document.title || "").slice(0, 80),
       textLen,
+      textHash,
       formLen,
       interactive: document.querySelectorAll("a[href],button,input,select,textarea,option,[role=button],[onclick],[tabindex]").length,
     };
