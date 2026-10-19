@@ -67,6 +67,8 @@ try {
   if (platform() !== "win32") {
     const mode = statSync(join(configDir, "bw-serve")).mode & 0o777;
     assert.strictEqual(mode, 0o700, `dossier du socket en ${mode.toString(8)}`);
+    const sockMode = statSync(join(configDir, "bw-serve", "bw.sock")).mode & 0o777;
+    assert.strictEqual(sockMode, 0o600, `socket en ${sockMode.toString(8)}`);
   }
 
   // Panne : le serveur meurt, l'appel suivant passe par le CLI (undefined), puis il est relancé.

@@ -40,6 +40,8 @@ const WAIT_START_MS = 8_000;
 const CALL_TIMEOUT_MS = 10_000;
 const SYNC_TIMEOUT_MS = 60_000;
 const RETRY_MS = [5_000, 30_000, 120_000];
+/** Adresse fictive (TLD réservé) pour le préchauffage : aucun élément du coffre n'y correspond. */
+const WARMUP_URL = "https://abc-prechauffage.invalid";
 
 export interface BwServeOptions {
   /** Chemin du CLI, résolu à la demande (null : CLI introuvable, pas de serveur). */
@@ -170,8 +172,15 @@ export function createBwServe(options: BwServeOptions): BwServe {
           failed(`coffre ${st.state} pour bw serve (session refusée)`);
           return false;
         }
-        // Préchauffage : une recherche déchiffre tout le coffre une fois pour toutes (1 s au premier appel, sinon).
-        await raw(target, "GET", `/list/object/items?search=abc-prechauffage-${randomBytes(4).toString("hex")}`, CALL_TIMEOUT_MS).catch(() => {});
+        // Le dossier 0700 suffit à fermer le socket aux autres comptes ; le socket lui-même aussi, par prudence.
+        if (!win) {
+          try {
+            chmodSync(target.address, 0o600);
+          } catch {}
+        }
+        // Préchauffage : la première correspondance par adresse déchiffre le coffre et prépare les règles d'adresse
+        // (0,3 à 1 s, mesuré) ; la recherche texte ne prépare pas ce chemin. Deux passes sur une adresse fictive.
+        for (let i = 0; i < 2; i++) await raw(target, "GET", `/list/object/items?url=${encodeURIComponent(WARMUP_URL)}`, CALL_TIMEOUT_MS).catch(() => {});
         if (inst !== target) return false;
         target.ok = true;
         failures = 0;
