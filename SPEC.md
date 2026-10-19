@@ -41,7 +41,7 @@ Le démon n'accepte que l'en-tête `Host` `127.0.0.1:<port>` ou `localhost:<port
 
 | Route | Jeton | Rôle |
 |---|---|---|
-| `GET /health` | non | état : version, extension connectée et sa version, appels en cours (`inflight`), arrêt en cours (`shuttingDown`) |
+| `GET /health` | non | état : version, extension connectée et sa version, appels en cours (`inflight`), ms depuis la fin du dernier appel (`idleMs`, 0 pendant un appel), arrêt en cours (`shuttingDown`) |
 | `POST /call` | oui | appel d'outil `{agent, tool, args}` (utilisé par le shim stdio) |
 | `POST /mcp?agent=<nom>` | oui | serveur MCP Streamable HTTP sans état : mêmes outils, même filtrage, même relais que le shim ; `GET` et `DELETE` répondent 405 |
 | `GET /events` | oui | flux SSE : une ligne JSON par événement journalisé (données déjà expurgées) |

@@ -164,6 +164,8 @@ const expired = new Map<number, { tool: string; agent: string; at: number }>();
 const extensionWaiters = new Set<() => void>();
 /** Appels en cours (attendus par /shutdown, exposés par /health). */
 let inflight = 0;
+/** Fin du dernier appel : /health en tire idleMs, pour qu'une mise à jour attende la fin d'une session, pas seulement d'un appel. */
+let lastCallEnd = Date.now();
 let shuttingDown = false;
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -352,6 +354,7 @@ async function runCall(input: CallRequest): Promise<CallResult> {
     result = errorResult(`${input.tool} : erreur interne du démon (${errText(err)}).`);
   } finally {
     inflight--;
+    lastCallEnd = Date.now();
   }
   // Durées par étape jointes par l'extension (tabs_create…) : pour le journal seulement, jamais pour l'agent.
   const phases = (result as { _phases?: unknown })._phases;
@@ -404,6 +407,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       versionMismatch: extensionVersion !== null && extensionVersion !== VERSION,
       settings,
       inflight,
+      idleMs: inflight ? 0 : Date.now() - lastCallEnd,
       shuttingDown,
     });
   }
