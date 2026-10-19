@@ -174,6 +174,30 @@ chrome.alarms.onAlarm.addListener(() => connect());
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 
+// Code à jour. Chrome garde en cache les scripts du service worker d'une extension non empaquetée tant que sa version
+// ne change pas, même d'un redémarrage du navigateur à l'autre : du code modifié sur le disque (git pull, copie sur
+// un banc d'essai) ne tournerait qu'après un rechargement à la main, et l'ancien code répondrait sans rien dire.
+// L'empreinte des scripts est notée à l'installation (code tout juste lu sur le disque) ; au démarrage du navigateur,
+// celle du disque lui est comparée : différente, l'extension se recharge (une fois par empreinte : pas de boucle).
+async function diskCodeStamp() {
+  const texts = await Promise.all(["background.js", ...SW_SCRIPTS].map((f) =>
+    fetch(chrome.runtime.getURL(f), { cache: "no-store" }).then((r) => r.text())));
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(texts.join("\0")));
+  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+chrome.runtime.onInstalled.addListener(() => {
+  diskCodeStamp().then((codeStamp) => chrome.storage.local.set({ codeStamp })).catch(() => {});
+});
+chrome.runtime.onStartup.addListener(async () => {
+  try {
+    const [{ codeStamp, codeReloadFor }, disk] = await Promise.all([chrome.storage.local.get(["codeStamp", "codeReloadFor"]), diskCodeStamp()]);
+    if (codeStamp === disk) return;
+    if (!codeStamp || codeReloadFor === disk) return chrome.storage.local.set({ codeStamp: disk });
+    await chrome.storage.local.set({ codeReloadFor: disk });
+    chrome.runtime.reload();
+  } catch {}
+});
+
 // Raccourcis (chrome://extensions/shortcuts) : l'arrêt d'urgence marche même panneau fermé.
 chrome.commands.onCommand.addListener((command) => {
   if (command === "stop-all") stopAll().catch(() => {});
