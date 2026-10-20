@@ -127,13 +127,16 @@ async function overlayNotice(tabId) {
   return `⚠ ${what} recouvre la page. ${advice}${where}\n${untrusted(details.join("\n"))}\n\n`;
 }
 
+/** Dernier jeu de routes signalé par onglet (voir apiHint). */
+const apiHintSeen = new Map();
+
 const API_NOISE = /(analytics|tracking|telemetry|metrics|beacon|sentry|googletag|gtag|facebook|hotjar|clarity|doubleclick|adservice)/i;
 
 /**
  * Découverte passive : les appels JSON qui alimentent la page, signalés en tête des
  * lectures pour rejouer (devtools har, site_api) au lieu de scroller. Ne rejette jamais.
  */
-async function apiHint(tabId) {
+async function apiHint(tabId, scope = "") {
   try {
     const entries = [...(networkLogs.get(tabId)?.values() ?? [])];
     if (!entries.length) return "";
@@ -171,6 +174,11 @@ async function apiHint(tabId) {
     }
     const top = [...groups.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 3);
     if (!top.length) return "";
+    // Même jeu de routes que la dernière fois dans cet onglet : déjà signalé, inutile de le répéter à chaque appel.
+    const signature = top.map(([k]) => k).sort().join("|");
+    const seenKey = `${tabId}:${scope}`;
+    if (apiHintSeen.get(seenKey) === signature) return "";
+    apiHintSeen.set(seenKey, signature);
     const lines = top.map(([k, g]) => {
       const where = g.host && g.host !== pageHost ? ` (${g.host})` : "";
       const paged = g.keys.some((x) => /^(page|cursor|offset|limit|per_page|p|o)$/i.test(x)) ? ", paginable" : "";

@@ -54,6 +54,7 @@ import { captchaSolve } from "./captcha.ts";
 import { runOcr } from "./ocr.ts";
 import { mediaDownload, mediaInfo, mediaStatus, purgeOldJobs, validateMediaRequest } from "./media.ts";
 import { readDocument } from "./documents.ts";
+import { formatProfileBrief } from "./site-profiles.ts";
 import {
   WATCH_MAX_ERRORS,
   WATCH_MAX_INTERVAL,
@@ -1114,14 +1115,27 @@ function attachSiteBrief(call: CallRequest, result: CallResult): CallResult {
   if (!hosts.size) return result;
   const api = readSiteApi();
   const blocks: string[] = [];
+  const profiles: string[] = [];
   for (const h of [...hosts].sort().slice(0, 3)) {
     const brief = formatSiteBrief(api, h);
     if (brief) blocks.push(brief);
+    // Profil livré avec ABC (de confiance, hors <site_memory>) : une fois par agent et par hôte toutes les 30 min.
+    const key = `${call.agent}|${h}`;
+    if (Date.now() - (profileServedAt.get(key) ?? 0) > PROFILE_REPEAT_MS) {
+      const profile = formatProfileBrief(h);
+      if (profile) {
+        profiles.push(profile);
+        profileServedAt.set(key, Date.now());
+      }
+    }
   }
-  if (!blocks.length) return result;
-  first.text = `${wrapSiteMemory(blocks.join("\n"))}\n\n${first.text}`;
+  if (!blocks.length && !profiles.length) return result;
+  first.text = `${[blocks.length ? wrapSiteMemory(blocks.join("\n")) : "", ...profiles].filter(Boolean).join("\n\n")}\n\n${first.text}`;
   return result;
 }
+
+const PROFILE_REPEAT_MS = 30 * 60_000;
+const profileServedAt = new Map<string, number>();
 
 // Activité par onglet (compteur de session du démon) : sert la suggestion de
 // mémorisation à la fermeture. host = dernier hôte navigué (navigate/tabs_create).

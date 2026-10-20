@@ -20,7 +20,7 @@ export interface AbcServerOptions {
 
 export function createAbcServer(opts: AbcServerOptions): Server {
   const server = new Server(opts.info, {
-    capabilities: { tools: { listChanged: opts.listChanged } },
+    capabilities: { tools: { listChanged: opts.listChanged }, logging: {} },
     instructions: SERVER_INSTRUCTIONS,
   });
   server.setRequestHandler(ListToolsRequestSchema, async () => {

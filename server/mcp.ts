@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { HOST, PORT, disabledToolNames, getToken, timeoutFor, type CallResult } from "./common.ts";
 import { createAbcServer } from "./mcp-server.ts";
+import { noticeFor } from "./notify.ts";
 
 const SHIM_INFO = { name: "agent-browser-control", version: "0.8.0" };
 /** Attente maximale d'une réponse du démon (ask_human peut durer 615 s). */
@@ -182,9 +183,55 @@ setInterval(async () => {
   lastDisabled = current;
 }, 3000).unref();
 
+/**
+ * Suit GET /events du démon et pousse à l'agent les événements qui le concernent (surveillance déclenchée,
+ * navigateur déconnecté) en notifications MCP : plus besoin de sonder watch en boucle. Se reconnecte seul.
+ */
+function followDaemonEvents(): void {
+  let delay = 2000;
+  const retry = () => {
+    const t = setTimeout(connect, delay);
+    t.unref();
+    delay = Math.min(delay * 2, 30_000);
+  };
+  const connect = () => {
+    const req = request({ host: HOST, port: PORT, path: "/events", method: "GET", headers: { "x-abc-token": token } }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return retry();
+      }
+      delay = 2000;
+      res.setEncoding("utf8");
+      let buf = "";
+      res.on("data", (chunk: string) => {
+        buf += chunk;
+        for (let i = buf.indexOf("\n\n"); i >= 0; i = buf.indexOf("\n\n")) {
+          const block = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const m = /^data: (.*)$/m.exec(block);
+          if (!m) continue;
+          try {
+            const notice = noticeFor(JSON.parse(m[1]) as Record<string, unknown>, agentName());
+            if (notice) server.sendLoggingMessage({ level: notice.level, logger: "agent-browser-control", data: notice.data }).catch(() => {});
+          } catch {
+            // ligne illisible : ignorée
+          }
+        }
+      });
+      res.on("end", retry);
+      res.on("error", retry);
+    });
+    req.on("error", retry);
+    req.on("socket", (s) => s.unref());
+    req.end();
+  };
+  connect();
+}
+
 await ensureDaemon()
   .then(() => {
     daemonChecked = true;
   })
   .catch((err) => console.error(err.message));
 await server.connect(new StdioServerTransport());
+followDaemonEvents();

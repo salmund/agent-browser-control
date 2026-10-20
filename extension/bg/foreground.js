@@ -138,14 +138,38 @@ async function withForeground(tab, fn) {
 
 const MOUSE_ACTIONS = new Set(["left_click", "right_click", "double_click", "triple_click", "left_click_drag", "hover", "scroll"]);
 
-/** Un geste à la souris se fait onglet devant. */
+/** type avec ref / coordinate commence par un clic : même traitement qu'un geste à la souris. */
+const needsMouseGesture = (a) => !!a && (MOUSE_ACTIONS.has(a.action) || (a.action === "type" && (a.ref || a.coordinate)));
+
+async function silentGesturesOn() {
+  const { silentGestures: on = true } = await chrome.storage.local.get("silentGestures");
+  return on !== false;
+}
+
+/**
+ * Ce geste peut-il se faire sans passer l'onglet devant (clic par événements, voir page.js silentClick) ?
+ * Oui si : réglage actif, `silent` non refusé par l'agent, onglet en arrière-plan, « premier plan » et « souris
+ * réelle » inactifs (ce dernier demande un vrai pointeur), geste simple (clic gauche sur une ref, ou type dans un
+ * champ) et élément qui s'y prête. Marque alors args.__silent : computer fait le geste par événements.
+ */
+async function canGoSilent(tab, a) {
+  if (a.silent === false || tab.active || !(await silentGesturesOn()) || (await foregroundTabs())) return false;
+  if ((await chrome.storage.local.get("nativePointer")).nativePointer === true) return false;
+  const kind = a.action === "left_click" && !a.modifiers && !a.coordinate ? "left_click" : a.action === "type" && !a.coordinate ? "type" : null;
+  if (!kind || !a.ref) return false;
+  const target = parseRef(a.ref);
+  const verdict = await inPage(tab.id, "silentCheck", { ref: target.ref, action: kind }, target.frameId).catch(() => null);
+  if (!verdict?.ok) return false;
+  a.__silent = kind;
+  return true;
+}
+
+/** Un geste à la souris se fait onglet devant, sauf s'il peut se faire par événements (canGoSilent). Les steps décident étape par étape. */
 function withFrontForMouse(tool) {
   return async (agent, args) => {
-    // type avec ref / coordinate commence par un clic : même traitement qu'un geste à la souris.
-    const needsMouse = (a) => MOUSE_ACTIONS.has(a.action) || (a.action === "type" && (a.ref || a.coordinate));
-    const clicks = needsMouse(args) || (Array.isArray(args.steps) && args.steps.some((s) => s && needsMouse(s)));
-    if (!clicks) return tool(agent, args);
+    if (Array.isArray(args.steps) || !needsMouseGesture(args)) return tool(agent, args);
     const tab = await assertOwned(agent, args.tabId);
+    if (await canGoSilent(tab, args)) return tool(agent, args);
     return withForeground(tab, () => tool(agent, args));
   };
 }

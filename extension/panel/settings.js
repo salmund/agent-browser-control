@@ -12,6 +12,11 @@ const SWITCHES = [
     off: "Les agents travaillent en arrière-plan. Leur onglet ne passe devant que le temps d'un clic ou d'un défilement.",
   },
   {
+    id: "silent-toggle", key: "silentGestures", fallback: true, hint: "silent-hint",
+    on: "Un clic sur un bouton, un lien ou une case se fait par événements dans la page, sans passer l'onglet de l'agent devant : votre onglet ne bouge pas. Les éléments qui exigent un vrai clic (fichiers, nouvel onglet, listes natives) gardent le passage devant.",
+    off: "Chaque clic passe l'onglet de l'agent devant le temps du geste, puis vous rend le vôtre.",
+  },
+  {
     id: "scripts-toggle", key: "scriptsEnabled", fallback: true, hint: "scripts-hint",
     on: "Un agent peut enchaîner des dizaines d'actions en un seul appel, beaucoup plus vite.",
     off: "Les agents agissent pas à pas et voient chaque page avant d'agir.",

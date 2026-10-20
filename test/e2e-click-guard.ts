@@ -16,6 +16,7 @@
  * l'input réel une fois (clic sonde + scrutation) et ne vérifie les effets
  * physiques que s'il est livré, en le disant explicitement sinon.
  *
+ * Les clics y forcent silent: false (vrai clic) : le test vérifie les gardes et l entrée physique.
  * Lancer avec : node test/e2e-click-guard.ts (extension + démon actifs, Comet ouvert)
  */
 import assert from "node:assert";
@@ -130,7 +131,7 @@ try {
   assert.ok(/"Bouton parti vers le haut" \[ref_\d+\][^\n]*\(hors écran\)/.test(tree), "suffixe (hors écran) sur le fixe sorti par le haut");
 
   console.log("\n4. Clic normal : accepté (garde passante)...");
-  const clickOk = textOf(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refOk } }));
+  const clickOk = textOf(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refOk, silent: false } }));
   assert.ok(clickOk.includes("left_click en"), "clic accepté, pas de faux positif de la garde");
 
   console.log("\n4b. Calibration de l'input physique...");
@@ -140,7 +141,7 @@ try {
     : "input physique NON livré (onglet volé non peint / navigateur occupé) : assertions d'effet ignorées.");
 
   console.log("\n5. Clic sous la ligne de flottaison : scroll auto, accepté...");
-  textOf(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refFold } }));
+  textOf(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refFold, silent: false } }));
   if (inputWorks) {
     assert.ok(await waitClicked(tabId, "btn-fold"), "le clic après scroll a atteint le bouton");
   } else {
@@ -148,7 +149,7 @@ try {
   }
 
   console.log("\n6. Clic fantôme : refusé avec diagnostic...");
-  const ghostErr = textOfError(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refGhost } }));
+  const ghostErr = textOfError(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refGhost, silent: false } }));
   console.log(ghostErr.split("\n").slice(0, 3).join("\n"));
   assert.ok(/hors écran/.test(ghostErr), "diagnostic hors écran");
   if (inputWorks) {
@@ -157,7 +158,7 @@ try {
   }
 
   console.log("\n7. Clic recouvert : refusé, recouvrement nommé...");
-  const coverErr = textOfError(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refCovered } }));
+  const coverErr = textOfError(await client.callTool({ name: "computer", arguments: { tabId, action: "left_click", ref: refCovered, silent: false } }));
   console.log(coverErr.split("\n").slice(0, 3).join("\n"));
   assert.ok(/recouvert/.test(coverErr), "diagnostic de recouvrement");
   assert.ok(/modal-cover|Modale de test/.test(coverErr), "l'élément recouvrant est nommé");

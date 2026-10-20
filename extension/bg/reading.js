@@ -1,16 +1,36 @@
 // Agent Browser Control, service worker : lecture de page et formulaires.
 // Script classique chargé par background.js (importScripts) : portée globale partagée.
 
-async function readPage(agent, { tabId, filter, ref, viewport, diff, labels, include }) {
+/**
+ * Garde les `max` premières lignes porteuses de ref et compte le reste : une grosse page (boîte Gmail : 300 éléments)
+ * ne noie plus le contexte quand l'agent veut seulement s'orienter. Sans `max`, rien n'est coupé.
+ */
+function capItems(tree, max) {
+  const n = Math.floor(Number(max));
+  if (!Number.isFinite(n) || n < 1) return tree;
+  const lines = String(tree).split("\n");
+  let seen = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\[(?:f\d+:)?ref_\d+\]/.test(lines[i])) continue;
+    if (++seen > n) {
+      const rest = lines.slice(i).filter((l) => /\[(?:f\d+:)?ref_\d+\]/.test(l)).length;
+      return `${lines.slice(0, i).join("\n")}\n[${rest} autre(s) élément(s) non listé(s) : maxItems=${n}. Cibler avec find ou target, ` +
+        "restreindre avec viewport=true, ref (sous-arbre) ou filter='interactive', ou relire avec un maxItems plus grand.]";
+    }
+  }
+  return tree;
+}
+
+async function readPage(agent, { tabId, filter, ref, viewport, diff, labels, include, maxItems }) {
   await assertOwned(agent, tabId);
   if (ref) {
     const target = parseRef(ref);
     const tree = await inPage(tabId, "readPage", { filter, ref: target.ref, viewport, diff, labels, include }, target.frameId);
-    return ok(text(untrusted(prefixRefs(tree, target.frameId))));
+    return ok(text(untrusted(capItems(prefixRefs(tree, target.frameId), maxItems))));
   }
   // Une seule passe dans toutes les frames : la page principale lit avec frame=false.
   const noticeP = overlayNotice(tabId); // indépendant de l'arbre : en parallèle (ne rejette jamais).
-  const hintP = apiHint(tabId); // idem : ne rejette jamais.
+  const hintP = apiHint(tabId, "read_page"); // idem : ne rejette jamais.
   const frames = await inAllFrames(tabId, "readPage", { filter, viewport, diff, labels, include, frame: true });
   const main = frames.find((f) => f.frameId === 0)?.value ?? (await inPage(tabId, "readPage", { filter, viewport, diff, labels, include }));
   const parts = [main];
@@ -18,7 +38,7 @@ async function readPage(agent, { tabId, filter, ref, viewport, diff, labels, inc
     if (frameId === 0 || !value) continue;
     parts.push(`\n=== iframe ${frameId} (refs « f${frameId}:… ») ===\n${prefixRefs(value, frameId)}`);
   }
-  let out = parts.join("\n");
+  let out = capItems(parts.join("\n"), maxItems);
   if (out.length > 80_000) out = `${out.slice(0, 80_000)}\n[Tronqué : cibler une ref ou utiliser viewport=true.]`;
   return ok(text((await noticeP) + (await hintP) + untrusted(out)));
 }
@@ -201,6 +221,15 @@ async function replayPaginated(agent, { tabId, urlPattern, cursor, itemsPath, ma
  */
 async function submitByRef(tab, submitRef) {
   const tabId = tab.id;
+  // Bouton qui se prête au clic par événements : l'onglet de l'utilisateur reste devant (voir canGoSilent).
+  const probe = { action: "left_click", ref: submitRef };
+  if (await canGoSilent(tab, probe)) {
+    const quiet = await silentGesture(tabId, "silentClick", submitRef);
+    if (quiet.ok) {
+      await sleepForFrame(tabId, 200);
+      return `Soumis via clic silencieux sur ${submitRef} (onglet resté en arrière-plan).`;
+    }
+  }
   const point = await locateRef(tabId, submitRef).catch(() => null);
   if (point) {
     await showOverlay(tabId, point);
@@ -218,26 +247,47 @@ async function formInput(agent, args) {
   const { tabId, ref, value, fields, submitRef } = args;
   const tab = await assertOwned(agent, tabId);
   await bringToFront(tab);
-  const items = Array.isArray(fields) && fields.length ? fields : (ref !== undefined ? [{ ref, value }] : []);
-  if (!items.length && !submitRef) throw new Error("Fournir 'fields' (liste de {ref, value}) ou 'ref' + 'value'.");
+  const items = Array.isArray(fields) && fields.length ? fields
+    : (ref !== undefined || args.target ? [{ ref, target: args.target, value, format: args.format }] : []);
+  if (!items.length && !submitRef && !args.submitTarget) throw new Error("Fournir 'fields' (liste de {ref, value}) ou 'ref' + 'value'.");
   const since = Date.now();
   const before = await inPage(tabId, "pageDigest").catch(() => null);
 
   const results = [];
+  const notes = [];
   for (const item of items) {
+    // Résolution champ par champ : la page a pu se recomposer après le champ précédent (suggestion choisie, puce créée…).
+    if (!item.ref && item.target) notes.push(await resolveTarget(tabId, item));
     if (!item.ref) continue;
     const target = parseRef(item.ref);
-    const res = prefixRefs(await inPage(tabId, "formInput", { ref: target.ref, value: item.value }, target.frameId), target.frameId)
+    const format = item.format ?? args.format;
+    // html calculé ici (une seule fois) : l'API de l'éditeur (monde principal) comme le repli insertHTML de la page l'utilisent.
+    const html = format && format !== "text" ? richTextToHtml(item.value, format) : undefined;
+    let raw = await inPage(tabId, "formInput", { ref: target.ref, value: item.value, format, html }, target.frameId);
+    // Éditeur riche à API connue (CKEditor 5, Quill) : la page ne peut pas l'atteindre depuis son monde isolé.
+    if (raw && typeof raw === "object" && raw.mainWorld) {
+      const done = await fillRichEditorApi(tabId, raw.selector, html ?? richTextToHtml(item.value, "text"), !!String(item.value ?? "").trim());
+      raw = done
+        ? `${raw.ref} = ${JSON.stringify(String(item.value ?? ""))} (éditeur riche : ${done.kind}, ${done.len} car. lus).`
+        : await inPage(tabId, "formInput", { ref: target.ref, value: item.value, format, html, noApi: true }, target.frameId);
+    }
+    const res = prefixRefs(raw, target.frameId)
       .replace(/^ref_(\d+)/, target.frameId ? `f${target.frameId}:ref_$1` : "ref_$1");
     results.push(res);
   }
 
-  const submitMsg = submitRef ? `\n${await submitByRef(tab, submitRef)}` : "";
+  let submit = submitRef;
+  if (!submit && args.submitTarget) {
+    const holder = { target: args.submitTarget };
+    notes.push(await resolveTarget(tabId, holder));
+    submit = holder.ref;
+  }
+  const submitMsg = submit ? `\n${await submitByRef(tab, submit)}` : "";
 
   await showOverlay(tabId);
   const summaryRefs = items.map((i) => i.ref).join(", ");
-  await recordFrame(tabId, `form_input ${summaryRefs}${submitRef ? ` -> ${submitRef}` : ""}`);
-  const baseRes = ok(text((results.join("\n") + submitMsg).trim()));
+  await recordFrame(tabId, `form_input ${summaryRefs}${submit ? ` -> ${submit}` : ""}`);
+  const baseRes = ok(text(([...notes.filter(Boolean), results.join("\n") + submitMsg].join("\n")).trim()));
   await appendActionEffect(tabId, baseRes, before, since);
   if (args.snapshot || args.then || args.diff) {
     return attachActionSnapshot(agent, tabId, args, baseRes);
@@ -250,7 +300,7 @@ async function getPageText(agent, { tabId, offset }) {
   const from = Number(offset);
   const textP = inPage(tabId, "pageText", Number.isFinite(from) && from > 0 ? { offset: from } : null);
   const noticeP = overlayNotice(tabId); // indépendant du texte : en parallèle (ne rejette jamais).
-  const hintP = apiHint(tabId); // idem : ne rejette jamais.
+  const hintP = apiHint(tabId, "get_page_text"); // idem : ne rejette jamais.
   const { title, url, text: body } = await textP;
   const head = `${await noticeP}${await hintP}Page : ${pageLabel(title)}\nURL : ${url}\n\n${untrusted(body)}`;
   if (!(await hasBigCanvas(tabId))) return ok(text(head));
@@ -312,8 +362,31 @@ function assertUploadablePath(p) {
   if (UPLOAD_DENY.some((re) => re.test(p))) throw new Error(`Fichier sensible (clé, jeton, profil de navigateur) : envoi refusé (${JSON.stringify(p)}).`);
 }
 
+/**
+ * Après un envoi de fichier : attend que les requêtes d'écriture lancées (POST, PUT, PATCH) aient une réponse
+ * (8 s au plus, jamais « réseau calme » : Gmail garde des connexions longues ouvertes), puis dit si le nom du
+ * fichier est visible dans la page (puce de pièce jointe) et si une requête a échoué.
+ */
+async function uploadSettled(tabId, since, paths) {
+  const writing = () => [...(networkLogs.get(tabId)?.values() ?? [])]
+    .filter((r) => r.t >= since && ["POST", "PUT", "PATCH"].includes(r.method) && ["XHR", "Fetch", "Other"].includes(r.type));
+  await sleep(250);
+  await settle(tabId, { since, network: "writes", maxMs: 8000, stepMs: 150 });
+  const names = paths.map((p) => String(p).split(/[\\/]/).pop());
+  const seen = await evaluate(tabId, `(() => { const t = document.body ? document.body.innerText : ""; return ${JSON.stringify(names)}.map((n) => t.includes(n)); })()`).catch(() => null);
+  const failed = writing().filter((r) => (r.status ?? 0) >= 400 || (r.error && r.error !== "canceled"));
+  const parts = [];
+  if (Array.isArray(seen)) {
+    const missing = names.filter((_, i) => !seen[i]);
+    parts.push(missing.length ? `nom absent de la page pour : ${missing.join(", ")} (envoi peut-être encore en cours ou affiché autrement : relire)` : "nom(s) visible(s) dans la page");
+  }
+  if (failed.length) parts.push(`${failed.length} requête(s) d'envoi en échec (dernière : ${failed.at(-1).method} → ${failed.at(-1).error ? String(failed.at(-1).error).slice(0, 40) : failed.at(-1).status})`);
+  return parts.length ? ` Vérifié : ${parts.join(" ; ")}.` : "";
+}
+
 async function fileUpload(agent, { tabId, ref, paths }) {
   await bringToFront(await assertOwned(agent, tabId));
+  const since = Date.now();
   if (!ref) throw new Error("'ref' manquant.");
   if (!Array.isArray(paths) || !paths.length) throw new Error("'paths' doit être une liste de chemins absolus.");
   paths.forEach(assertUploadablePath);
@@ -324,7 +397,7 @@ async function fileUpload(agent, { tabId, ref, paths }) {
   });
   if (Array.isArray(checked?.paths) && checked.paths.length === paths.length) paths = checked.paths;
   // Dans une iframe, on passe par le sélecteur de fichiers (le marquage ci-dessous vise la page principale).
-  if (parseRef(ref).frameId || !(await inPage(tabId, "isFileInput", ref))) return uploadViaFileChooser(tabId, ref, paths);
+  if (parseRef(ref).frameId || !(await inPage(tabId, "isFileInput", ref))) return uploadViaFileChooser(tabId, ref, paths, since);
   const selector = await inPage(tabId, "markRef", ref);
   const { result } = await cdp(tabId, "Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(selector)})` });
   if (!result?.objectId) throw new Error(`Élément ${ref} introuvable.`);
@@ -336,7 +409,7 @@ async function fileUpload(agent, { tabId, ref, paths }) {
     }).catch(() => {});
   }
   await recordFrame(tabId, `file_upload ${ref}`);
-  return ok(text(`${paths.length} fichier(s) chargé(s) dans ${ref}.`));
+  return ok(text(`${paths.length} fichier(s) chargé(s) dans ${ref}.${await uploadSettled(tabId, since, paths)}`));
 }
 
 function waitForCdpEvent(tabId, eventName, timeoutMs) {
@@ -359,7 +432,7 @@ function waitForCdpEvent(tabId, eventName, timeoutMs) {
  * Cas des sites qui créent l'<input type=file> au clic (Gemini, Gmail…) : on intercepte
  * la boîte de dialogue native et on y injecte directement les fichiers.
  */
-async function uploadViaFileChooser(tabId, ref, paths) {
+async function uploadViaFileChooser(tabId, ref, paths, since = Date.now()) {
   await cdp(tabId, "Page.enable");
   await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
   try {
@@ -374,7 +447,7 @@ async function uploadViaFileChooser(tabId, ref, paths) {
     await cdp(tabId, "DOM.setFileInputFiles", { files, backendNodeId });
     await recordFrame(tabId, `file_upload ${ref}`);
     const note = files.length < paths.length ? " (sélection simple : seul le premier a été gardé)" : "";
-    return ok(text(`${files.length} fichier(s) chargé(s) via le sélecteur ouvert par ${ref}${note}.`));
+    return ok(text(`${files.length} fichier(s) chargé(s) via le sélecteur ouvert par ${ref}${note}.${await uploadSettled(tabId, since, files)}`));
   } finally {
     await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   }

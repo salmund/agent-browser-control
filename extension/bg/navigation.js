@@ -97,6 +97,9 @@ function isAuthChallenge(url) {
   }
 }
 
+/** Éléments listés au plus dans l'instantané joint à une réponse (snapshot, read, then). */
+const SNAPSHOT_MAX_ITEMS = 120;
+
 async function getAttachedSnapshot(agent, tabId, { snapshot, then, diff, read } = {}) {
   const wantDiff = diff === true || then === "diff";
   const wantText = read === "text";
@@ -105,7 +108,8 @@ async function getAttachedSnapshot(agent, tabId, { snapshot, then, diff, read } 
     const textRes = await getPageText(agent, { tabId });
     return textRes?.content?.find((c) => c.type === "text")?.text ?? "";
   }
-  const pageRes = await readPage(agent, { tabId, filter, diff: wantDiff });
+  // Instantané joint à une action : aperçu borné (le détail se demande avec read_page ou find), pas la page entière.
+  const pageRes = await readPage(agent, { tabId, filter, diff: wantDiff, maxItems: SNAPSHOT_MAX_ITEMS });
   return pageRes?.content?.find((c) => c.type === "text")?.text ?? "";
 }
 
@@ -191,6 +195,18 @@ async function navigate(agent, { tabId, url, snapshot = false, read, wait, spa }
   const viaSpa = !special && spa !== false && !crashedTabs.has(tabId)
     ? await navigateSpa(tabId, normalizeUrl(url), { force: spa === true }).catch(() => null)
     : null;
+  // Même document, seul le #fragment change (routeurs à hash : AngularJS/Sogo, #!/…) : le navigateur ne recharge rien,
+  // c'est le routeur de la page qui doit suivre. On note l'état avant pour constater ensuite qu'il a bien suivi.
+  let hashOnly = null;
+  if (!viaSpa && !special) {
+    try {
+      const cur = new URL((await chrome.tabs.get(tabId)).url);
+      const tgt = new URL(normalizeUrl(url));
+      if (cur.origin === tgt.origin && cur.pathname + cur.search === tgt.pathname + tgt.search && cur.hash !== tgt.hash && tgt.hash) {
+        hashOnly = { path: tgt.pathname + tgt.search + tgt.hash, before: await inPage(tabId, "pageDigest").catch(() => null) };
+      }
+    } catch {}
+  }
   if (!viaSpa) {
     const loaded = waitForReady(tabId, { until: wait });
     if (url === "back") await chrome.tabs.goBack(tabId);
@@ -201,6 +217,25 @@ async function navigate(agent, { tabId, url, snapshot = false, read, wait, spa }
       if (err instanceof DialogOpenError) throw err;
       note = `\n(${err.message})`;
     });
+  }
+  if (hashOnly?.before) {
+    const t0 = Date.now();
+    await settle(tabId, { since: t0 - 150, network: "none", dom: true, quietMs: 250, maxMs: 1500 });
+    const same = (a, b) => !!a && !!b && a.title === b.title && a.textLen === b.textLen && a.textHash === b.textHash && a.interactive === b.interactive;
+    let after = await inPage(tabId, "pageDigest").catch(() => null);
+    if (same(hashOnly.before, after)) {
+      // Le routeur n'a pas réagi au changement d'adresse : on fait comme un utilisateur, en cliquant le lien du menu.
+      const clicked = await inPage(tabId, "spaLinkClick", { path: hashOnly.path }).catch(() => null);
+      if (clicked?.clicked) {
+        await settle(tabId, { network: "xhr", dom: true, quietMs: 300, maxMs: 2500 });
+        after = await inPage(tabId, "pageDigest").catch(() => null);
+        note += same(hashOnly.before, after)
+          ? `\n⚠ Seul le #fragment de l'adresse a changé et le contenu de la page est identique, même après un clic sur le lien « ${pageLabel(clicked.clicked, 60)} » : le routeur de la page n'a pas suivi ; relire avec read_page.`
+          : `\n(le routeur de la page n'avait pas suivi le changement d'adresse : lien « ${pageLabel(clicked.clicked, 60)} » cliqué, page changée)`;
+      } else {
+        note += "\n⚠ Seul le #fragment de l'adresse a changé et le contenu de la page est identique : le routeur de la page n'a pas suivi (aucun lien visible vers cette adresse). Passer par un clic (find sur le lien du menu).";
+      }
+    }
   }
   const tab = await chrome.tabs.get(tabId);
   await recordFrame(tabId, `navigate ${tab.url}`);

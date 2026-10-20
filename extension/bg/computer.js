@@ -37,7 +37,13 @@ async function runSteps(agent, tab, args) {
       if (!st.action || typeof st.action !== "string") throw new Error(`Étape ${i + 1} : 'action' manquante.`);
       if (st.action === "screenshot") throw new Error(`Étape ${i + 1} : 'screenshot' interdit dans steps (faire une capture séparée).`);
       if (st.steps) throw new Error(`Étape ${i + 1} : steps imbriqués interdits.`);
-      const r = await computerAction(agent, tab, st);
+      // Cible par libellé, résolue au moment de l'étape (la page a pu changer à l'étape précédente).
+      const resolved = typeof st.target === "string" && !STEP_OWN_TARGET.has(st.action) ? await resolveTarget(tabId, st) : "";
+      const run = () => (STEP_TOOLS[st.action] ? STEP_TOOLS[st.action](agent, tab, st) : computerAction(agent, tab, st));
+      // Le premier plan se décide étape par étape : un clic éligible se fait par événements, sans toucher à l'onglet de l'utilisateur.
+      const needsFront = !STEP_TOOLS[st.action] && needsMouseGesture(st) && !(await canGoSilent(tab, st));
+      const r = needsFront ? await withForeground(tab, run) : await run();
+      if (resolved) r.content.unshift(text(resolved));
       const msg = r.content.map((c) => c.text ?? "").join(" ").replace(/\s+/g, " ").slice(0, 300);
       const after = await digestOf();
       lines.push(`Étape ${i + 1}/${steps.length} [${tag}${st.ref ? ` ${st.ref}` : ""}] : ${msg} Δ ${formatDelta(before, after)}`);
@@ -52,6 +58,77 @@ async function runSteps(agent, tab, args) {
     return attachActionSnapshot(agent, tabId, args, res);
   }
   return res;
+}
+
+/**
+ * Actions d'étape qui ne sont pas des gestes `computer` : remplir un champ, naviguer, envoyer un fichier.
+ * Un parcours « ouvrir, remplir, joindre, envoyer » tient ainsi en un seul appel. Mêmes champs que l'outil
+ * correspondant (form_input, navigate, file_upload), plus `target` à la place de `ref`.
+ */
+const STEP_TOOLS = {
+  fill: (agent, tab, st) => formInput(agent, { tabId: st.tabId, ref: st.ref, target: st.target, value: st.value, format: st.format }),
+  navigate: (agent, tab, st) => navigate(agent, { tabId: st.tabId, url: st.url, wait: st.wait, spa: st.spa }),
+  upload: async (agent, tab, st) => {
+    const holder = { ref: st.ref, target: st.target };
+    const note = await resolveTarget(st.tabId, holder);
+    return withNotes(await fileUpload(agent, { tabId: st.tabId, ref: holder.ref, paths: st.paths }), [note]);
+  },
+};
+/** Étapes qui résolvent leur cible elles-mêmes (formInput, upload) : pas de double résolution. */
+const STEP_OWN_TARGET = new Set(["fill", "upload"]);
+
+const SILENT_NOTE = "par événements, onglet resté en arrière-plan : silent: false pour un vrai clic";
+
+/**
+ * Clic par la suite d'événements d'un vrai clic gauche, exécuté dans le monde de la page (CDP Runtime.evaluate avec
+ * userGesture) : la page reçoit une activation utilisateur, donc window.open, le presse-papiers ou le plein écran
+ * fonctionnent comme après un vrai clic. Sérialisée avec toString() : ne rien y référencer hors d'elle-même.
+ */
+function silentClickInPage(selector) {
+  const el = document.querySelector(selector);
+  if (!el) return { ok: false, reason: "élément introuvable dans la page (shadow DOM ?)" };
+  el.scrollIntoView({ block: "center", behavior: "instant" });
+  const r = el.getBoundingClientRect();
+  const x = Math.round(r.left + r.width / 2);
+  const y = Math.round(r.top + r.height / 2);
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, screenX: x, screenY: y, button: 0 };
+  const pointer = { pointerId: 1, pointerType: "mouse", isPrimary: true };
+  const fire = (Ctor, type, extra) => el.dispatchEvent(new Ctor(type, { ...base, ...extra }));
+  fire(PointerEvent, "pointerover", pointer);
+  fire(MouseEvent, "mouseover", {});
+  fire(PointerEvent, "pointermove", pointer);
+  fire(MouseEvent, "mousemove", {});
+  fire(PointerEvent, "pointerdown", { ...pointer, buttons: 1 });
+  if (fire(MouseEvent, "mousedown", { buttons: 1 })) {
+    try { el.focus({ preventScroll: true }); } catch {}
+  }
+  fire(PointerEvent, "pointerup", pointer);
+  fire(MouseEvent, "mouseup", {});
+  el.click();
+  return { ok: true };
+}
+
+/** Geste silencieux dans la page (silentClick, silentFocus) ; jamais d'exception : { ok:false, reason } pour retomber sur le vrai geste. */
+async function silentGesture(tabId, fn, ref) {
+  const target = parseRef(ref);
+  try {
+    if (fn === "silentClick" && !target.frameId) {
+      const selector = await inPage(tabId, "markRef", target.ref);
+      try {
+        const res = await cdp(tabId, "Runtime.evaluate", {
+          expression: `(${silentClickInPage.toString()})(${JSON.stringify(selector)})`,
+          userGesture: true,
+          returnByValue: true,
+        });
+        return res.result?.value ?? { ok: false, reason: res.exceptionDetails?.text ?? "pas de réponse de la page" };
+      } finally {
+        await cdp(tabId, "Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(selector)})?.removeAttribute("data-abc-target")` }).catch(() => {});
+      }
+    }
+    return (await inPage(tabId, fn, { ref: target.ref }, target.frameId)) ?? { ok: false, reason: "pas de réponse de la page" };
+  } catch (err) {
+    return { ok: false, reason: String(err?.message ?? err).slice(0, 80) };
+  }
 }
 
 function formatDigest(d) {
@@ -182,12 +259,30 @@ async function appendActionEffect(tabId, res, before, since = Date.now() - 2000)
   } catch {}
   // Requêtes lancées par l'action et encore sans réponse : on leur laisse un instant (800 ms au plus),
   // pour signaler un échec (erreur 500 d'un « Ajouter au panier ») plutôt qu'un « inchangé » trompeur.
-  const pending = () => [...(networkLogs.get(tabId)?.values() ?? [])]
-    .some((r) => r.t >= since && ["XHR", "Fetch"].includes(r.type) && r.status == null && !r.error);
-  for (let waited = 0; waited < 800 && pending(); waited += 100) await sleep(100);
-  const after = await inPage(tabId, "pageDigest").catch(() => null);
-  const delta = formatDelta(before, after);
-  first.text += `\nEffet : ${delta}${delta.endsWith(".") ? "" : "."}${sideEffects(tabId, since)}`;
+  await settle(tabId, { since, network: "xhr", maxMs: 800 });
+  let after = await inPage(tabId, "pageDigest").catch(() => null);
+  let delta = formatDelta(before, after);
+  // « inchangé » est le constat qui coûte le plus cher quand il est faux : les applis à routeur (AngularJS, Sogo,
+  // webmails) répondent après la première lecture. On resonde le digest (700 ms au plus, sorti dès qu'il bouge),
+  // seulement dans ce cas : un vrai « sans effet » (clic de focus) ne coûte que ce délai.
+  if (delta === "inchangé" && !sideEffects(tabId, since)) {
+    let late = "inchangé";
+    const s = await settle(tabId, {
+      since, network: "none", maxMs: 700,
+      until: async () => {
+        const again = await inPage(tabId, "pageDigest").catch(() => null);
+        late = formatDelta(before, again);
+        if (late !== "inchangé") after = again;
+        return late !== "inchangé";
+      },
+    });
+    if (s.reason === "until") delta = `${late} (constaté après ${120 + s.waited} ms : la page a réagi avec retard)`;
+  }
+  // Clic silencieux sans effet : certains éléments n'écoutent que les gestes de confiance, on dit comment insister.
+  const quietHint = delta === "inchangé" && first.text.includes(SILENT_NOTE)
+    ? "\nSi le clic devait agir : relancer avec silent: false (vrai clic, onglet devant)."
+    : "";
+  first.text += `\nEffet : ${delta}${delta.endsWith(".") || delta.endsWith(")") ? "" : "."}${sideEffects(tabId, since)}${quietHint}`;
   return res;
 }
 
@@ -225,10 +320,13 @@ async function computerGesture(agent, tab, args) {
       await showOverlay(tabId, point);
       const button = action === "right_click" ? "right" : "left";
       const count = { double_click: 2, triple_click: 3 }[action] ?? 1;
-      await click(tabId, point, button, count, modifiers, args.ref);
+      const quiet = args.__silent === "left_click" ? await silentGesture(tabId, "silentClick", args.ref) : null;
+      if (!quiet?.ok) await withForeground(tab, () => click(tabId, point, button, count, modifiers, args.ref));
       await sleepForFrame(tabId, 150);
       await recordFrame(tabId, action, point);
-      res = ok(text(`${action} en (${point.x}, ${point.y}).${healNote(point)}${pointerNote(tabId)}`));
+      res = ok(text(quiet?.ok
+        ? `${action} silencieux sur ${args.ref} (${SILENT_NOTE}).`
+        : `${action} en (${point.x}, ${point.y}).${healNote(point)}${pointerNote(tabId)}${quiet ? ` (clic silencieux impossible : ${quiet.reason})` : ""}`));
       break;
     }
 
@@ -287,7 +385,8 @@ async function computerGesture(agent, tab, args) {
         heal = healNote(point);
         await assertHit(tabId, args.ref, point);
         await showOverlay(tabId, point);
-        await click(tabId, point, "left", 1, 0, args.ref);
+        const quiet = args.__silent === "type" ? await silentGesture(tabId, "silentFocus", args.ref) : null;
+        if (!quiet?.ok) await withForeground(tab, () => click(tabId, point, "left", 1, 0, args.ref));
       } else {
         await showOverlay(tabId);
       }

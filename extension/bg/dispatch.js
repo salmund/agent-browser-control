@@ -50,6 +50,9 @@ const TOOLS = {
 
 let callSeq = 0;
 
+/** Outils qui acceptent `target` (libellé) à la place de `ref`. form_input et steps le résolvent champ par champ. */
+const TARGET_TOOLS = new Set(["computer", "file_upload"]);
+
 /**
  * Exécute un outil pour un agent : contrôles (STOP, pause), ligne de journal, puis l'outil lui-même,
  * en course avec abort() (STOP, pause de l'agent, annulation par le démon). Ne rejette jamais.
@@ -98,7 +101,15 @@ async function runTool(agent, tool, rawArgs, { daemonId, parentRun } = {}) {
     };
   });
   runningCalls.set(key, call);
-  const work = Promise.resolve().then(() => fn(agent, args));
+  // `target` (libellé) à la place d'une ref : résolu ici, après contrôle de propriété de l'onglet.
+  const work = Promise.resolve().then(async () => {
+    let note = "";
+    if (TARGET_TOOLS.has(tool) && typeof args.target === "string" && typeof args.tabId === "number" && !Array.isArray(args.steps)) {
+      await assertOwned(agent, args.tabId);
+      note = await resolveTarget(args.tabId, args);
+    }
+    return withNotes(await fn(agent, args), [note]);
+  });
   work.catch(() => {}).finally(() => {
     call.settled = true;
     if (call.halted) {

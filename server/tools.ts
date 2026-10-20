@@ -31,10 +31,16 @@ const snapshot = { type: "boolean", description: "Renvoie l'arbre interactif dan
 const diff = { type: "boolean", description: "Seulement les changements (+/-) depuis la lecture précédente." } as const;
 const then = { type: "string", enum: ["read", "diff"], description: "Enchaîne : arbre interactif ou changements." } as const;
 const ref = { type: "string", description: "Ref d'élément (read_page / find), ex. 'ref_12', 'f7:ref_3' en iframe." } as const;
+const target = {
+  type: "string",
+  description: "Libellé de l'élément visé (« bouton Envoyer », « champ Objet »), à la place de ref : ABC fait le find en interne et agit sur le " +
+    "meilleur candidat ; si plusieurs sont proches, rien n'est fait et les candidats sont listés avec leur ref.",
+} as const;
 const point = { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 } as const;
 const box = { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "[x0, y0, x1, y1] en pixels CSS." } as const;
 const extract = { type: ["string", "object"], description: "text (défaut), html, aria ou {attrs: [...]}." } as const;
 const fieldValue = { type: ["string", "number", "boolean"] } as const;
+const fieldFormat = { type: "string", enum: ["text", "html", "markdown"] } as const;
 
 /** Outils exposés aux agents. L'extension implémente chacun d'eux sous le même nom. */
 export const TOOLS: Tool[] = [
@@ -141,6 +147,7 @@ export const TOOLS: Tool[] = [
           description: "left_click_drag : tracé [[x, y], …] d'un seul geste (dessin, signature), au lieu de start_coordinate.",
         },
         ref,
+        target,
         text: {
           type: "string",
           description: "type : texte à saisir (même long). key : touches séparées par des espaces, combinaisons avec + (ex. 'ctrl+a Backspace').",
@@ -152,6 +159,11 @@ export const TOOLS: Tool[] = [
         scale: { type: "number", minimum: 0.2, maximum: 1, description: "screenshot : réduction (0,5 suffit souvent : une capture coûte cher)." },
         region: { ...box, description: "screenshot : zoom net sur [x0, y0, x1, y1]." },
         refs: { type: "boolean", description: "screenshot : numérote les éléments cliquables (30 au plus)." },
+        silent: {
+          type: "boolean",
+          description: "false impose un vrai clic (onglet devant). Par défaut, un clic gauche ou un type sur une ref d'un onglet en arrière-plan se fait par " +
+            "événements dans la page, sans voler le focus de l'utilisateur ; les éléments qui exigent un vrai clic (fichier, nouvel onglet, liste native) gardent le vrai clic.",
+        },
         human: {
           type: "boolean",
           description: "Si l'utilisateur a activé « Souris réelle » : true impose le vrai pointeur pour ce geste, false l'écarte. " +
@@ -161,7 +173,12 @@ export const TOOLS: Tool[] = [
         diff,
         then,
         read,
-        steps: { type: "array", items: { type: "object" }, description: "Étapes {action, …mêmes champs} en séquence, à la place d'action ; snapshot / then / diff après la dernière." },
+        steps: {
+          type: "array",
+          items: { type: "object" },
+          description: "Étapes {action, …mêmes champs} en séquence, à la place d'action ; snapshot / then / diff après la dernière. " +
+            "Actions d'étape en plus : fill {ref|target, value, format?}, navigate {url}, upload {ref|target, paths}. Chaque étape accepte target.",
+        },
       },
       required: ["tabId"],
     },
@@ -186,6 +203,7 @@ export const TOOLS: Tool[] = [
         diff,
         labels: { type: "boolean", description: "Inclure les éléments non interactifs à aria-label." },
         include: { type: "string", description: "Sélecteur CSS d'éléments à forcer dans l'arbre." },
+        maxItems: { type: "number", description: "Au plus N éléments listés, le reste est compté (grosses pages : s'orienter sans tout lire). Les instantanés joints aux actions sont bornés à 120." },
       },
       required: ["tabId"],
     },
@@ -293,21 +311,25 @@ export const TOOLS: Tool[] = [
   {
     name: "form_input",
     description:
-      "Remplit un champ par ref : texte, select (valeur ou libellé), checkbox / radio (true / false), éditeur riche. " +
-      "fields remplit plusieurs champs et submitRef valide, en un appel. Champ réfractaire : échec net, passer par computer. " +
-      "La réponse décrit l'effet constaté.",
+      "Remplit un champ par ref : texte, select (valeur ou libellé), checkbox / radio (true / false), éditeur riche " +
+      "(CKEditor 5 et Quill par leur API ; format text, html ou markdown), champ à suggestions ou à puces (destinataire : " +
+      "tape l'adresse, choisit la suggestion et le dit). fields remplit plusieurs champs et submitRef valide, en un appel. " +
+      "Champ réfractaire : échec net, passer par computer. La réponse décrit l'effet constaté.",
     inputSchema: {
       type: "object",
       properties: {
         tabId,
         ref: { type: "string", description: "Champ unique (sans fields)." },
+        target: { ...target, description: "Champ unique visé par son libellé, à la place de ref." },
         value: { ...fieldValue, description: "Valeur du champ unique." },
+        format: { ...fieldFormat, description: "Éditeur riche : text (défaut : ligne vide = paragraphe), html ou markdown (listes - et 1., **gras**)." },
         fields: {
           type: "array",
-          items: { type: "object", properties: { ref: { type: "string" }, value: fieldValue }, required: ["ref", "value"] },
+          items: { type: "object", properties: { ref: { type: "string" }, target: { type: "string" }, value: fieldValue, format: fieldFormat }, required: ["value"] },
           description: "[{ref, value}, …].",
         },
         submitRef: { type: "string", description: "Bouton à cliquer après remplissage." },
+        submitTarget: { type: "string", description: "Libellé du bouton à cliquer après remplissage, à la place de submitRef." },
         snapshot,
         diff,
         then,
@@ -455,9 +477,10 @@ export const TOOLS: Tool[] = [
       properties: {
         tabId,
         ref: { type: "string", description: "Input ou bouton (ref)." },
+        target: { ...target, description: "Libellé de l'input ou du bouton (« Joindre un fichier »), à la place de ref." },
         paths: { type: "array", items: { type: "string" }, description: "Chemins absolus." },
       },
-      required: ["tabId", "ref", "paths"],
+      required: ["tabId", "paths"],
     },
   },
   {

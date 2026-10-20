@@ -256,12 +256,12 @@
       if (healed) return healed;
       throw new Error(
         `Élément ${ref} : le contenu autour de « ${prints.get(ref)?.name} » a changé depuis la lecture (liste recyclée ?) ; ` +
-        "action refusée par prudence, relancer read_page ou find.",
+        `action refusée par prudence. ${candidatesHint(ref)}`,
       );
     }
     const healed = healRef(ref);
     if (healed) return healed;
-    throw new Error(`Élément ${ref} introuvable : relancer read_page.`);
+    throw new Error(`Élément ${ref} introuvable (retiré de la page). ${candidatesHint(ref)}`);
   }
 
   /**
@@ -303,6 +303,27 @@
       count++;
     }
     return count === 1 ? adoptRef(ref, found) : null;
+  }
+
+  /**
+   * Candidats actuels d'une ref périmée (même balise, rôle et nom, visibles) avec leur ref toute neuve :
+   * l'agent confirme le bon et réessaie sans relire la page. Ne devine jamais à sa place (nom destructif).
+   */
+  function candidatesHint(ref) {
+    const fp = prints.get(ref);
+    if (!fp?.name) return "Relancer read_page ou find.";
+    const found = [];
+    try {
+      for (const c of deepQueryAll(CSS.escape(fp.tag.toLowerCase()))) {
+        if (c.closest("#abc-overlay") || (roleOf(c) ?? "") !== fp.role || nameOf(c, fp.role) !== fp.name) continue;
+        if (!isVisible(c) || hiddenByAncestor(c)) continue;
+        found.push(c);
+        if (found.length >= 3) break;
+      }
+    } catch {}
+    if (!found.length) return "Aucun élément équivalent visible : relancer read_page ou find.";
+    const list = found.map((c) => `${refFor(c)}${c.disabled ? " (désactivé)" : ""}`).join(", ");
+    return `Éléments actuels de même nom (${found.length === 1 ? "un seul" : found.length}) : ${list} ; vérifier que c'est le bon, puis réessayer avec cette ref.`;
   }
 
   function adoptRef(ref, el) {
@@ -1041,8 +1062,13 @@
       if (!removed.length && !added.length && !changed.length) {
         return frame ? null : `${header}\n\nAucun changement depuis la dernière lecture.`;
       }
+      // Une fenêtre modale qui s'ouvre (ou se ferme) fait « retirer » ou « ajouter » tout le fond d'un coup :
+      // au-delà de MAX_DIFF lignes, on garde les premières et on compte le reste (économie de contexte).
+      const MAX_DIFF = 25;
+      const cap = (list, what) => list.length <= MAX_DIFF ? list
+        : [...list.slice(0, MAX_DIFF), `… ${list.length - MAX_DIFF} autre(s) ${what} non listé(s) (fenêtre modale ou page qui se recompose ? relire avec read_page filter="interactive").`];
       return `${header}\n\nChangements depuis la dernière lecture (${added.length} ajout(s), ${removed.length} retrait(s), ${changed.length} modification(s)) :\n` +
-        [...removed, ...changed, ...added].join("\n") + footer;
+        [...cap(removed, "retrait(s)"), ...cap(changed, "modification(s)"), ...cap(added, "ajout(s)")].join("\n") + footer;
     }
     const note = diff ? "\n[Première lecture : les suivantes avec diff=true ne montreront que les changements.]" : "";
     let imagesBlock = "";
@@ -2323,19 +2349,32 @@
   async function fillAutocomplete(el, ref, value) {
     const before = new Set(visibleListboxes());
     const msg = await setNativeValue(el, ref, value, { blur: false });
-    const box = await waitUntil(() => listboxFor(el, before), 1200);
-    if (!box) return msg;
-    const options = deepQueryAll(OPTION_SEL, box).filter((o) => isVisible(o));
-    const want = fold(String(value ?? "")).replace(/\s+/g, " ").trim();
-    const exact = options.find((o) => fold(optionLabel(o)).replace(/\s+/g, " ").trim() === want);
     const hint = `${el.type} ${el.name} ${el.getAttribute("aria-label") || ""} ${el.placeholder || ""}`;
-    const isSearch = el.type === "search" || /search|recherch|buscar|suche|cerca/i.test(hint) || !!el.closest("[role=search], form[role=search], search");
-    if (exact && !isSearch) {
-      pressOn(exact);
-      await tick(120);
-      return `${ref} = ${q(optionLabel(exact))} (suggestion choisie dans la liste).`;
+    // Champ de destinataires / étiquettes (puces) : une adresse saisie, ou un libellé qui le dit.
+    const chips = /@/.test(String(value ?? "")) || /chip|destinataire|recipient|assign|tag|member|participant|invit/i.test(`${hint} ${el.className || ""}`);
+    const box = await waitUntil(() => listboxFor(el, before), 1200);
+    if (!box) {
+      if (!chips) return msg;
+      pressKey(el, "Enter");
+      await tick(150);
+      return `${msg} (champ à puces sans liste de suggestions : Entrée envoyée pour valider ; vérifier la puce avec read_page.)`;
     }
-    return `${msg} (liste de suggestions ouverte : ${options.length} option(s)${exact ? ", dont une identique : la choisir avec computer si nécessaire" : ""} ; find pour en choisir une.)`;
+    const options = deepQueryAll(OPTION_SEL, box).filter((o) => isVisible(o));
+    const norm = (t) => fold(t).replace(/\s+/g, " ").trim();
+    const want = norm(String(value ?? ""));
+    let pick = options.find((o) => norm(optionLabel(o)) === want);
+    // Une seule suggestion contient la saisie (« Neva Aygun <neva.aygun@univ-rouen.fr> » pour l'adresse tapée) : c'est elle.
+    if (!pick && want && chips) {
+      const part = options.filter((o) => norm(optionLabel(o)).includes(want));
+      if (part.length === 1) pick = part[0];
+    }
+    const isSearch = el.type === "search" || /search|recherch|buscar|suche|cerca/i.test(hint) || !!el.closest("[role=search], form[role=search], search");
+    if (pick && !isSearch) {
+      pressOn(pick);
+      await tick(150);
+      return `${ref} = ${q(optionLabel(pick))} (suggestion choisie dans la liste${chips ? ", puce créée" : ""}).`;
+    }
+    return `${msg} (liste de suggestions ouverte : ${options.length} option(s)${pick ? ", dont une identique : la choisir avec computer si nécessaire" : ""} ; find pour en choisir une.)`;
   }
 
   /**
@@ -2344,7 +2383,7 @@
    * champs natifs (input, textarea, select), les éditeurs riches, les cases ARIA et les listes
    * personnalisées (role=combobox, aria-haspopup=listbox) ; sinon erreur nette vers computer.
    */
-  async function formInput({ ref, value }) {
+  async function formInput({ ref, value, html, noApi }) {
     let el = elementFor(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     if (el.tagName === "LABEL" && el.control) el = el.control;
@@ -2359,7 +2398,7 @@
       if (t === "hidden") throw new Error(`${ref} est un champ caché : la page le remplit elle-même.`);
       const popup = el.getAttribute("aria-haspopup");
       if (role === "combobox" && el.readOnly) return pickCustomOption(el, ref, value);
-      if (role === "combobox" && (el.getAttribute("aria-autocomplete") === "list" || popup === "listbox" || popup === "true")) {
+      if (role === "combobox" && (el.getAttribute("aria-autocomplete") === "list" || popup === "listbox" || popup === "true" || popup === "menu")) {
         return fillAutocomplete(el, ref, value);
       }
       return setNativeValue(el, ref, value);
@@ -2367,7 +2406,10 @@
     if (tag === "TEXTAREA") return setNativeValue(el, ref, value);
     if (el.isContentEditable) {
       const wanted = value === null || value === undefined ? "" : String(value);
-      const strategy = await fillEditable(el, wanted);
+      // CKEditor 5 / Quill : leur API (monde principal) est la seule voie propre pour du texte multiligne.
+      const kind = noApi ? null : richEditorKind(el);
+      if (kind) return { mainWorld: kind, ref, selector: markRef(ref) };
+      const strategy = await fillEditable(el, wanted, html);
       return `${ref} = ${q(wanted)} (éditeur riche : ${strategy}).`;
     }
     const popup = el.getAttribute("aria-haspopup");
@@ -2401,7 +2443,18 @@
    * interne divergerait). Vérifié après ~80 ms sur le texte normalisé (innerText) : échec net avec
    * redirection vers computer, jamais de remplissage silencieux faux.
    */
-  async function fillEditable(el, wanted) {
+  /** Éditeurs riches dont l'API est atteignable depuis le monde principal (voir bg/rich-editor.js). */
+  function richEditorKind(el) {
+    let root = el;
+    while (root.parentElement && root.parentElement.isContentEditable) root = root.parentElement;
+    if (root.classList.contains("ck-editor__editable") || root.classList.contains("ck-content")) return "ckeditor5";
+    if (root.classList.contains("ql-editor")) return "quill";
+    if (root.classList.contains("ProseMirror")) return "tiptap";
+    if (root.hasAttribute("data-lexical-editor")) return "lexical";
+    return null;
+  }
+
+  async function fillEditable(el, wanted, html) {
     let root = el;
     while (root.parentElement && root.parentElement.isContentEditable) root = root.parentElement;
     if (root.closest(".cm-content, .cm-editor, .monaco-editor, .ace_editor")) {
@@ -2426,6 +2479,17 @@
         if (ok()) return "effacé (textContent)";
       }
       throw new Error("Éditeur riche réfractaire : contenu non effacé, effacer avec computer (Ctrl+A puis Suppr).");
+    }
+    if (html !== undefined) {
+      // format html / markdown : insertHTML, vérifié sur le texte du HTML (pas sur les balises).
+      let probe = "";
+      try { probe = normText(new DOMParser().parseFromString(html, "text/html").body.textContent).slice(0, 200); } catch {}
+      sel.selectAllChildren(root);
+      let done = false;
+      try { done = document.execCommand("insertHTML", false, html); } catch { done = false; }
+      await settle();
+      if (done && (!probe || current().includes(probe))) return "insertHTML";
+      if (known) throw new Error("Éditeur riche contrôlé (ProseMirror, Lexical, Slate, Quill ou Draft) : insertHTML refusé, écrire avec computer (clic + type).");
     }
     sel.selectAllChildren(root);
     let native = false;
@@ -2548,6 +2612,86 @@
     el.removeAttribute("data-abc-js");
     const role = roleOf(el) ?? "élément";
     return describe(el, role);
+  }
+
+  // --- Gestes silencieux : agir sans passer l'onglet devant -----------------------------------
+  // Un onglet masqué ne dessine rien et Chrome y laisse les vrais clics sans réponse (~5 s) : ABC passait donc
+  // l'onglet devant le temps du geste. Pour les éléments où un clic par événements est fidèle à un vrai clic
+  // (boutons, liens du même onglet, cases, éléments ARIA), on envoie la même suite d'événements que la souris
+  // (pointeur, souris, focus, clic) sans rien changer à l'onglet actif de l'utilisateur.
+  // Refusés (vrai clic, onglet devant) : champs fichier et liens vers un nouvel onglet ou un téléchargement
+  // (il faut une activation utilisateur), listes natives, canvas, vidéo, éléments déplaçables, iframes.
+
+  const TEXT_INPUT_TYPES = new Set(["text", "search", "email", "tel", "url", "number", "password"]);
+
+  /** Raison pour laquelle l'élément ne se prête pas au geste silencieux, null s'il s'y prête. */
+  function silentRefusal(el, action) {
+    if (!el.isConnected) return "élément détaché de la page";
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return "élément désactivé";
+    const tag = el.tagName;
+    const editable = tag === "TEXTAREA" || (tag === "INPUT" && TEXT_INPUT_TYPES.has(el.type)) || el.isContentEditable;
+    if (action === "type") return editable ? null : "pas un champ de saisie";
+    if (tag === "INPUT" && el.type === "file") return "champ fichier (activation utilisateur requise)";
+    const link = el.closest("a[href]");
+    if (link && (/^_(blank|new)$/i.test(link.target || "") || link.hasAttribute("download"))) return "lien vers un nouvel onglet ou un téléchargement";
+    if (["SELECT", "CANVAS", "VIDEO", "AUDIO", "IFRAME", "OBJECT", "EMBED"].includes(tag)) return "contrôle natif ou zone dessinée";
+    if (el.draggable || el.closest("[draggable=true]")) return "élément déplaçable";
+    return null;
+  }
+
+  /** Le geste `action` ("left_click" ou "type") sur cette ref peut-il se faire sans onglet devant ? */
+  function silentCheck({ ref, action }) {
+    const refusal = silentRefusal(elementFor(ref), action);
+    return refusal ? { ok: false, reason: refusal } : { ok: true };
+  }
+
+  /** Clic par la suite d'événements d'un vrai clic gauche, au centre de l'élément. */
+  function silentClick({ ref }) {
+    const el = elementFor(ref);
+    const refusal = silentRefusal(el, "left_click");
+    if (refusal) return { ok: false, reason: refusal };
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    const x = Math.round(r.left + r.width / 2);
+    const y = Math.round(r.top + r.height / 2);
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, screenX: x, screenY: y, button: 0 };
+    const pointer = { pointerId: 1, pointerType: "mouse", isPrimary: true };
+    const fire = (Ctor, type, extra = {}) => el.dispatchEvent(new Ctor(type, { ...base, ...extra }));
+    fire(PointerEvent, "pointerover", pointer);
+    fire(MouseEvent, "mouseover");
+    fire(PointerEvent, "pointermove", pointer);
+    fire(MouseEvent, "mousemove");
+    fire(PointerEvent, "pointerdown", { ...pointer, buttons: 1 });
+    const focusable = fire(MouseEvent, "mousedown", { buttons: 1 });
+    if (focusable) {
+      try { el.focus({ preventScroll: true }); } catch {}
+    }
+    fire(PointerEvent, "pointerup", pointer);
+    fire(MouseEvent, "mouseup");
+    el.click();
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+
+  /** Donne le focus à un champ de saisie, curseur à la fin, sans clic (avant un `type`). */
+  function silentFocus({ ref }) {
+    const el = elementFor(ref);
+    const refusal = silentRefusal(el, "type");
+    if (refusal) return { ok: false, reason: refusal };
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    el.focus({ preventScroll: true });
+    try {
+      if (el.isContentEditable) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else if (typeof el.setSelectionRange === "function" && typeof el.value === "string" && !["number", "email"].includes(el.type)) {
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    } catch {}
+    return document.activeElement === el || el.contains(document.activeElement) ? { ok: true } : { ok: false, reason: "le champ n'a pas pris le focus" };
   }
 
   // --- Retour visuel : bordure lumineuse + impulsion au point d'action ---------------
@@ -3263,7 +3407,7 @@
 
   const api = {
     readPage, locate, hitTest, pageText, find, scrollExtract, canPaint, query, tables, pageDigest, fetchJson, formInput,
-    hoverEvents, fillSecret, hasLiveSecret, listImages, usableImage, markRef, refForKey, isFileInput, overlay, hideOverlay,
+    hoverEvents, silentCheck, silentClick, silentFocus, fillSecret, hasLiveSecret, listImages, usableImage, markRef, refForKey, isFileInput, overlay, hideOverlay,
     needsRender, imageData, blockingOverlay, dismissConsent, gestureStart, gestureEnd, linkHref, clickRef, spaLinkClick,
     refMarks, showRefMarks, hideRefMarks, startRecord, stopRecord,
   };
