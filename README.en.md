@@ -72,10 +72,20 @@ npm install
 **2. Load the extension**: open `chrome://extensions`, turn on *Developer mode*, click *Load unpacked* and pick the
 `extension/` folder.
 
-> Since Chrome 155, a browser whose enterprise policy restricts an extension's sites (Comet does) refuses it the
-> debugger: "Host access is restricted by policy.". ABC then replays gestures and reads through the page (`/health`:
-> `debuggerBlocked`), less reliably. To get the debugger back, launch the browser with
-> `--disable-features=ExtensionDebuggerStrictPolicyRestrictions` (accepted until Chrome 160).
+> **Comet (and any browser that blocks sites for extensions)**: since Chrome 155, an extension with blocked sites
+> loses the debugger ("Host access is restricted by policy."). Comet hard-codes a block on Perplexity's sites for
+> every extension. ABC then replays gestures and reads through the page (`/health`: `debuggerBlocked`), without
+> network or console. Lasting fix: a policy that blocks nothing for ABC (replace `<id>` with the extension ID shown
+> in `chrome://extensions`), in an administrator PowerShell, then restart Comet:
+>
+> ```powershell
+> New-Item 'HKCU:\Software\Policies\Perplexity\Comet' -Force | Out-Null
+> New-ItemProperty 'HKCU:\Software\Policies\Perplexity\Comet' -Name ExtensionSettings -PropertyType String -Force `
+>   -Value '{"<id>":{"runtime_blocked_hosts":[],"runtime_allowed_hosts":[]}}'
+> ```
+>
+> Other browsers: same policy under their own key (Chrome: `Google\Chrome`). Stopgap until Chrome 160: launch the
+> browser with `--disable-features=ExtensionDebuggerStrictPolicyRestrictions`.
 
 **3. Connect an agent**, with the same MCP configuration (stdio) for all of them:
 

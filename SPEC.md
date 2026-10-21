@@ -41,7 +41,7 @@ Le démon n'accepte que l'en-tête `Host` `127.0.0.1:<port>` ou `localhost:<port
 
 | Route | Jeton | Rôle |
 |---|---|---|
-| `GET /health` | non | état : version, extension connectée et sa version, appels en cours (`inflight`), ms depuis la fin du dernier appel (`idleMs`, 0 pendant un appel), code de l'extension périmé (`extensionStale` : Chrome exécute encore une version en cache des scripts du service worker, à relancer), debugger refusé au navigateur (`debuggerBlocked` : message de Chrome, ou null ; stratégie d'entreprise depuis Chrome 155, gestes rejoués par événements de page, remède `--disable-features=ExtensionDebuggerStrictPolicyRestrictions`), arrêt en cours (`shuttingDown`) |
+| `GET /health` | non | état : version, extension connectée et sa version, appels en cours (`inflight`), ms depuis la fin du dernier appel (`idleMs`, 0 pendant un appel), code de l'extension périmé (`extensionStale` : Chrome exécute encore une version en cache des scripts du service worker, à relancer), debugger refusé au navigateur (`debuggerBlocked` : message de Chrome, ou null ; sites bloqués aux extensions depuis Chrome 155, gestes rejoués par événements de page ; remède : stratégie `ExtensionSettings` sans `runtime_blocked_hosts` pour l'extension, voir le README), arrêt en cours (`shuttingDown`) |
 | `POST /call` | oui | appel d'outil `{agent, tool, args}` (utilisé par le shim stdio) |
 | `POST /mcp?agent=<nom>` | oui | serveur MCP Streamable HTTP sans état : mêmes outils, même filtrage, même relais que le shim ; `GET` et `DELETE` répondent 405 |
 | `GET /events` | oui | flux SSE : une ligne JSON par événement journalisé (données déjà expurgées) |

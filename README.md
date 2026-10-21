@@ -72,10 +72,21 @@ npm install
 **2. Charger l'extension** : `chrome://extensions`, activer le *mode développeur*, puis *Charger l'extension non
 empaquetée* et choisir le dossier `extension/`.
 
-> Depuis Chrome 155, un navigateur dont une stratégie d'entreprise restreint les sites d'une extension (c'est le cas
-> de Comet) lui refuse le debugger : « Host access is restricted by policy. ». ABC rejoue alors gestes et lectures
-> par la page (`/health` : `debuggerBlocked`), avec moins de fiabilité. Pour retrouver le debugger, lancer le
-> navigateur avec `--disable-features=ExtensionDebuggerStrictPolicyRestrictions` (accepté jusqu'à Chrome 160).
+> **Comet (et tout navigateur qui bloque des sites aux extensions)** : depuis Chrome 155, une extension qui a des
+> sites bloqués perd le debugger (« Host access is restricted by policy. »). Comet bloque les sites de Perplexity à
+> toutes les extensions, en dur. ABC rejoue alors gestes et lectures par la page (`/health` : `debuggerBlocked`),
+> sans réseau ni console. Remède durable : une stratégie qui ne bloque rien pour ABC (remplacer `<id>` par
+> l'identifiant de l'extension, affiché dans `chrome://extensions`), dans un PowerShell administrateur, puis
+> redémarrer Comet :
+>
+> ```powershell
+> New-Item 'HKCU:\Software\Policies\Perplexity\Comet' -Force | Out-Null
+> New-ItemProperty 'HKCU:\Software\Policies\Perplexity\Comet' -Name ExtensionSettings -PropertyType String -Force `
+>   -Value '{"<id>":{"runtime_blocked_hosts":[],"runtime_allowed_hosts":[]}}'
+> ```
+>
+> Autre navigateur : même stratégie sous sa propre clé (Chrome : `Google\Chrome`). Solution d'appoint jusqu'à
+> Chrome 160 : lancer le navigateur avec `--disable-features=ExtensionDebuggerStrictPolicyRestrictions`.
 
 **3. Brancher un agent**, avec la même configuration MCP (stdio) pour tous :
 

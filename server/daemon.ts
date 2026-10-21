@@ -1756,7 +1756,7 @@ function handleExtensionMessage(ws: WebSocket, msg: Record<string, unknown>) {
     extensionStale = msg.codeStale === true;
     const blocked = typeof msg.debuggerBlocked === "string" ? msg.debuggerBlocked : null;
     if (blocked && !debuggerBlocked) {
-      log({ event: "debugger_blocked", error: blocked, hint: "relancer le navigateur avec --disable-features=ExtensionDebuggerStrictPolicyRestrictions" });
+      log({ event: "debugger_blocked", error: blocked, hint: "stratégie ExtensionSettings sans runtime_blocked_hosts pour l'extension (README), ou --disable-features=ExtensionDebuggerStrictPolicyRestrictions" });
     }
     debuggerBlocked = blocked;
     if (ext !== extensionVersion) {

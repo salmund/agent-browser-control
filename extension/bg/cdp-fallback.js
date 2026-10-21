@@ -6,14 +6,20 @@
 // ---------------------------------------------------------------------------
 //
 // Depuis Chrome 155, chrome.debugger.attach est refusé sur tous les onglets (« Host access is restricted by
-// policy. ») dès qu'une stratégie d'entreprise donne à l'extension une liste runtime_blocked_hosts non vide :
-// Comet en pose une. Le refus vaut pour tout le navigateur : cdp.js le retient, et cdp() passe par ici.
-// Ce qui se rejoue : évaluation dans le monde de la page, souris et clavier par événements de page (isTrusted
-// vaut false : certains sites les ignorent), saisie de texte, capture de l'onglet affiché. Le reste (réseau,
-// console, émulation, boîtes de dialogue, envoi de fichier) échoue avec la cause et le remède.
-// Remède jusqu'à Chrome 160 : lancer le navigateur avec --disable-features=ExtensionDebuggerStrictPolicyRestrictions.
+// policy. ») dès que l'extension a une liste runtime_blocked_hosts non vide : Comet en impose une à toutes les
+// extensions, codée en dur (sites de Perplexity). Le refus vaut pour tout le navigateur : cdp.js le retient, et cdp()
+// passe par ici. Ce qui se rejoue : évaluation dans le monde de la page, souris et clavier par événements de page
+// (isTrusted vaut false : certains sites les ignorent), saisie de texte, capture de l'onglet affiché. Le reste
+// (réseau, console, émulation, boîtes de dialogue, envoi de fichier) échoue avec la cause et le remède.
+// Remède durable : stratégie ExtensionSettings qui donne à l'extension une liste vide (une entrée par identifiant
+// remplace celle de tout le monde) ; vérifié sur Comet 155. Jusqu'à Chrome 160 : l'option DEBUGGER_FLAG.
 
 const DEBUGGER_FLAG = "--disable-features=ExtensionDebuggerStrictPolicyRestrictions";
+/** Remède à donner à l'agent et à l'utilisateur, avec l'identifiant de cette extension. */
+const debuggerRemedy = () =>
+  `Remède durable : stratégie ExtensionSettings {"${chrome.runtime.id}": {"runtime_blocked_hosts": []}} ` +
+  "(Comet : HKCU\\Software\\Policies\\Perplexity\\Comet, voir le README), puis redémarrer le navigateur ; " +
+  `ou, jusqu'à Chrome 160, lancer le navigateur avec ${DEBUGGER_FLAG}.`;
 const DEBUGGER_RETRY_MS = 60_000; // refus constaté : nouvel essai d'attachement au plus une fois par minute
 const DEBUGGERLESS_NOTE_MS = 10 * 60_000; // avertissement à l'agent : une fois par onglet et par 10 min
 
@@ -36,8 +42,8 @@ const debuggerBlockFresh = () => !!debuggerBlock && Date.now() - debuggerBlock.s
 function debuggerBlockedError(method) {
   return new DebuggerBlockedError(
     `${method ? `${method} indisponible : ` : ""}le navigateur refuse le debugger à ABC ` +
-    `(« ${debuggerBlock?.message ?? "restricted by policy"} » : stratégie d'entreprise, règle de Chrome 155 et plus). ` +
-    `Remède : relancer le navigateur avec ${DEBUGGER_FLAG}, ou retirer la stratégie (voir chrome://policy).`,
+    `(« ${debuggerBlock?.message ?? "restricted by policy"} » : sites bloqués pour les extensions, règle de Chrome 155 et plus). ` +
+    debuggerRemedy(),
   );
 }
 
@@ -59,9 +65,9 @@ function debuggerlessNote(tabId) {
   if (!debuggerlessUsed.delete(tabId)) return "";
   if (Date.now() - (debuggerlessToldAt.get(tabId) ?? 0) < DEBUGGERLESS_NOTE_MS) return "";
   debuggerlessToldAt.set(tabId, Date.now());
-  return "ℹ Le navigateur refuse le debugger à ABC (stratégie d'entreprise, Chrome 155 et plus) : gestes rejoués par " +
-    "événements de page, que certains sites ignorent, et ni réseau ni console observés. Vérifier l'effet. " +
-    `Remède : relancer le navigateur avec ${DEBUGGER_FLAG}.`;
+  return "ℹ Le navigateur refuse le debugger à ABC (sites bloqués pour les extensions, Chrome 155 et plus) : gestes " +
+    "rejoués par événements de page, que certains sites ignorent, et ni réseau ni console observés. Vérifier l'effet. " +
+    debuggerRemedy();
 }
 
 /** Exécute func(...args) dans la frame principale de l'onglet : monde de la page ("MAIN") ou monde isolé d'ABC. */
