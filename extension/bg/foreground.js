@@ -37,11 +37,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 /** Attend que la page ait repris son rendu : visible, puis deux images dessinées (1,5 s au plus). */
 async function waitRendering(tabId) {
-  const probe = `document.visibilityState === "visible" && new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))`;
+  const probe = () => document.visibilityState === "visible" && new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))));
   const deadline = Date.now() + 1500;
   while (Date.now() < deadline) {
     const drawn = await Promise.race([
-      cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true, awaitPromise: true }).then((res) => res.result?.value === true),
+      evaluateCall(tabId, probe, [], { awaitPromise: true }).then((drawn) => drawn === true),
       sleep(400).then(() => false),
     ]).catch(() => false);
     if (drawn) return;

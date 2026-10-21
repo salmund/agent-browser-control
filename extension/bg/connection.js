@@ -249,6 +249,7 @@ async function diagnostic() {
     browser: navigator.userAgent,
     agentGroups: Object.keys(session.groups ?? {}).length,
     attachedTabs: attached.size,
+    debuggerBlocked: debuggerBlock?.message ?? null,
     runningCalls: [...runningCalls.values()].map((c) => ({ agent: c.actor, tabId: c.tabId ?? null })),
     scripts: scriptRuns.size,
     settings: {

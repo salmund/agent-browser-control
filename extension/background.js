@@ -13,6 +13,7 @@ const SW_SCRIPTS = [
   "bg/tabs.js",
   "bg/navigation.js",
   "bg/cdp.js",
+  "bg/cdp-fallback.js",
   "bg/network.js",
   "bg/page-bridge.js",
   "bg/rich-editor.js",

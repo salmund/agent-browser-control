@@ -72,6 +72,11 @@ npm install
 **2. Charger l'extension** : `chrome://extensions`, activer le *mode développeur*, puis *Charger l'extension non
 empaquetée* et choisir le dossier `extension/`.
 
+> Depuis Chrome 155, un navigateur dont une stratégie d'entreprise restreint les sites d'une extension (c'est le cas
+> de Comet) lui refuse le debugger : « Host access is restricted by policy. ». ABC rejoue alors gestes et lectures
+> par la page (`/health` : `debuggerBlocked`), avec moins de fiabilité. Pour retrouver le debugger, lancer le
+> navigateur avec `--disable-features=ExtensionDebuggerStrictPolicyRestrictions` (accepté jusqu'à Chrome 160).
+
 **3. Brancher un agent**, avec la même configuration MCP (stdio) pour tous :
 
 ```json

@@ -18,10 +18,118 @@ function trackInflight(tabId, method, params) {
 }
 chrome.tabs.onRemoved.addListener((tabId) => inflight.delete(tabId));
 
+/**
+ * Sonde de wait_for, dans le monde de la page : état des conditions, scroll d'attente, dernière mutation du DOM.
+ * Sérialisée avec toString() (evaluateCall) : ne rien y référencer hors d'elle-même.
+ */
+function waitProbe(cfg) {
+  if (!window.__abcObserver) {
+    window.__abcLastMutation = Date.now();
+    try {
+      window.__abcObserver = new MutationObserver(() => {
+        window.__abcLastMutation = Date.now();
+      });
+      // Classes et styles exclus : une animation (carrousel, bandeau qui défile) empêchait toute stabilité.
+      window.__abcObserver.observe(document.documentElement || document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributeFilter: ["hidden", "open", "aria-hidden", "aria-busy"],
+      });
+    } catch {}
+  }
+  const sel = cfg.selector;
+  const el = sel ? document.querySelector(sel) : null;
+  const visible = !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+  const body = document.body ? document.body.innerText : "";
+  const textOk = cfg.text === null || body.includes(cfg.text);
+  const goneOk = cfg.textGone === null || !body.includes(cfg.textGone);
+  const scrollCfg = cfg.scroll;
+  const countSel = cfg.countSel;
+  // Scroll d'attente : un cran par tour (200 ms) tant que la cible n'est pas là, borné (bout,
+  // maxScrolls). La cible, c'est les conditions visibles (selector/text/textGone) : le scroll
+  // sert à faire apparaître du contenu paresseux, pas à attendre le réseau ou une URL.
+  let scrollInfo;
+  if (scrollCfg) {
+    window.__abcWaitScrolls = window.__abcWaitScrolls || 0;
+    const sc = scrollCfg.container ? document.querySelector(scrollCfg.container) : document.scrollingElement;
+    const atEnd = !sc ? true : (scrollCfg.direction === "up" ? sc.scrollTop <= 2 : sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2);
+    const capped = window.__abcWaitScrolls >= scrollCfg.maxScrolls;
+    const met = (!sel || visible) && textOk && goneOk;
+    if (sc && !met && !atEnd && !capped) {
+      const step = Math.max(200, sc.clientHeight || 600);
+      sc.scrollTop += scrollCfg.direction === "up" ? -step : step;
+      window.__abcWaitScrolls++;
+    }
+    scrollInfo = { done: window.__abcWaitScrolls, atEnd, capped, missing: !sc };
+  }
+  return {
+    visible,
+    text: textOk,
+    gone: goneOk,
+    url: location.href,
+    scroll: scrollInfo,
+    count: (() => { if (!countSel) return undefined; try { return document.querySelectorAll(countSel).length; } catch { return -1; } })(),
+    images: (() => {
+      const out = [];
+      for (const el of document.querySelectorAll("img, canvas, svg")) {
+        if (el.closest("#abc-overlay")) continue;
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) continue;
+        if (r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) continue;
+        let srcType = "svg";
+        let src = "";
+        if (el.tagName === "CANVAS") srcType = "canvas";
+        else if (el.tagName === "IMG") {
+          src = el.currentSrc || el.src || "";
+          if (src.indexOf("blob:") === 0) srcType = "blob";
+          else if (src.indexOf("data:") === 0) srcType = "data";
+          else if (/^https?:/.test(src)) srcType = "http";
+          else srcType = (!el.complete || !el.naturalWidth) ? "incomplète" : "http";
+        }
+        out.push({ tag: el.tagName.toLowerCase(), w: Math.round(r.width), h: Math.round(r.height), srcType, src: String(src).slice(0, 40) });
+        if (out.length >= 12) break;
+      }
+      return out;
+    })(),
+    spinners: (() => {
+      const out = [];
+      const seen = {};
+      const cands = document.querySelectorAll('[role="progressbar"], [role="status"], [aria-busy="true"], [class*="spinner" i], [class*="loading" i], [class*="loader" i]');
+      for (const el of cands) {
+        if (out.length >= 3) break;
+        const r = el.getBoundingClientRect();
+        if (!r.width && !r.height) continue;
+        if (getComputedStyle(el).display === "none") continue;
+        const t = (el.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+        // role="status" vide, sans image ni classe de chargement : une zone d'annonces (aria-live), pas un chargement.
+        if (!t && el.matches('[role="status"]') && !el.matches('[class*="spinner" i], [class*="loading" i], [class*="loader" i]') && !el.querySelector("svg, img, canvas")) continue;
+        const key = t || el.tagName;
+        if (seen[key]) continue;
+        seen[key] = true;
+        out.push(t || "(sans texte)");
+      }
+      return out;
+    })(),
+    textSample: body.slice(0, 300),
+    bodyLen: body.length,
+    lastMutation: window.__abcLastMutation || 0,
+  };
+}
+
+/** Retire l'observateur et les compteurs laissés par waitProbe : aucune trace détectable, attente suivante à zéro. */
+function waitProbeCleanup() {
+  try { window.__abcObserver?.disconnect(); } catch {}
+  try { delete window.__abcObserver; delete window.__abcLastMutation; delete window.__abcWaitScrolls; } catch {}
+  return true;
+}
+
 async function waitFor(agent, args) {
   const { tabId, selector, text: expected, textGone, urlContains, networkIdle, domSettled, authSettled, image, scroll, countStable, settle } = args;
   const tab = await assertOwned(agent, tabId);
-  await ensureAttached(tabId);
+  const observed = await debuggerUsable(tabId); // false : debugger refusé, réseau non observé (cdp-fallback.js)
   const wantImage = image === true;
   const csSel = typeof countStable?.selector === "string" ? countStable.selector : null;
   if (!selector && !expected && !textGone && !urlContains && !networkIdle && !domSettled && !authSettled && !wantImage && !csSel && !settle) {
@@ -64,102 +172,7 @@ async function waitFor(agent, args) {
     await chrome.tabs.update(tabId, { active: true }).catch(() => {});
   }
 
-  const probe = `(() => {
-    if (!window.__abcObserver) {
-      window.__abcLastMutation = Date.now();
-      try {
-        window.__abcObserver = new MutationObserver(() => {
-          window.__abcLastMutation = Date.now();
-        });
-        // Classes et styles exclus : une animation (carrousel, bandeau qui défile) empêchait toute stabilité.
-        window.__abcObserver.observe(document.documentElement || document.body, {
-          childList: true,
-          subtree: true,
-          characterData: true,
-          attributeFilter: ["hidden", "open", "aria-hidden", "aria-busy"],
-        });
-      } catch {}
-    }
-    const sel = ${JSON.stringify(selector ?? null)};
-    const el = sel ? document.querySelector(sel) : null;
-    const visible = !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
-    const body = document.body ? document.body.innerText : "";
-    const textOk = ${JSON.stringify(expected ?? null)} === null || body.includes(${JSON.stringify(expected ?? "")});
-    const goneOk = ${JSON.stringify(textGone ?? null)} === null || !body.includes(${JSON.stringify(textGone ?? "")});
-    const scrollCfg = ${JSON.stringify(scrollCfg)};
-    const countSel = ${JSON.stringify(csSel)};
-    // Scroll d'attente : un cran par tour (200 ms) tant que la cible n'est pas là, borné (bout,
-    // maxScrolls). La cible, c'est les conditions visibles (selector/text/textGone) : le scroll
-    // sert à faire apparaître du contenu paresseux, pas à attendre le réseau ou une URL.
-    let scrollInfo;
-    if (scrollCfg) {
-      window.__abcWaitScrolls = window.__abcWaitScrolls || 0;
-      const sc = scrollCfg.container ? document.querySelector(scrollCfg.container) : document.scrollingElement;
-      const atEnd = !sc ? true : (scrollCfg.direction === "up" ? sc.scrollTop <= 2 : sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2);
-      const capped = window.__abcWaitScrolls >= scrollCfg.maxScrolls;
-      const met = (!sel || visible) && textOk && goneOk;
-      if (sc && !met && !atEnd && !capped) {
-        const step = Math.max(200, sc.clientHeight || 600);
-        sc.scrollTop += scrollCfg.direction === "up" ? -step : step;
-        window.__abcWaitScrolls++;
-      }
-      scrollInfo = { done: window.__abcWaitScrolls, atEnd, capped, missing: !sc };
-    }
-    return {
-      visible,
-      text: textOk,
-      gone: goneOk,
-      url: location.href,
-      scroll: scrollInfo,
-      count: (() => { if (!countSel) return undefined; try { return document.querySelectorAll(countSel).length; } catch { return -1; } })(),
-      images: (() => {
-        const out = [];
-        for (const el of document.querySelectorAll("img, canvas, svg")) {
-          if (el.closest("#abc-overlay")) continue;
-          const cs = getComputedStyle(el);
-          if (cs.display === "none" || cs.visibility === "hidden") continue;
-          const r = el.getBoundingClientRect();
-          if (r.width < 40 || r.height < 40) continue;
-          if (r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) continue;
-          let srcType = "svg";
-          let src = "";
-          if (el.tagName === "CANVAS") srcType = "canvas";
-          else if (el.tagName === "IMG") {
-            src = el.currentSrc || el.src || "";
-            if (src.indexOf("blob:") === 0) srcType = "blob";
-            else if (src.indexOf("data:") === 0) srcType = "data";
-            else if (/^https?:/.test(src)) srcType = "http";
-            else srcType = (!el.complete || !el.naturalWidth) ? "incomplète" : "http";
-          }
-          out.push({ tag: el.tagName.toLowerCase(), w: Math.round(r.width), h: Math.round(r.height), srcType, src: String(src).slice(0, 40) });
-          if (out.length >= 12) break;
-        }
-        return out;
-      })(),
-      spinners: (() => {
-        const out = [];
-        const seen = {};
-        const cands = document.querySelectorAll('[role="progressbar"], [role="status"], [aria-busy="true"], [class*="spinner" i], [class*="loading" i], [class*="loader" i]');
-        for (const el of cands) {
-          if (out.length >= 3) break;
-          const r = el.getBoundingClientRect();
-          if (!r.width && !r.height) continue;
-          if (getComputedStyle(el).display === "none") continue;
-          const t = (el.innerText || "").trim().replace(/\\s+/g, " ").slice(0, 80);
-          // role="status" vide, sans image ni classe de chargement : une zone d'annonces (aria-live), pas un chargement.
-          if (!t && el.matches('[role="status"]') && !el.matches('[class*="spinner" i], [class*="loading" i], [class*="loader" i]') && !el.querySelector("svg, img, canvas")) continue;
-          const key = t || el.tagName;
-          if (seen[key]) continue;
-          seen[key] = true;
-          out.push(t || "(sans texte)");
-        }
-        return out;
-      })(),
-      textSample: body.slice(0, 300),
-      bodyLen: body.length,
-      lastMutation: window.__abcLastMutation || 0,
-    };
-  })()`;
+  const probeCfg = { selector: selector ?? null, text: expected ?? null, textGone: textGone ?? null, scroll: scrollCfg, countSel: csSel };
 
   let last = {};
   let baseline = null; // premier état observé : le diagnostic dit ce qui a bougé depuis
@@ -168,7 +181,7 @@ async function waitFor(agent, args) {
     // Appel annulé (STOP, pause de l'agent, délai du démon) : l'attente s'arrête au lieu de tourner jusqu'au bout.
     if (isHalted(tabId)) throw new Error("Attente annulée.");
     try {
-      last = (await cdp(tabId, "Runtime.evaluate", { expression: probe, returnByValue: true })).result?.value ?? {};
+      last = (await evaluateCall(tabId, waitProbe, [probeCfg])) ?? {};
     } catch (err) {
       if (err instanceof DialogOpenError || paused || pausedTabs.has(tabId)) throw err;
       last = {}; // page en pleine navigation : on réessaie au tour suivant
@@ -240,7 +253,7 @@ async function waitFor(agent, args) {
       const diag = [
         `Délai dépassé (${String(limitMs / 1000).replace(".", ",")} s), condition(s) non remplie(s) : ${pending}.${scrollNote(last.scroll)}`,
         `URL actuelle : ${last.url ?? "?"}${baseline && baseline.url && baseline.url !== last.url ? ` (a changé : ${baseline.url})` : ""}`,
-        `Réseau : ${net.ids.size} requête(s) en cours, dernière activité il y a ${netLag} ms.`,
+        observed ? `Réseau : ${net.ids.size} requête(s) en cours, dernière activité il y a ${netLag} ms.` : "Réseau : non observé (debugger refusé par le navigateur).",
         `DOM : dernière mutation il y a ${timeSinceMutation} ms.`,
       ];
       // Ce qui vient de la page (échantillon de texte, libellés de chargement) reste balisé comme non fiable.
@@ -261,10 +274,7 @@ async function waitFor(agent, args) {
   };
   // La sonde laisse un observateur et des compteurs dans la page : retirés à la fin de l'attente,
   // pour ne laisser aucune trace détectable (et pour qu'une attente suivante reparte de zéro).
-  const cleanup = () => cdp(tabId, "Runtime.evaluate", {
-    expression: `(() => { try { window.__abcObserver?.disconnect(); } catch {} try { delete window.__abcObserver; delete window.__abcLastMutation; delete window.__abcWaitScrolls; } catch {} return true; })()`,
-    returnByValue: true,
-  }).catch(() => {});
+  const cleanup = () => evaluateCall(tabId, waitProbeCleanup).catch(() => {});
   try {
     // Scroll d'attente sur un onglet qui ne peint pas = scroll events qui ne partent pas :
     // on emprunte le premier plan le temps de l'attente (rendu après, comme les gestes souris).

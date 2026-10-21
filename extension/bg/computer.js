@@ -82,7 +82,8 @@ const SILENT_NOTE = "par événements, onglet resté en arrière-plan : silent: 
 /**
  * Clic par la suite d'événements d'un vrai clic gauche, exécuté dans le monde de la page (CDP Runtime.evaluate avec
  * userGesture) : la page reçoit une activation utilisateur, donc window.open, le presse-papiers ou le plein écran
- * fonctionnent comme après un vrai clic. Sérialisée avec toString() : ne rien y référencer hors d'elle-même.
+ * fonctionnent comme après un vrai clic (sauf debugger refusé : chrome.scripting, sans activation).
+ * Sérialisée avec toString() : ne rien y référencer hors d'elle-même.
  */
 function silentClickInPage(selector) {
   const el = document.querySelector(selector);
@@ -115,14 +116,9 @@ async function silentGesture(tabId, fn, ref) {
     if (fn === "silentClick" && !target.frameId) {
       const selector = await inPage(tabId, "markRef", target.ref);
       try {
-        const res = await cdp(tabId, "Runtime.evaluate", {
-          expression: `(${silentClickInPage.toString()})(${JSON.stringify(selector)})`,
-          userGesture: true,
-          returnByValue: true,
-        });
-        return res.result?.value ?? { ok: false, reason: res.exceptionDetails?.text ?? "pas de réponse de la page" };
+        return (await evaluateCall(tabId, silentClickInPage, [selector], { userGesture: true })) ?? { ok: false, reason: "pas de réponse de la page" };
       } finally {
-        await cdp(tabId, "Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(selector)})?.removeAttribute("data-abc-target")` }).catch(() => {});
+        await evaluateCall(tabId, (sel) => document.querySelector(sel)?.removeAttribute("data-abc-target"), [selector]).catch(() => {});
       }
     }
     return (await inPage(tabId, fn, { ref: target.ref }, target.frameId)) ?? { ok: false, reason: "pas de réponse de la page" };
@@ -265,10 +261,12 @@ async function appendActionEffect(tabId, res, before, since = Date.now() - 2000)
   // « inchangé » est le constat qui coûte le plus cher quand il est faux : les applis à routeur (AngularJS, Sogo,
   // webmails) répondent après la première lecture. On resonde le digest (700 ms au plus, sorti dès qu'il bouge),
   // seulement dans ce cas : un vrai « sans effet » (clic de focus) ne coûte que ce délai.
+  // Debugger refusé (cdp-fallback.js) : réseau non observé, une réponse lente passerait inaperçue, on resonde plus longtemps.
+  const blind = !!debuggerBlock;
   if (delta === "inchangé" && !sideEffects(tabId, since)) {
     let late = "inchangé";
     const s = await settle(tabId, {
-      since, network: "none", maxMs: 700,
+      since, network: "none", maxMs: blind ? 2500 : 700,
       until: async () => {
         const again = await inPage(tabId, "pageDigest").catch(() => null);
         late = formatDelta(before, again);
@@ -279,8 +277,9 @@ async function appendActionEffect(tabId, res, before, since = Date.now() - 2000)
     if (s.reason === "until") delta = `${late} (constaté après ${120 + s.waited} ms : la page a réagi avec retard)`;
   }
   // Clic silencieux sans effet : certains éléments n'écoutent que les gestes de confiance, on dit comment insister.
-  const quietHint = delta === "inchangé" && first.text.includes(SILENT_NOTE)
-    ? "\nSi le clic devait agir : relancer avec silent: false (vrai clic, onglet devant)."
+  const quietHint = delta !== "inchangé" ? ""
+    : blind ? "\nRéseau non observé (debugger refusé) : relire la page avant de conclure que l'action n'a rien fait."
+    : first.text.includes(SILENT_NOTE) ? "\nSi le clic devait agir : relancer avec silent: false (vrai clic, onglet devant)."
     : "";
   first.text += `\nEffet : ${delta}${delta.endsWith(".") || delta.endsWith(")") ? "" : "."}${sideEffects(tabId, since)}${quietHint}`;
   return res;
@@ -320,7 +319,9 @@ async function computerGesture(agent, tab, args) {
       await showOverlay(tabId, point);
       const button = action === "right_click" ? "right" : "left";
       const count = { double_click: 2, triple_click: 3 }[action] ?? 1;
-      const quiet = args.__silent === "left_click" ? await silentGesture(tabId, "silentClick", args.ref) : null;
+      // Debugger refusé (cdp-fallback.js) : un clic gauche par ref vise l'élément lui-même plutôt qu'un point de l'écran.
+      const silent = args.__silent === "left_click" || (action === "left_click" && args.ref && !modifiers && !(await debuggerUsable(tabId)));
+      const quiet = silent ? await silentGesture(tabId, "silentClick", args.ref) : null;
       if (!quiet?.ok) await withForeground(tab, () => click(tabId, point, button, count, modifiers, args.ref));
       await sleepForFrame(tabId, 150);
       await recordFrame(tabId, action, point);
@@ -385,18 +386,19 @@ async function computerGesture(agent, tab, args) {
         heal = healNote(point);
         await assertHit(tabId, args.ref, point);
         await showOverlay(tabId, point);
-        const quiet = args.__silent === "type" ? await silentGesture(tabId, "silentFocus", args.ref) : null;
+        const silent = args.__silent === "type" || (args.ref && !(await debuggerUsable(tabId)));
+        const quiet = silent ? await silentGesture(tabId, "silentFocus", args.ref) : null;
         if (!quiet?.ok) await withForeground(tab, () => click(tabId, point, "left", 1, 0, args.ref));
       } else {
         await showOverlay(tabId);
       }
       // Sans champ de saisie actif, le texte part vers la page : les applis le prennent pour des raccourcis.
-      const focus = await evaluate(tabId, `(() => {
+      const focus = await evaluateCall(tabId, () => {
         const el = document.activeElement;
         if (!el || el === document.body) return "aucun";
         if (el.tagName === "IFRAME") return "iframe";
         return el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ? "champ" : el.tagName.toLowerCase();
-      })()`).catch(() => "inconnu");
+      }).catch(() => "inconnu");
       await cdp(tabId, "Input.insertText", { text: args.text });
       await recordFrame(tabId, "type");
       const warning = ["champ", "iframe", "inconnu"].includes(focus)
@@ -421,7 +423,7 @@ async function computerGesture(agent, tab, args) {
       const point =
         args.ref || args.coordinate
           ? await targetPoint(tabId, args)
-          : await evaluate(tabId, "({ x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) })");
+          : await evaluateCall(tabId, () => ({ x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) }));
       await showOverlay(tabId);
       const amount = (args.scroll_amount ?? 3) * 100;
       const dir = args.scroll_direction ?? "down";

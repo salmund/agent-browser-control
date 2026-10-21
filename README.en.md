@@ -72,6 +72,11 @@ npm install
 **2. Load the extension**: open `chrome://extensions`, turn on *Developer mode*, click *Load unpacked* and pick the
 `extension/` folder.
 
+> Since Chrome 155, a browser whose enterprise policy restricts an extension's sites (Comet does) refuses it the
+> debugger: "Host access is restricted by policy.". ABC then replays gestures and reads through the page (`/health`:
+> `debuggerBlocked`), less reliably. To get the debugger back, launch the browser with
+> `--disable-features=ExtensionDebuggerStrictPolicyRestrictions` (accepted until Chrome 160).
+
 **3. Connect an agent**, with the same MCP configuration (stdio) for all of them:
 
 ```json

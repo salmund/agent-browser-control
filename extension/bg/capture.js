@@ -64,7 +64,7 @@ async function captureViewport(tabId, { scale = 1, region } = {}) {
   await refreshDeviceOverride(tabId); // onglet émulé passé devant puis rendu : sans cela, capture en mosaïque
   // JPEG directement (pas d'encodage PNG puis de décodage) ; transmis tel quel s'il est déjà à la bonne taille.
   const [{ w, h }, shot] = await Promise.all([
-    evaluate(tabId, "({ w: innerWidth, h: innerHeight })"),
+    evaluateCall(tabId, () => ({ w: innerWidth, h: innerHeight })),
     captureShot(tabId, { format: "jpeg", quality: region ? 100 : 85 }),
   ]);
   const blob = await (await fetch(`data:image/jpeg;base64,${shot.data}`)).blob();

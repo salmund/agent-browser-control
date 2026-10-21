@@ -108,7 +108,7 @@ async function runTool(agent, tool, rawArgs, { daemonId, parentRun } = {}) {
       await assertOwned(agent, args.tabId);
       note = await resolveTarget(args.tabId, args);
     }
-    return withNotes(await fn(agent, args), [note]);
+    return withNotes(await fn(agent, args), [note, debuggerlessNote(args.tabId)]);
   });
   work.catch(() => {}).finally(() => {
     call.settled = true;

@@ -137,6 +137,8 @@ let extension: WebSocket | null = null;
 let extensionVersion: string | null = null;
 /** L'extension signale que son code (en cache dans Chrome) n'est plus celui du disque : à relancer (bg/connection.js). */
 let extensionStale = false;
+/** Le navigateur refuse le debugger à l'extension (stratégie, Chrome 155 et plus) : message d'erreur, ou null (bg/cdp-fallback.js). */
+let debuggerBlocked: string | null = null;
 /**
  * Réglages de l'utilisateur, envoyés par l'extension. Gardés sur disque : après un redémarrage du
  * démon, les agents voient le dernier réglage connu sans attendre que l'extension se reconnecte.
@@ -409,6 +411,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       extensionVersion,
       versionMismatch: extensionVersion !== null && extensionVersion !== VERSION,
       extensionStale,
+      debuggerBlocked,
       settings,
       inflight,
       idleMs: inflight ? 0 : Date.now() - lastCallEnd,
@@ -1703,6 +1706,7 @@ function acceptExtension(ws: WebSocket, origin: string) {
     // Version inconnue jusqu'au prochain message settings (une extension rechargée peut avoir changé).
     extensionVersion = null;
     extensionStale = false;
+    debuggerBlocked = null;
     log({ event: "extension_disconnected", code });
   });
 }
@@ -1750,6 +1754,11 @@ function handleExtensionMessage(ws: WebSocket, msg: Record<string, unknown>) {
       log({ event: "extension_code_stale", hint: "code de l'extension en cache, différent du disque : redémarrer le navigateur" });
     }
     extensionStale = msg.codeStale === true;
+    const blocked = typeof msg.debuggerBlocked === "string" ? msg.debuggerBlocked : null;
+    if (blocked && !debuggerBlocked) {
+      log({ event: "debugger_blocked", error: blocked, hint: "relancer le navigateur avec --disable-features=ExtensionDebuggerStrictPolicyRestrictions" });
+    }
+    debuggerBlocked = blocked;
     if (ext !== extensionVersion) {
       extensionVersion = ext;
       if (ext && ext !== VERSION) {

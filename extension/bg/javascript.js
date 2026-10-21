@@ -63,6 +63,7 @@ async function javascript(agent, { tabId, code }) {
  * de l'enregistrer comme ref. Renvoie null si la valeur n'est pas (que) des Elements.
  */
 async function serializeNodesAsRefs(tabId, r) {
+  if (r?.abcMarked) return nodeRefsText(tabId, r.abcMarked); // repli sans debugger : marqués dans la page (cdp-fallback.js)
   if (!r || !r.objectId) return null;
   const single = r.subtype === "node";
   const plural = r.subtype === "array" || ["NodeList", "HTMLCollection", "HTMLAllCollection"].includes(r.className);
@@ -81,15 +82,23 @@ async function serializeNodesAsRefs(tabId, r) {
   // Pas que des Elements : on laisse serializeRemote répondre (et libérer l'objet).
   if (!marked) return null;
   try {
+    return await nodeRefsText(tabId, marked);
+  } finally {
+    cdp(tabId, "Runtime.releaseObject", { objectId: r.objectId }).catch(() => {}); // objet consommé
+  }
+}
+
+/** Elements marqués data-abc-js (clés) vers refs de page.js, puis ménage des marquages restants. */
+async function nodeRefsText(tabId, marked) {
+  try {
     const lines = [];
     for (const key of marked.keys) lines.push(`- ${await inPage(tabId, "refForKey", { key })}`);
     const head = marked.total === 1 ? "Élément renvoyé comme ref :" : `${marked.total} élément(s) renvoyé(s) comme refs :`;
     const tail = marked.total > marked.keys.length ? `\n(${marked.total - marked.keys.length} élément(s) au-delà de la limite de 20, non enregistrés)` : "";
     return `${head}\n${lines.join("\n")}${tail}`;
   } finally {
-    // Ménage des marquages restants (élément retiré du DOM entre-temps…) + objet consommé.
-    cdp(tabId, "Runtime.evaluate", { expression: `document.querySelectorAll("[data-abc-js]").forEach((e) => e.removeAttribute("data-abc-js"))` }).catch(() => {});
-    cdp(tabId, "Runtime.releaseObject", { objectId: r.objectId }).catch(() => {});
+    // Ménage des marquages restants (élément retiré du DOM entre-temps…).
+    evaluateCall(tabId, () => document.querySelectorAll("[data-abc-js]").forEach((e) => e.removeAttribute("data-abc-js"))).catch(() => {});
   }
 }
 

@@ -49,11 +49,18 @@ async function ensureAttached(tabId) {
 }
 
 async function attachNow(tabId) {
+  if (debuggerBlockFresh()) throw debuggerBlockedError();
   try {
     await withTimeout(chrome.debugger.attach({ tabId }, "1.3"), 10_000, "Attachement du debugger");
   } catch (err) {
+    // Refus par stratégie (Chrome 155 et plus) : il vaut pour tous les onglets, cdp() passe au repli (cdp-fallback.js).
+    if (isPolicyRefusal(err)) {
+      noteDebuggerBlocked(err);
+      throw debuggerBlockedError();
+    }
     if (!String(err?.message).toLowerCase().includes("already attached")) throw err;
   }
+  noteDebuggerUsable();
   const send = (m) => chrome.debugger.sendCommand({ tabId }, m).catch(() => {});
   // Performance dès l'attachement : ses compteurs (layouts, script) ne partent que de là.
   // Page.enable : nécessaire pour être prévenu des boîtes de dialogue.
@@ -115,7 +122,12 @@ function cdpTimeout(method, params) {
 }
 
 async function cdp(tabId, method, params = {}) {
-  await ensureAttached(tabId);
+  try {
+    await ensureAttached(tabId);
+  } catch (err) {
+    if (err instanceof DebuggerBlockedError) return cdpWithoutDebugger(tabId, method, params);
+    throw err;
+  }
   if (method === "Page.handleJavaScriptDialog") return chrome.debugger.sendCommand({ tabId }, method, params);
   assertNoDialog(tabId);
   assertRunning(tabId);
@@ -181,6 +193,32 @@ async function handleDialog(agent, { tabId, accept = true, promptText }) {
 
 async function evaluate(tabId, expression) {
   const res = await cdp(tabId, "Runtime.evaluate", { expression, returnByValue: true });
+  return res.result?.value;
+}
+
+/** Le debugger est attaché à l'onglet ; false s'il est refusé par stratégie (repli : cdp-fallback.js). */
+async function debuggerUsable(tabId) {
+  try {
+    await ensureAttached(tabId);
+    return true;
+  } catch (err) {
+    if (err instanceof DebuggerBlockedError) return false;
+    throw err;
+  }
+}
+
+/**
+ * Appelle fn(...args) dans le monde de la page et renvoie sa valeur (JSON) ; une exception de la page est levée.
+ * fn est sérialisée avec toString() : ne rien y référencer hors d'elle-même. Sans debugger, chrome.scripting
+ * l'injecte telle quelle : contrairement à une expression texte, elle passe même si la CSP de la page interdit eval.
+ */
+async function evaluateCall(tabId, fn, args = [], { awaitPromise = false, userGesture = false } = {}) {
+  if (!(await debuggerUsable(tabId))) {
+    debuggerlessUsed.add(tabId);
+    return runInTab(tabId, fn, args, "MAIN", awaitPromise ? 120_000 : 60_000);
+  }
+  const res = await cdp(tabId, "Runtime.evaluate", { expression: `(${fn})(...${JSON.stringify(args)})`, returnByValue: true, awaitPromise, userGesture });
+  if (res.exceptionDetails) throw new Error(res.exceptionDetails.exception?.description ?? res.exceptionDetails.text);
   return res.result?.value;
 }
 
