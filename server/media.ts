@@ -1,14 +1,14 @@
 /**
  * Téléchargement de vidéos / audios avec yt-dlp (et ffmpeg pour assembler ou convertir).
- * Les fichiers vont dans ~/Downloads/agent-browser-control/. Un téléchargement trop long pour un appel
+ * Les fichiers vont dans Téléchargements/agent-browser-control/. Un téléchargement trop long pour un appel
  * continue en arrière-plan : l'agent suit son avancement avec action="status".
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { ABC_DOWNLOADS_DIR } from "./user-dirs.ts";
 
-export const MEDIA_DIR = join(homedir(), "Downloads", "agent-browser-control");
+export const MEDIA_DIR = ABC_DOWNLOADS_DIR;
 const WAIT_MS = 240_000; // au-delà, le téléchargement continue en arrière-plan
 const JOB_MAX_AGE_MS = 24 * 3600_000;
 

@@ -7,7 +7,6 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { WebSocket, WebSocketServer } from "ws";
@@ -113,7 +112,9 @@ import {
   safeFileName,
   tokenMatches,
   truncateStrings,
+  type UploadCheck,
 } from "./security.ts";
+import { ABC_DOWNLOADS_DIR, stageForBrowser } from "./user-dirs.ts";
 import { createAbcServer } from "./mcp-server.ts";
 import { createPointer } from "./pointer.ts";
 
@@ -121,7 +122,7 @@ const VERSION = "0.8.0";
 const EXTENSION_WAIT_MS = 10_000;
 const LOG_FILE = join(CONFIG_DIR, "actions.log");
 /** Fichiers joints par l'extension (GIF, captures…). ABC_OUTPUT_DIR le remplace (tests). */
-const OUTPUT_DIR = process.env.ABC_OUTPUT_DIR || join(homedir(), "Downloads", "agent-browser-control");
+const OUTPUT_DIR = process.env.ABC_OUTPUT_DIR || ABC_DOWNLOADS_DIR;
 /** Délai unique imposé à tous les appels (tests de l'expiration seulement). */
 const TIMEOUT_OVERRIDE_MS = Number(process.env.ABC_TIMEOUT_OVERRIDE_MS) || 0;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -330,10 +331,26 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * Fichiers à envoyer : contrôlés (jamais un fichier de secrets), puis copiés là où le navigateur les lit
+ * s'il ne les verrait pas (Chromium en snap : dossier personnel seulement).
+ */
+function uploadPaths(paths: unknown): UploadCheck {
+  const check = checkUploadPaths(paths, CONFIG_DIR);
+  if (!check.ok) return check;
+  try {
+    const staged = stageForBrowser(check.paths);
+    if (staged.staged) log({ event: "upload-stage", count: staged.staged });
+    return { ok: true, paths: staged.paths };
+  } catch (err) {
+    return { ok: false, error: `file_upload : copie vers ${ABC_DOWNLOADS_DIR} impossible (${errText(err)}).` };
+  }
+}
+
 /** Contrôles du démon avant l'extension : file_upload n'envoie jamais un fichier de secrets. */
 function preflight(call: CallRequest): { call: CallRequest } | { error: CallResult } {
   if (call.tool !== "file_upload") return { call };
-  const check = checkUploadPaths(call.args.paths, CONFIG_DIR);
+  const check = uploadPaths(call.args.paths);
   if (!check.ok) return { error: errorResult(check.error) };
   return { call: { ...call, args: { ...call.args, paths: check.paths } } };
 }
@@ -1227,7 +1244,7 @@ async function harFallback(call: CallRequest, result: CallResult): Promise<CallR
 }
 
 /**
- * Écrit un fichier joint par l'extension dans ~/Downloads/agent-browser-control/ (nom assaini,
+ * Écrit un fichier joint par l'extension dans Téléchargements/agent-browser-control/ (nom assaini,
  * 100 caractères au plus, jamais d'écrasement) et renvoie son chemin.
  */
 async function writeOutputFile(file: unknown): Promise<string> {
@@ -1457,7 +1474,7 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
   };
   // Contrôle des fichiers à envoyer (file_upload appelé depuis browser_script, qui ne passe pas par le démon).
   if (op === "upload-check") {
-    const check = checkUploadPaths(params.paths, CONFIG_DIR);
+    const check = uploadPaths(params.paths);
     log({ event: "upload-check", ok: check.ok, count: Array.isArray(params.paths) ? params.paths.length : 0 });
     return check.ok ? reply(true, { paths: check.paths }) : reply(false, undefined, check.error);
   }

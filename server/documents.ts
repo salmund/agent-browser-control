@@ -1,20 +1,25 @@
 /**
  * read_document : le texte d'un PDF, Word, PowerPoint, Excel ou fichier texte, page par page.
- * Les pages de PDF sans texte (scans) passent par l'OCR de Windows (server/pdf-ocr.ps1).
+ * Les pages de PDF sans texte (scans) passent par l'OCR de Windows (server/pdf-ocr.ps1), ou sous Linux
+ * par Tesseract (pdftoppm puis tesseract, s'ils sont installés).
  * Par sécurité, seul le dossier Téléchargements est lisible : une page piégée ne doit pas pouvoir
  * pousser un agent à lire n'importe quel fichier de l'utilisateur.
  */
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import JSZip from "jszip";
 import { extractText, getDocumentProxy } from "unpdf";
+import { DOWNLOADS_DIR } from "./user-dirs.ts";
 
-const DOWNLOADS = join(homedir(), "Downloads");
+/** Dossiers lisibles : Téléchargements (le dossier XDG sous Linux, souvent localisé) et ~/Downloads s'il est à part. */
+const ROOTS = [...new Set([DOWNLOADS_DIR, join(homedir(), "Downloads")])];
 const MAX_CHARS = 60_000;
 const OCR_SCRIPT = fileURLToPath(new URL("./pdf-ocr.ps1", import.meta.url));
+const execFileP = promisify(execFile);
 
 export interface DocumentRequest {
   path: string;
@@ -24,14 +29,19 @@ export interface DocumentRequest {
 /** Chemin absolu, dans Téléchargements (liens et « .. » résolus), ou erreur. */
 export function resolveDocumentPath(input: string): string {
   if (!input) throw new Error("'path' requis (chemin renvoyé par downloads, ou nom de fichier dans Téléchargements).");
-  const candidates = isAbsolute(input) ? [input] : [join(DOWNLOADS, "agent-browser-control", input), join(DOWNLOADS, input)];
+  const candidates = isAbsolute(input) ? [input] : ROOTS.flatMap((r) => [join(r, "agent-browser-control", input), join(r, input)]);
   const found = candidates.find((c) => existsSync(c));
   if (!found) throw new Error(`Fichier introuvable : ${input}`);
   const real = realpathSync(resolve(found));
-  const rel = relative(realpathSync(DOWNLOADS), real);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    throw new Error(`Par sécurité, read_document ne lit que le dossier Téléchargements (${DOWNLOADS}).`);
-  }
+  const inside = ROOTS.some((root) => {
+    try {
+      const rel = relative(realpathSync(root), real);
+      return !rel.startsWith("..") && !isAbsolute(rel);
+    } catch {
+      return false; // dossier absent (~/Downloads sur un système en français)
+    }
+  });
+  if (!inside) throw new Error(`Par sécurité, read_document ne lit que le dossier Téléchargements (${DOWNLOADS_DIR}).`);
   if (!statSync(real).isFile()) throw new Error(`${input} n'est pas un fichier.`);
   return real;
 }
@@ -58,7 +68,45 @@ const decodeXml = (s: string) =>
 
 // --- PDF -------------------------------------------------------------------------------------
 
+/** Langues de Tesseract à demander (fra et eng s'ils sont installés), lues une fois ; null sans Tesseract. */
+let tesseractLangs: Promise<string | null> | undefined;
+function linuxOcrLangs(): Promise<string | null> {
+  tesseractLangs ??= execFileP("tesseract", ["--list-langs"], { timeout: 5_000 }).then(
+    ({ stdout, stderr }) => {
+      const installed = `${stdout}\n${stderr}`.split("\n").map((l) => l.trim());
+      return ["fra", "eng"].filter((l) => installed.includes(l)).join("+");
+    },
+    () => null,
+  );
+  return tesseractLangs;
+}
+
+/** OCR Linux : chaque page rendue en image (pdftoppm, 300 dpi), puis lue par Tesseract. */
+async function ocrPdfPagesLinux(path: string, pages: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const langs = pages.length ? await linuxOcrLangs() : null;
+  if (langs === null) return out;
+  const dir = mkdtempSync(join(tmpdir(), "abc-ocr-"));
+  try {
+    for (const p of pages) {
+      const image = join(dir, `page-${p}`);
+      try {
+        await execFileP("pdftoppm", ["-f", String(p), "-l", String(p), "-r", "300", "-gray", "-png", "-singlefile", path, image], { timeout: 30_000 });
+        const { stdout } = await execFileP("tesseract", [`${image}.png`, "stdout", ...(langs ? ["-l", langs] : [])], {
+          timeout: 60_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        if (stdout.trim()) out.set(p, stdout.trim());
+      } catch {}
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return out;
+}
+
 function ocrPdfPages(path: string, pages: number[]): Promise<Map<number, string>> {
+  if (process.platform === "linux") return ocrPdfPagesLinux(path, pages);
   if (process.platform !== "win32" || !pages.length) return Promise.resolve(new Map());
   return new Promise((resolveOcr) => {
     execFile(

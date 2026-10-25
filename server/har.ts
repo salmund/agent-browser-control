@@ -12,14 +12,14 @@
  */
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./common.ts";
 import { buildCurl, buildPython, inferSchema } from "./analysis.ts";
+import { ABC_DOWNLOADS_DIR } from "./user-dirs.ts";
 
 export const HAR_DIR = join(CONFIG_DIR, "har");
 const KEPT_DIR = join(HAR_DIR, "gardes");
-const EXPORT_DIR = join(homedir(), "Downloads", "agent-browser-control");
+const EXPORT_DIR = ABC_DOWNLOADS_DIR;
 const STALE_MS = 24 * 3600_000;
 const MAX_FILE_BYTES = 200 * 1024 * 1024; // au-delà, on ne garde plus les corps de réponse
 

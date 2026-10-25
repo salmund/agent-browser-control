@@ -77,7 +77,7 @@ Garde-fous côté démon : journal expurgé (saisies et corps réduits à leur l
 | `form_input` | Remplit un champ / select / checkbox / éditeur riche par `ref` ; saisie groupée (`fields`) et soumission (`submitRef`) en un appel ; stratégie annoncée, échec net vers `computer` si réfractaire |
 | `javascript` | Évalue du JS dans la page (via CDP `Runtime.evaluate`) ; un Element (ou liste) renvoyé devient des `ref` |
 | `devtools` | Les 12 outils DevTools rarement utilisés en un seul (`action` + `op`) : console, network, body, intercept, storage, perf, emulate, pdf, websocket, http, har (dont export-code curl/Python), resize. Anciens noms acceptés (compatibilité) |
-| `file_upload` | Charge un fichier local dans un `<input type=file>` (CDP `DOM.setFileInputFiles`) |
+| `file_upload` | Charge un fichier local dans un `<input type=file>` (CDP `DOM.setFileInputFiles`) ; sous Linux, un fichier hors du dossier personnel (ou dans un dossier caché) est d'abord copié dans `Téléchargements/agent-browser-control/envois/` (gardé 24 h), seul endroit que lit un Chromium en snap |
 | `gif_creator` | Démarre / arrête / exporte un enregistrement GIF ou WebM des actions |
 | `wait_for` | Attente par conditions (selector, text, settle, countStable, image, authSettled…) ; diagnostic d'échec (réseau, DOM, texte observés) |
 | `handle_dialog` | Répond aux boîtes alert / confirm / prompt / beforeunload |
@@ -86,7 +86,7 @@ Garde-fous côté démon : journal expurgé (saisies et corps réduits à leur l
 
 | Outil | Rôle |
 |---|---|
-| `downloads` / `read_document` | Télécharge avec la session, suit, liste ; lit PDF (OCR si scanné), Word, PowerPoint, Excel, texte |
+| `downloads` / `read_document` | Télécharge avec la session, suit, liste ; lit PDF (OCR si scanné : Windows, ou Tesseract sous Linux), Word, PowerPoint, Excel, texte ; Téléchargements = dossier XDG sous Linux (`Téléchargements` en français) |
 | `history_search` | Retrouve une page visitée (requête vide = récentes ; sites interdits exclus) |
 | `site_api` | Mémoire par site : routes + appels capturés du HAR + macros + notes, rejoués vite (list, save_call, save_route, note, delete, suggest_macros, save_macro) + brief servi en tête à l'arrivée (navigate, tabs_create, tabs_context) + suggestion de mémorisation à la fermeture d'un onglet riche |
 | `scroll_extract` | Extrait tous les items d'une liste à chargement progressif en un appel (scroll + collecte + attente réactive par MutationObserver + déduplication ; `direction: up` pour les historiques, `left`/`right` pour l'horizontal avec bascule auto d'axe ; `loadMore` pour les listes à bouton ; repli scroll synthétique si la fenêtre est bridée ; gros volume en fichier) |

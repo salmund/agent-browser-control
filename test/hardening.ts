@@ -21,6 +21,7 @@ const { parsePages } = await import("../server/documents.ts");
 const { validateMediaRequest } = await import("../server/media.ts");
 const { macroToScript, wrapSiteMemory } = await import("../server/analysis.ts");
 const H = await import("../server/har.ts");
+const U = await import("../server/user-dirs.ts");
 
 try {
   assert.strictEqual(CONFIG_DIR, configDir, "ABC_CONFIG_DIR respecté");
@@ -104,6 +105,9 @@ try {
     writeFileSync(p, "s");
     refuse(p, `fichier de secrets : ${name}`);
   }
+  writeFileSync(join(files, ".envoi_devoir.pdf"), "pdf");
+  assert.ok(S.checkUploadPaths([join(files, ".envoi_devoir.pdf")], configDir).ok, ".envoi… n'est pas un .env");
+  assert.ok(refuse(join(files, "absent.pdf"), "introuvable").includes("démon"), "introuvable : dit qui cherche");
   // Dossiers sensibles (jugés sur le chemin réel ; le dossier temporaire du système, lui, reste permis).
   for (const d of [".ssh", ".aws", ".gnupg"]) {
     assert.ok(S.uploadRefusal(`/home/x/${d}/config`, configDir)?.includes(d), `dossier ${d}`);
@@ -143,6 +147,34 @@ try {
   assert.ok(Date.now() - started < 100, "sans boucle géante");
   assert.deepStrictEqual(parsePages("2, 5-6, x, 0-1", 6), [1, 2, 5, 6]);
   assert.deepStrictEqual(parsePages(undefined, 2), [1, 2]);
+
+  // --- Dossier Téléchargements (XDG) et copie des envois pour un navigateur confiné ------------
+  const home = join(dir, "maison");
+  mkdirSync(join(home, ".config"), { recursive: true });
+  assert.strictEqual(U.downloadsDir(home, {}, "linux"), join(home, "Downloads"), "sans user-dirs.dirs : ~/Downloads");
+  writeFileSync(join(home, ".config", "user-dirs.dirs"), '# xdg\nXDG_DESKTOP_DIR="$HOME/Bureau"\nXDG_DOWNLOAD_DIR="$HOME/Téléchargements"\n');
+  assert.strictEqual(U.downloadsDir(home, {}, "linux"), `${home}/Téléchargements`, "dossier XDG localisé");
+  assert.strictEqual(U.downloadsDir(home, { XDG_DOWNLOAD_DIR: "/data/dl/" }, "linux"), "/data/dl", "variable d'environnement d'abord");
+  writeFileSync(join(home, ".config", "user-dirs.dirs"), 'XDG_DOWNLOAD_DIR="$HOME/"\n');
+  assert.strictEqual(U.downloadsDir(home, {}, "linux"), join(home, "Downloads"), "« $HOME/ » : dossier désactivé");
+  assert.strictEqual(U.downloadsDir(home, {}, "win32"), join(home, "Downloads"), "Windows : ~/Downloads");
+  assert.ok(U.browserMayNotSee(join(dir, "srv", "devoir.pdf"), home, "linux"), "hors du dossier personnel");
+  assert.ok(U.browserMayNotSee(join(home, ".cache", "f.pdf"), home, "linux"), "dossier caché");
+  assert.ok(!U.browserMayNotSee(join(home, "Téléchargements", "f.pdf"), home, "linux"), "dossier personnel visible");
+  assert.ok(!U.browserMayNotSee(join(dir, "srv", "f.pdf"), home, "win32"), "Windows : rien à copier");
+  mkdirSync(join(dir, "srv", "a"), { recursive: true });
+  mkdirSync(join(home, "Documents"), { recursive: true });
+  writeFileSync(join(dir, "srv", "devoir.pdf"), "1");
+  writeFileSync(join(dir, "srv", "a", "devoir.pdf"), "2");
+  writeFileSync(join(home, "Documents", "cv.pdf"), "3");
+  const envois = join(home, "Téléchargements", "agent-browser-control", "envois");
+  const st = U.stageForBrowser([join(dir, "srv", "devoir.pdf"), join(home, "Documents", "cv.pdf"), join(dir, "srv", "a", "devoir.pdf")], envois, home, "linux");
+  assert.strictEqual(st.staged, 2, "deux copies");
+  assert.strictEqual(st.paths[1], join(home, "Documents", "cv.pdf"), "fichier visible : chemin inchangé");
+  assert.ok(st.paths[0].startsWith(envois) && st.paths[0].endsWith("devoir.pdf") && st.paths[2].endsWith("devoir.pdf") && st.paths[0] !== st.paths[2], "noms gardés, sans écrasement");
+  assert.deepStrictEqual([readFileSync(st.paths[0], "utf8"), readFileSync(st.paths[2], "utf8")], ["1", "2"], "contenus copiés");
+  const intact = [join(home, "Documents", "cv.pdf")];
+  assert.strictEqual(U.stageForBrowser(intact, envois, home, "linux").paths, intact, "rien à copier : même liste");
 
   // --- download_media : validation -------------------------------------------------------------
   assert.strictEqual(typeof validateMediaRequest({ url: "--exec=calc" }), "string", "option déguisée refusée");
@@ -194,7 +226,7 @@ try {
   H.closeTab(42);
   assert.ok(!existsSync(join(configDir, "har", "42.jsonl")) && !existsSync(join(configDir, "har", "42.json")), "supprimé à la fermeture");
 
-  console.log("garde-fous : OK (délais, appels, journal, file_upload, accès, fichiers joints, pages, yt-dlp, macros, mémoire de site, HAR)");
+  console.log("garde-fous : OK (délais, appels, journal, file_upload, accès, fichiers joints, pages, Téléchargements, envois, yt-dlp, macros, mémoire de site, HAR)");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

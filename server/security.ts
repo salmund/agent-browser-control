@@ -89,8 +89,8 @@ const FORBIDDEN_DIRS = new Set([".ssh", ".gnupg", ".aws", ".azure", ".kube", ".d
 /** Profils de navigateurs (Windows hors AppData, macOS, Linux). */
 const BROWSER_PROFILE =
   /(^|\/)(user data|\.mozilla)(\/|$)|\/library\/application support\/(google|chromium|bravesoftware|microsoft edge|firefox|comet|perplexity|vivaldi|arc)(\/|$)|\/\.config\/(google-chrome[^/]*|chromium|bravesoftware|microsoft-edge[^/]*|vivaldi)(\/|$)/;
-/** Fichiers de secrets : archives réseau, clés, certificats, environnements. */
-const FORBIDDEN_FILE = /(\.(har|pem|key|p12|pfx)$|^id_(rsa|dsa|ecdsa|ed25519)|^\.env|^\.netrc$|^\.git-credentials$)/;
+/** Fichiers de secrets : archives réseau, clés, certificats, environnements (.env, .env.local, pas .envoi.pdf). */
+const FORBIDDEN_FILE = /(\.(har|pem|key|p12|pfx)$|^id_(rsa|dsa|ecdsa|ed25519)|^\.env(\.[\w-]+)?$|^\.netrc$|^\.git-credentials$)/;
 
 function insideDir(path: string, dir: string): boolean {
   const rel = relative(dir, path);
@@ -142,7 +142,10 @@ export function checkUploadPaths(paths: unknown, configDir: string): UploadCheck
     try {
       real = realpathSync(p);
     } catch {
-      return fail(`fichier introuvable : ${p}`);
+      return fail(
+        `fichier introuvable : ${p} (cherché par le démon d'ABC, sous son propre compte : un /tmp ou un bac à sable ` +
+          "propre à l'agent lui est invisible, déposer le fichier dans un dossier partagé).",
+      );
     }
     try {
       if (!statSync(real).isFile()) return fail(`${p} n'est pas un fichier.`);
