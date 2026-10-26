@@ -115,7 +115,7 @@ try {
     g(["commit", "-q", "-m", `version ${v}`]);
     g(["push", "-q", "origin", "HEAD:main"]);
   };
-  version("1.0.0", { "CHANGELOG.md": "# Journal\n", "notes.txt": "a\n", "lib.txt": "v1\n" });
+  version("1.0.0", { "CHANGELOG.md": "# Journal\n", "notes.txt": "a\n", "lib.txt": "v1\n", "package-lock.json": '{"version":"1.0.0"}\n' });
   execFileSync("git", ["clone", "-q", "-c", "core.autocrlf=false", origine, appareil], { stdio: "ignore" });
   mkdirSync(join(appareil, "node_modules"));
   ecrire(join(confA, "site-api.json"), '{"routes":1}');
@@ -174,6 +174,24 @@ try {
   assert.ok(journalA.includes("relance 1.1.0"), "extension inchangée : pas rechargée");
   assert.match(notifs.at(-1)!, /v1\.1\.0[\s\S]*Argos : autoriser les nouveaux outils/, "notification avec ce qui est à faire hors du dépôt");
   assert.strictEqual((await etapeA(faux(), optA)).message.startsWith("Déjà à jour"), true);
+  // Dépôt à jour mais démon resté sur un code plus ancien : relancé, sans rien tirer.
+  demon = "1.0.0";
+  journalA.length = 0;
+  const rattrape = await etapeA(faux(), optA);
+  assert.strictEqual(rattrape.code, 0, `rattrapage : ${rattrape.message}\n${journalA.join("\n")}`);
+  assert.match(rattrape.message, /relancé sur le code du dépôt.*il tournait en 1\.0\.0/, "démon en retard relancé");
+  assert.ok(journalA.includes("relance 1.1.0") && !journalA.includes("npm ci"), "relance seule, sans npm ci");
+  assert.strictEqual((await etapeA(faux(), optA)).message.startsWith("Déjà à jour"), true, "puis à jour");
+  // Version montée sur place (poste de développement) : relancée, et le verrou modifié avec package.json est gardé.
+  ecrire(join(appareil, "package.json"), JSON.stringify({ name: "abc-essai", version: "1.1.1" }, null, 2));
+  ecrire(join(appareil, "package-lock.json"), '{"version":"1.1.1"}\n');
+  const surPlace = await etapeA(faux(), optA);
+  assert.match(surPlace.message, /relancé sur le code du dépôt.*\(v1\.1\.1\) ; il tournait en 1\.1\.0/, `version montée sur place : ${surPlace.message}`);
+  assert.strictEqual(readFileSync(join(appareil, "package-lock.json"), "utf8"), '{"version":"1.1.1"}\n', "verrou modifié avec package.json : gardé");
+  gitIn(appareil)(["checkout", "-q", "--", "package.json", "package-lock.json"]);
+  demon = "1.1.0";
+  // Verrou réécrit par npm seul : remis à la version du dépôt au passage suivant.
+  ecrire(join(appareil, "package-lock.json"), '{"version":"réécrit par npm"}\n');
 
   // 2. Échec : une migration passe, la suivante modifie les réglages puis casse ; retour à 1.1.0 et aux réglages
   // d'avant, et la migration passée sera rejouée (elle n'est plus notée faite).
@@ -185,6 +203,7 @@ try {
   const avant12 = gitIn(appareil)(["rev-parse", "HEAD"]);
   const r2 = await etapeA(faux(), optA);
   assert.strictEqual(r2.code, 1, r2.message);
+  assert.strictEqual(readFileSync(join(appareil, "package-lock.json"), "utf8"), '{"version":"1.0.0"}\n', "verrou réécrit par npm seul : remis");
   assert.strictEqual(gitIn(appareil)(["rev-parse", "HEAD"]), avant12, "retour au commit d'avant");
   assert.strictEqual(readFileSync(join(confA, "site-api.json"), "utf8"), '{"routes":2}', "réglages restaurés");
   assert.deepStrictEqual(migrationsFaites(confA), ["0001-routes"], "migration passée de nouveau à faire");
@@ -213,7 +232,7 @@ try {
   assert.strictEqual(readFileSync(join(confA, "site-api.json"), "utf8"), '{"routes":3}');
   assert.ok(journalA.includes("relance 1.3.0 + extension"), "extension changée : rechargée");
 
-  console.log("maj : OK (profil, calme, instantané, migrations, dépendances locales, journal, intégrations, verrou, réussite, retour arrière, conflit)");
+  console.log("maj : OK (profil, calme, instantané, migrations, dépendances locales, journal, intégrations, verrou, réussite, rattrapage, retour arrière, conflit)");
 } finally {
   rmSync(racine, { recursive: true, force: true });
 }

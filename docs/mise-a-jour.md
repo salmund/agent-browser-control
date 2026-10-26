@@ -22,7 +22,9 @@ La mise à jour se fait en deux étapes, pour qu'une restructuration majeure pas
 1. Verrou : une seule mise à jour à la fois.
 2. `git fetch`, puis refus net si le dépôt local a divergé (commits locaux), ou si une modification locale
    porte sur un fichier que la mise à jour change. Les autres modifications locales (un développement en
-   cours) sont gardées.
+   cours) sont gardées ; le verrou npm (`package-lock.json`), que npm réécrit à sa façon, est remis à la version
+   du dépôt, sauf si `package.json` est modifié lui aussi (version montée sur place). Dépôt déjà à jour mais démon en service à une autre version (commit fait sur place,
+   relance oubliée) : la suite se déroule quand même, sans rien tirer, pour relancer le code du dépôt.
 3. Calme : aucun appel à ABC depuis `reposSecondes`, et les services de `occupe` au repos (un assistant qui
    s'appuie sur ABC ne doit pas perdre un tour). Au bout de `attenteMaxMinutes`, on abandonne et on repassera.
 4. Instantané des réglages (`~/.agent-browser-control/*.json` et les fonctions apprises).
@@ -34,8 +36,10 @@ La mise à jour se fait en deux étapes, pour qu'une restructuration majeure pas
 2. `npm ci` si `package.json` ou `package-lock.json` ont changé (le démon est arrêté avant : sous Windows, un
    démon lancé verrouille les modules natifs).
 3. Migrations du dossier `migrations/` pas encore faites sur cet appareil.
-4. Relance du démon ; recharge de l'extension si son code a changé ; si elle ne revient pas, relance du
-   navigateur (profil).
+4. Relance du démon ; recharge de l'extension si son code a changé, ou si celle qui tourne n'est pas à la
+   version du dépôt ; si elle ne revient pas, relance du navigateur (profil). Avec `extensionParNavigateur`,
+   l'extension est rechargée puis le navigateur relancé : relancé seul, Chromium garde en cache le code du
+   service worker tant que la version de l'extension ne change pas.
 5. Vérifications : version du démon égale à celle du dépôt, extension connectée, à la même version et pas
    périmée (`extensionStale`), et **tous les outils** de `server/tools.ts` servis par le démon relancé.
 6. Intégrations : les fichiers du dépôt lus par d'autres outils (le skill de Claude Code) sont recopiés là où

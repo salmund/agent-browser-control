@@ -4,6 +4,14 @@ Ce qui change à chaque version. La rubrique « Intégrations » dit ce qui est 
 branchés sur ABC, consignes des agents, scripts d'un appareil) : `npm run update` la rappelle dans la notification de chaque
 appareil qui franchit la version.
 
+## 0.10.2
+
+- Mise à jour : un dépôt déjà à jour dont le démon tourne encore sur une autre version (commit fait sur place,
+  relance oubliée) n'est plus « déjà à jour » : le démon est relancé sur le code du dépôt, et l'extension rechargée
+  si celle qui tourne n'est pas à la version du dépôt (même quand git ne voit rien changer dans `extension/`).
+- Mise à jour : le verrou npm modifié sur place n'est plus remis à la version du dépôt quand `package.json` est
+  modifié lui aussi (version montée sur un poste de développement).
+
 ## 0.10.1
 
 - Mise à jour : quand l'extension change et que l'appareil la recharge en relançant son navigateur

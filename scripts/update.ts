@@ -86,6 +86,14 @@ async function relancer({ extension = true } = {}): Promise<string | null> {
   for (let i = 0; i < 60 && !(h = await sante()); i++) await sleep(250);
   if (!h) return "le démon ne répond pas après son démarrage (le lancer à la main : npm run daemon, pour voir l'erreur)";
   for (let i = 0; i < 40 && !(await sante())?.extensionConnected; i++) await sleep(1000);
+  // git ne dit que ce qui change entre deux commits : une extension restée en retard (relance forcée, appareil
+  // rattrapé à la main) se recharge aussi.
+  const enService = await sante();
+  const versionDuDepot = JSON.parse(readFileSync(join(ROOT, "extension", "manifest.json"), "utf8")).version;
+  if (!extension && enService?.extensionConnected && (enService.extensionVersion !== versionDuDepot || enService.extensionStale)) {
+    log(`L'extension en service (${enService.extensionVersion}) n'est pas celle du dépôt (${versionDuDepot}) : elle sera rechargée.`);
+    extension = true;
+  }
   const recharger = async () => {
     await fetch(`${BASE_URL}/reload-extension`, { method: "POST", headers: { "x-abc-token": jeton() } }).catch(() => null);
     for (let i = 0; i < 10 && (await sante())?.extensionConnected; i++) await sleep(1000); // elle se débranche le temps de se recharger

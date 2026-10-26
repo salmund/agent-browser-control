@@ -328,7 +328,12 @@ export async function etapeA(o: OutilsA, opt: OptionsA): Promise<{ code: number;
     o.git(["fetch", "-q", "origin", branche]);
     const avant = o.git(["rev-parse", "HEAD"]);
     const cible = o.git(["rev-parse", `origin/${branche}`]);
-    if (avant === cible && !opt.force) return fin(0, `Déjà à jour (${avant.slice(0, 7)}).`);
+    // Dépôt à jour, démon resté sur un code plus ancien (commit fait sur place, relance oubliée) : il est relancé.
+    const enService = avant === cible && !opt.force ? (await o.sante())?.version : undefined;
+    const duDepot = enService ? versionDuDepot(opt.depot) : undefined;
+    const enRetard = !!enService && !!duDepot && enService !== duDepot;
+    if (avant === cible && !opt.force && !enRetard) return fin(0, `Déjà à jour (${avant.slice(0, 7)}).`);
+    if (enRetard) o.log(`Dépôt à jour (${avant.slice(0, 7)}), mais le démon en service est en ${enService} et le dépôt en ${duDepot} : relance.`);
     const etat = lireEtat(opt.configDir);
     if (etat.echec === cible && !opt.force) return fin(0, `${cible.slice(0, 7)} a déjà échoué ici : pas de nouvel essai avant la version suivante (--force pour insister).`);
 
@@ -337,8 +342,11 @@ export async function etapeA(o: OutilsA, opt: OptionsA): Promise<{ code: number;
     } catch {
       return fin(1, `Le dépôt local a divergé de origin/${branche} (commits locaux) : rien fait. Les pousser ou les écarter d'abord.`);
     }
-    // npm réécrit le verrou à sa façon : la version du dépôt fait foi.
-    if (o.git(["status", "--porcelain", "--", "package-lock.json"])) o.git(["checkout", "-q", "--", "package-lock.json"]);
+    // npm réécrit le verrou à sa façon : la version du dépôt fait foi. Sauf si package.json est modifié lui aussi :
+    // c'est un développement en cours (une version montée sur place), le verrou va avec.
+    if (o.git(["status", "--porcelain", "--", "package-lock.json"]) && !o.git(["status", "--porcelain", "--", "package.json"])) {
+      o.git(["checkout", "-q", "--", "package-lock.json"]);
+    }
     // Des modifications locales (un développement en cours) sont gardées, sauf si la mise à jour touche les mêmes fichiers.
     const locales = o.git(["diff", "--name-only", "HEAD"]).split("\n").filter(Boolean);
     const touches = new Set(o.git(["diff", "--name-only", avant, cible]).split("\n").filter(Boolean));
@@ -361,12 +369,17 @@ export async function etapeA(o: OutilsA, opt: OptionsA): Promise<{ code: number;
     const instantane = join(opt.configDir, "maj", "instantane");
     o.log(`Instantané des réglages : ${prendreInstantane(opt.configDir, instantane).length} fichier(s).`);
     o.git(["merge", "-q", "--ff-only", cible]);
-    o.log(`Avancé de ${avant.slice(0, 7)} à ${cible.slice(0, 7)} ; suite par le nouveau code.`);
+    o.log(avant === cible ? `Rien à tirer (${avant.slice(0, 7)}) ; suite par le code du dépôt.` : `Avancé de ${avant.slice(0, 7)} à ${cible.slice(0, 7)} ; suite par le nouveau code.`);
 
     const raisonB = await o.etapeB(avant, cible).catch((err) => `étape B : ${err instanceof Error ? err.message : err}`);
     if (raisonB === null) {
       ecrireEtat(opt.configDir, { derniere: { de: avant, vers: cible, le: new Date().toISOString(), ok: true } });
       const version = (await o.sante())?.version ?? "?";
+      if (avant === cible) {
+        const message = `ABC relancé sur le code du dépôt, ${avant.slice(0, 7)} (v${version})${enRetard ? ` ; il tournait en ${enService}` : ""}.`;
+        o.notifier(`ABC relancé sur ${opt.profil.nom} (v${version})`, message, 2);
+        return fin(0, message);
+      }
       const nouveautes = o.git(["log", "-n", "10", "--format=- %s", `${avant}..${cible}`]);
       const notes = notesAvantApres(o, opt.depot, avant);
       const aFaire = notes.integrations.length ? `\n\nÀ faire hors du dépôt :\n${notes.integrations.map((l) => `- ${l}`).join("\n")}` : "";
@@ -398,6 +411,14 @@ export async function etapeA(o: OutilsA, opt: OptionsA): Promise<{ code: number;
     return fin(1, `Mise à jour vers ${cible.slice(0, 7)} ratée ; ${apres ? `ATTENTION, la version précédente ne repart pas non plus : ${apres}` : "version précédente revenue"}.`);
   } finally {
     liberer();
+  }
+}
+
+function versionDuDepot(depot: string): string | undefined {
+  try {
+    return JSON.parse(readFileSync(join(depot, "package.json"), "utf8")).version;
+  } catch {
+    return undefined;
   }
 }
 
