@@ -155,22 +155,31 @@ function notifier(titre: string, message: string, priorite: number): void {
 // code 0 si la nouvelle version est en place, sinon la raison dans ce fichier.
 const RAISON_B = join(CONFIG_DIR, "maj", "raison-etape-b.txt");
 
+// Fin par process.exitCode, pas process.exit() : sous Windows, Node s'arrête sur une assertion de libuv
+// (« !(handle->flags & UV_HANDLE_CLOSING) ») quand process.exit() tombe pendant la fermeture des connexions de fetch,
+// et le code de sortie ment alors (constaté le 26/10/2026 après une mise à jour réussie).
 if (args[0] === "--etape-b") {
   try {
     await etapeB({ git, npmCi, arreterDemon, relancer, sante, outilsMcp, outilsAttendus, log }, { depot: ROOT, configDir: CONFIG_DIR, profil, avant: args[1], cible: args[2] });
-    process.exit(0);
+    process.exitCode = 0;
   } catch (err) {
     const raison = err instanceof Error ? err.message : String(err);
     console.error(`Nouvelle version : ${raison}`);
     mkdirSync(join(CONFIG_DIR, "maj"), { recursive: true });
     writeFileSync(RAISON_B, raison);
-    process.exit(1);
+    process.exitCode = 1;
   }
+} else {
+  const r = await etapeA(
+    { git, npmCi, sante, lireJson, attendre: sleep, etapeB: etapeBNeuve, arreterDemon, relancer, notifier, log },
+    { depot: ROOT, configDir: CONFIG_DIR, profil, force: args.includes("--force"), auto: args.includes("--auto"), maintenant: args.includes("--maintenant") },
+  );
+  process.exitCode = r.code;
 }
 
 // Étape B : le script tout juste récupéré, relancé depuis le disque (il sait migrer depuis l'ancienne version).
-const etapeBNeuve = (avant: string, cible: string) =>
-  new Promise<string | null>((ok) => {
+function etapeBNeuve(avant: string, cible: string): Promise<string | null> {
+  return new Promise<string | null>((ok) => {
     rmSync(RAISON_B, { force: true });
     const p = spawn(process.execPath, [join(ROOT, "scripts", "update.ts"), "--etape-b", avant, cible], { cwd: ROOT, stdio: "inherit" });
     const raison = (code: number | null) => {
@@ -183,9 +192,4 @@ const etapeBNeuve = (avant: string, cible: string) =>
     p.on("exit", (code) => ok(code === 0 ? null : raison(code)));
     p.on("error", (err) => ok(`la nouvelle version n'a pas pu être lancée : ${err.message}`));
   });
-
-const r = await etapeA(
-  { git, npmCi, sante, lireJson, attendre: sleep, etapeB: etapeBNeuve, arreterDemon, relancer, notifier, log },
-  { depot: ROOT, configDir: CONFIG_DIR, profil, force: args.includes("--force"), auto: args.includes("--auto"), maintenant: args.includes("--maintenant") },
-);
-process.exit(r.code);
+}
