@@ -399,7 +399,7 @@ export function exportHar(entries: HarEntry[], name: string, includeSecrets: boo
   const har = {
     log: {
       version: "1.2",
-      creator: { name: "Agent Browser Control", version: "0.10.2" },
+      creator: { name: "Agent Browser Control", version: "0.11.0" },
       pages: [],
       entries: entries.map((e) => {
         const url = includeSecrets ? e.url : maskUrl(e.url);

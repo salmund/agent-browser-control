@@ -40,6 +40,8 @@ try {
   const { tools } = await client.listTools();
   assert.strictEqual(tools.length, TOOLS.length, "tous les outils listés");
   console.log(`outils : ${tools.length}`);
+  const catalogue = (await (await fetch(`${t.base}/skills`, { headers: { "x-abc-token": t.token() } })).json()) as { tools?: { name: string }[] };
+  assert.deepStrictEqual(catalogue.tools?.map((x) => x.name), TOOLS.map((x) => x.name), "/skills : définitions du code en service, pour un shim plus ancien");
 
   // Accès : page web (Origin), Host inattendu, jeton absent ou faux, corps invalide.
   assert.strictEqual((await fetch(`${t.base}/health`, { headers: { origin: "https://evil.example" } })).status, 403, "Origin web refusée");

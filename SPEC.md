@@ -227,6 +227,9 @@ Cible ultérieure : extension migrée sous **WXT** en TypeScript quand elle gros
 ```
 
 En HTTP, le nom d'agent vient de `?agent=` (ou de l'en-tête `x-abc-agent`) ; le serveur est sans état, donc sans notification `list_changed` : la liste d'outils est relue à chaque `tools/list`.
+Le shim stdio, lui, sert la liste du démon en service (`GET /skills` : `tools`, avec les descriptions calculées) plutôt
+que celle du code qu'il a chargé, et envoie `list_changed` quand un réglage, le catalogue des fonctions ou la version
+du démon change : après une mise à jour, une session ouverte voit les nouveaux outils sans être relancée.
 
 ## 7. Feuille de route
 

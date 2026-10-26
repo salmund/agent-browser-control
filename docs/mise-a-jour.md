@@ -53,6 +53,14 @@ cette version n'est pas retentée avant la suivante (sauf `--force`).
 **À la fin**, la notification de l'appareil reçoit les nouveautés et, tirée de `CHANGELOG.md`, la liste de ce
 qui est à faire hors du dépôt pour les versions franchies.
 
+**Les sessions d'agents déjà ouvertes** n'ont rien à faire : le shim stdio sert la liste d'outils du démon en
+service (`/skills`), pas celle du code qu'il a chargé au démarrage, et prévient l'agent (`list_changed`) quand la
+version du démon change. Un outil ajouté par la mise à jour est donc utilisable sans relancer la session (depuis
+0.11.0 : un shim plus ancien garde sa liste jusqu'au redémarrage de sa session).
+
+Un poste de développement en avance sur l'origine (commits pas encore poussés) n'est pas une divergence : rien à
+tirer, et le démon est relancé s'il tourne sur une autre version que le dépôt.
+
 ## Le profil de l'appareil
 
 `~/.agent-browser-control/appareil.json`, tous les champs facultatifs :

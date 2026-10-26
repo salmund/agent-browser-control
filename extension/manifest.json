@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Browser Control",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Permet à n'importe quel agent MCP de piloter le navigateur (équivalent de Claude in Chrome).",
   "minimum_chrome_version": "120",
   "permissions": [

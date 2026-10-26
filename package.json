@@ -1,6 +1,6 @@
 {
   "name": "agent-browser-control",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "The controls of your real browser, for any AI agent: Chrome extension + MCP server.",
   "scripts": {
     "daemon": "node server/daemon.ts",

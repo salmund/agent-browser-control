@@ -327,7 +327,9 @@ export async function etapeA(o: OutilsA, opt: OptionsA): Promise<{ code: number;
     const { branche } = opt.profil;
     o.git(["fetch", "-q", "origin", branche]);
     const avant = o.git(["rev-parse", "HEAD"]);
-    const cible = o.git(["rev-parse", `origin/${branche}`]);
+    let cible = o.git(["rev-parse", `origin/${branche}`]);
+    // En avance sur l'origine (commits pas encore poussés, poste de développement) : rien à tirer, ce n'est pas une divergence.
+    if (avant !== cible && estAncetre(o, cible, avant)) cible = avant;
     // Dépôt à jour, démon resté sur un code plus ancien (commit fait sur place, relance oubliée) : il est relancé.
     const enService = avant === cible && !opt.force ? (await o.sante())?.version : undefined;
     const duDepot = enService ? versionDuDepot(opt.depot) : undefined;
@@ -411,6 +413,15 @@ export async function etapeA(o: OutilsA, opt: OptionsA): Promise<{ code: number;
     return fin(1, `Mise à jour vers ${cible.slice(0, 7)} ratée ; ${apres ? `ATTENTION, la version précédente ne repart pas non plus : ${apres}` : "version précédente revenue"}.`);
   } finally {
     liberer();
+  }
+}
+
+function estAncetre(o: OutilsA, ancetre: string, de: string): boolean {
+  try {
+    o.git(["merge-base", "--is-ancestor", ancetre, de]);
+    return true;
+  } catch {
+    return false;
   }
 }
 

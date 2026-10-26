@@ -190,6 +190,14 @@ try {
   assert.strictEqual(readFileSync(join(appareil, "package-lock.json"), "utf8"), '{"version":"1.1.1"}\n', "verrou modifié avec package.json : gardé");
   gitIn(appareil)(["checkout", "-q", "--", "package.json", "package-lock.json"]);
   demon = "1.1.0";
+  // Commit local pas encore poussé (en avance sur l'origine) : pas une divergence, le démon en retard est relancé.
+  ecrire(join(appareil, "package.json"), JSON.stringify({ name: "abc-essai", version: "1.1.2" }, null, 2));
+  gitIn(appareil)(["commit", "-q", "-m", "version 1.1.2 pas encore poussée", "--", "package.json"]);
+  const enAvance = await etapeA(faux(), optA);
+  assert.match(enAvance.message, /relancé sur le code du dépôt.*\(v1\.1\.2\) ; il tournait en 1\.1\.0/, `en avance sur l'origine : ${enAvance.message}`);
+  assert.strictEqual((await etapeA(faux(), optA)).message.startsWith("Déjà à jour"), true, "en avance, démon à jour : rien à faire");
+  gitIn(appareil)(["reset", "-q", "--keep", "HEAD~1"]);
+  demon = "1.1.0";
   // Verrou réécrit par npm seul : remis à la version du dépôt au passage suivant.
   ecrire(join(appareil, "package-lock.json"), '{"version":"réécrit par npm"}\n');
 

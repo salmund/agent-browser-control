@@ -4,6 +4,19 @@ Ce qui change à chaque version. La rubrique « Intégrations » dit ce qui est 
 branchés sur ABC, consignes des agents, scripts d'un appareil) : `npm run update` la rappelle dans la notification de chaque
 appareil qui franchit la version.
 
+## 0.11.0
+
+- Sessions ouvertes pendant une mise à jour : le shim stdio sert la liste d'outils du démon en service (`/skills`
+  renvoie aussi les définitions) et prévient l'agent (`list_changed`) quand la version du démon change. Avant, une
+  session démarrée avant la 0.9.0 ne voyait jamais `search`, `read_urls` ni `skill`, et pilotait pas à pas.
+- Mise à jour : un poste de développement en avance sur l'origine (commits pas encore poussés) n'est plus refusé
+  comme s'il avait divergé ; rien à tirer, et le démon en retard est relancé.
+
+### Intégrations
+
+- Sessions d'agents ouvertes avant cette version (Claude Code, Muse Code, DeepCode) : leur shim est l'ancien,
+  qui garde sa liste ; les relancer une fois pour profiter des verbes et du suivi des mises à jour suivantes.
+
 ## 0.10.2
 
 - Mise à jour : un dépôt déjà à jour dont le démon tourne encore sur une autre version (commit fait sur place,

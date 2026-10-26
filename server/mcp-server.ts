@@ -4,7 +4,7 @@
  * selon les réglages, mêmes consignes. Seuls le transport et l'appel diffèrent.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CallResult } from "./common.ts";
 import { SERVER_INSTRUCTIONS, TOOLS } from "./tools.ts";
 
@@ -18,6 +18,8 @@ export interface AbcServerOptions {
   call: (tool: string, args: Record<string, unknown>) => Promise<CallResult>;
   /** Descriptions calculées (catalogue des fonctions dans celle de skill) ; null ou absent : descriptions fixes. */
   describe?: () => Record<string, string> | null | Promise<Record<string, string> | null>;
+  /** Définitions du démon en service (shim stdio, peut-être plus ancien que lui) ; null ou absent : celles de ce code. */
+  definitions?: () => Tool[] | null | Promise<Tool[] | null>;
 }
 
 export function createAbcServer(opts: AbcServerOptions): Server {
@@ -28,8 +30,9 @@ export function createAbcServer(opts: AbcServerOptions): Server {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const disabled = await opts.disabled();
     const described = (await Promise.resolve(opts.describe?.()).catch(() => null)) ?? {};
+    const tools = (await Promise.resolve(opts.definitions?.()).catch(() => null)) ?? TOOLS;
     return {
-      tools: TOOLS.filter((t) => !disabled.has(t.name)).map((t) => (described[t.name] ? { ...t, description: described[t.name] } : t)),
+      tools: tools.filter((t) => !disabled.has(t.name)).map((t) => (described[t.name] ? { ...t, description: described[t.name] } : t)),
     };
   });
   server.setRequestHandler(CallToolRequestSchema, async (req) => {

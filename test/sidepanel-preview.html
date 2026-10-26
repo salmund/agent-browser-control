@@ -17,7 +17,7 @@ const session = {
   connected: !params.has("off") && !params.has("refused"),
   connError: params.has("refused") ? "Le démon accepte une autre installation de l'extension. Pour autoriser celle-ci : npm run unpin-extension, puis Reconnecter." : "",
   paused: params.has("paused"),
-  daemonVersion: "0.10.2",
+  daemonVersion: "0.11.0",
   pausedAgents: params.has("agentpause") ? ["deepcode"] : [],
   activity: params.has("empty") ? [] : [
     { id: 12, t: now - 2500, agent: "claude-code", color: "purple", tool: "wait_for", target: "« Envoyé »", host: "mail.exemple.fr", tabId: 11, summary: "« Envoyé »", status: "running" },
@@ -78,7 +78,7 @@ const ev = { addListener() {} };
 window.chrome = {
   storage: { session: store(session, "session"), local: store(local, "local") },
   runtime: {
-    getManifest: () => ({ version: "0.10.2" }),
+    getManifest: () => ({ version: "0.11.0" }),
     reload: () => console.log("reload"),
     sendMessage: async (m) => {
       console.log("message", m);
@@ -123,7 +123,7 @@ window.chrome = {
       if (m.type === "bw-lock") bwState = "locked";
       if (m.type === "bw-logout") bwState = "login";
       if (m.type === "credentials-state") return { ok: true, result: { unlocked: false } };
-      if (m.type === "diagnostic") return { ok: true, result: { version: "0.10.2" } };
+      if (m.type === "diagnostic") return { ok: true, result: { version: "0.11.0" } };
       return { ok: true };
     },
   },

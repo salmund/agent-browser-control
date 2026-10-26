@@ -119,11 +119,11 @@ import { createAbcServer } from "./mcp-server.ts";
 import { createPointer } from "./pointer.ts";
 import { repairEntities } from "./skills.ts";
 import { createSkillEngine } from "./verbs.ts";
-import { skillToolDescription } from "./tools.ts";
+import { TOOLS, skillToolDescription } from "./tools.ts";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.10.2";
+const VERSION = "0.11.0";
 const EXTENSION_WAIT_MS = 10_000;
 const LOG_FILE = join(CONFIG_DIR, "actions.log");
 /** Fichiers joints par l'extension (GIF, captures…). ABC_OUTPUT_DIR le remplace (tests). */
@@ -590,8 +590,9 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
 
   if (path === "/mcp") return handleMcpHttp(req, res, url);
 
-  // Catalogue des fonctions, pour la description de l'outil skill (shim stdio).
-  if (req.method === "GET" && path === "/skills") return sendJson(res, 200, { version: skillsVersion(), descriptions: toolDescriptions() });
+  // Catalogue des fonctions, pour la description de l'outil skill (shim stdio), et définitions des outils du code en
+  // service : un shim démarré avant une mise à jour sert ainsi les nouveaux outils sans que l'agent relance sa session.
+  if (req.method === "GET" && path === "/skills") return sendJson(res, 200, { version: skillsVersion(), descriptions: toolDescriptions(), tools: TOOLS });
 
   if (req.method === "GET" && path === "/events") return openEvents(res);
 
