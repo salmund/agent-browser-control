@@ -4,6 +4,13 @@ Ce qui change à chaque version. La rubrique « Intégrations » dit ce qui est 
 branchés sur ABC, consignes des agents, scripts d'un appareil) : `npm run update` la rappelle dans la notification de chaque
 appareil qui franchit la version.
 
+## 0.10.1
+
+- Mise à jour : quand l'extension change et que l'appareil la recharge en relançant son navigateur
+  (`extensionParNavigateur`), elle est d'abord rechargée, puis le navigateur relancé. Relancé seul, le navigateur
+  garde en cache le code du service worker tant que la version de l'extension ne change pas : un correctif de
+  l'extension sans changement de version restait sans effet (et la mise à jour revenait en arrière).
+
 ## 0.10.0
 
 - Mise à jour formalisée, la même sur tous les appareils (`docs/mise-a-jour.md`) : `npm run update` en deux

@@ -86,15 +86,22 @@ async function relancer({ extension = true } = {}): Promise<string | null> {
   for (let i = 0; i < 60 && !(h = await sante()); i++) await sleep(250);
   if (!h) return "le démon ne répond pas après son démarrage (le lancer à la main : npm run daemon, pour voir l'erreur)";
   for (let i = 0; i < 40 && !(await sante())?.extensionConnected; i++) await sleep(1000);
-  if (extension && profil.extensionParNavigateur && profil.navigateur) {
-    log("Extension changée : relance du navigateur (profil de l'appareil).");
-    try {
-      lancer(profil.navigateur);
-    } catch {}
-  } else if (extension) {
+  const recharger = async () => {
     await fetch(`${BASE_URL}/reload-extension`, { method: "POST", headers: { "x-abc-token": jeton() } }).catch(() => null);
     for (let i = 0; i < 10 && (await sante())?.extensionConnected; i++) await sleep(1000); // elle se débranche le temps de se recharger
-  }
+  };
+  // Un navigateur relancé seul garde en cache le code du service worker tant que la version de l'extension ne change
+  // pas : le rechargement relit le code sur le disque (sur Chromium en snap, il coupe aussi l'extension), la relance
+  // du navigateur la rebranche (vérifié sur un banc, 26/10/2026).
+  const rechargerPuisRelancer = async (pourquoi: string) => {
+    log(`${pourquoi} : rechargement de l'extension, puis relance du navigateur (profil de l'appareil).`);
+    await recharger();
+    try {
+      lancer(profil.navigateur!);
+    } catch {}
+  };
+  if (extension && profil.extensionParNavigateur && profil.navigateur) await rechargerPuisRelancer("Extension changée");
+  else if (extension) await recharger();
   for (let essai = 0; essai < 2; essai++) {
     for (let i = 0; i < 45; i++) {
       h = await sante();
@@ -102,13 +109,12 @@ async function relancer({ extension = true } = {}): Promise<string | null> {
       await sleep(2000);
     }
     if (essai || !profil.navigateur) break;
-    log("L'extension ne revient pas : relance du navigateur (profil de l'appareil).");
-    try {
-      lancer(profil.navigateur);
-    } catch {}
+    await rechargerPuisRelancer(h?.extensionStale ? "Code de l'extension resté en cache" : "L'extension ne revient pas");
   }
   if (!h?.extensionConnected) return "l'extension ne s'est pas reconnectée (navigateur fermé ?)";
-  if (h.extensionStale) return "le navigateur exécute encore l'ancien code de l'extension (recharger l'extension ou relancer le navigateur)";
+  if (h.extensionStale) {
+    return "le navigateur exécute encore l'ancien code de l'extension (le recharger, puis relancer le navigateur ; ou monter la version de l'extension, que le navigateur relit toujours)";
+  }
   return `versions désynchronisées : démon ${h.version}, extension ${h.extensionVersion}`;
 }
 
