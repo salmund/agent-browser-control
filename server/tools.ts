@@ -3,7 +3,10 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 /** Consignes du serveur MCP, identiques pour le shim stdio et l'endpoint HTTP /mcp. */
 export const SERVER_INSTRUCTIONS =
   "Contrôle du navigateur principal de l'utilisateur via l'extension Agent Browser Control. " +
-  "Commence par tabs_context ; si aucun onglet, crée-en un avec tabs_create. " +
+  "Pense en verbes avant de piloter pas à pas : search (web, images, vidéos ; read: N lit aussi les pages), read_urls " +
+  "(plusieurs pages d'un coup) et les fonctions apprises de skill font un parcours entier en 1 appel. " +
+  "Un parcours nouveau réussi sur un site (une recherche, une liste, un relevé) resservira avec d'autres valeurs : fige-le en fonction (skill save) avant de répondre, la prochaine fois ce sera 1 appel. " +
+  "Commence par tabs_context (il donne aussi le catalogue des fonctions) ; si aucun onglet, crée-en un avec tabs_create. " +
   "Si tu es un des sous-agents d'un workflow (plusieurs agents en parallèle avec cette même connexion), " +
   "donne un label court et unique à tabs_context et tabs_create : tu as ainsi ton propre groupe d'onglets. " +
   "Travaille uniquement dans tes onglets. Préfère read_page / find + ref pour cibler les éléments, form_input pour les formulaires, " +
@@ -21,9 +24,9 @@ const label = {
 
 const wait = {
   type: "string",
-  enum: ["ready", "load"],
+  enum: ["ready", "load", "dom"],
   default: "ready",
-  description: "ready : dès que la page est utilisable ; load : chargement complet (rare).",
+  description: "ready : dès que la page est utilisable ; load : chargement complet (rare) ; dom : dès DOMContentLoaded, sans attendre que la page se stabilise (scripts qui relisent eux-mêmes).",
 } as const;
 
 const read = { type: "string", enum: ["interactive", "all", "text"], default: "interactive", description: "Format de la lecture renvoyée." } as const;
@@ -42,8 +45,85 @@ const extract = { type: ["string", "object"], description: "text (défaut), html
 const fieldValue = { type: ["string", "number", "boolean"] } as const;
 const fieldFormat = { type: "string", enum: ["text", "html", "markdown"] } as const;
 
-/** Outils exposés aux agents. L'extension implémente chacun d'eux sous le même nom. */
+const SKILL_DESCRIPTION =
+  "Fonctions d'ABC : un parcours entier (ouvrir, chercher, extraire, fermer) en 1 appel, sans aller-retour avec le modèle. " +
+  "run : lancer (name, args ; tabId pour travailler dans un de tes onglets). list : catalogue (site pour filtrer). show : code et statistiques. " +
+  "save : figer un parcours que tu viens de réussir, à faire avant de répondre dès qu'il resservira avec d'autres valeurs, ce qui est le cas de toute recherche ou relevé sur un site (name « site.verbe », description, params {nom: {type, required?, " +
+  "default?, description?}}, code = corps async de browser_script avec args, site, effects \"write\" s'il envoie ou publie, test: {args} " +
+  "pour l'essayer avant de l'enregistrer). delete : retirer. Une fonction en échec dit comment la réparer.";
+
+/** Description de l'outil skill, suivie du catalogue des fonctions (calculé par le démon). */
+export function skillToolDescription(catalog?: string): string {
+  return catalog ? `${SKILL_DESCRIPTION}\n\n${catalog}` : SKILL_DESCRIPTION;
+}
+
+/** Outils exposés aux agents. L'extension implémente chacun d'eux sous le même nom (sauf ceux du démon). */
 export const TOOLS: Tool[] = [
+  {
+    name: "search",
+    description:
+      "Recherche en 1 appel, avec la session de l'utilisateur : ouvre, extrait, referme. kind web (Google, repli DuckDuckGo) : titre, URL, " +
+      "extrait et aperçu IA ; read: N lit aussi les N premières pages (chercher et lire en un tour). kind images (Google Images, repli Bing) : URL pleine taille, " +
+      "page d'origine, dimensions, et les miniatures jointes pour choisir en voyant ; pick: [numéros] ou save: N les enregistre " +
+      "(Téléchargements/agent-browser-control). kind videos (YouTube) : titre, URL, chaîne, durée.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        kind: { type: "string", enum: ["web", "images", "videos"], default: "web" },
+        limit: { type: "number", description: "Résultats au plus (défaut : 8 web, 12 images, 10 vidéos)." },
+        read: { type: "number", description: "web : lire aussi les N premières pages (5 max)." },
+        maxChars: { type: "number", default: 6000, description: "web read : texte gardé par page." },
+        site: { type: "string", description: "Limiter à un site (ex. has-sante.fr)." },
+        lang: { type: "string", default: "fr" },
+        engine: { type: "string", enum: ["google", "duckduckgo", "bing"], default: "google", description: "web : google ou duckduckgo ; images : google ou bing." },
+        size: { type: "string", enum: ["any", "large", "medium", "wallpaper"], description: "images." },
+        type: { type: "string", enum: ["any", "photo", "clipart", "line", "transparent"], description: "images (line : schémas, dessins au trait)." },
+        show: { type: "number", default: 6, maximum: 12, description: "images : miniatures jointes (0 : aucune)." },
+        pick: { type: "array", items: { type: "number" }, description: "images : numéros à enregistrer en pleine taille." },
+        save: { type: "number", maximum: 10, description: "images : enregistrer les N premières." },
+        label,
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "read_urls",
+    description:
+      "Lit plusieurs pages d'un coup (10 au plus, en parallèle dans des onglets de fond refermés ensuite, avec la session de l'utilisateur) : " +
+      "titre, URL finale et texte principal de chacune. Remplace tabs_create + get_page_text + tabs_close par page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        urls: { type: "array", items: { type: "string" } },
+        maxChars: { type: "number", default: 6000, description: "Texte gardé par page (40 000 max)." },
+        label,
+      },
+      required: ["urls"],
+    },
+  },
+  {
+    name: "skill",
+    description: SKILL_DESCRIPTION,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["run", "list", "show", "save", "delete"], default: "list" },
+        name: { type: "string", description: "« site.verbe », ex. leboncoin.recherche." },
+        args: { type: "object", description: "run : arguments de la fonction." },
+        tabId: { type: "number", description: "run, save test : onglet de départ (sinon la fonction ouvre le sien)." },
+        description: { type: "string", description: "save : ce qu'elle fait et ce qu'elle renvoie." },
+        params: { type: "object", description: "save : {nom: {type: string|number|boolean|array|object, required?, default?, enum?, description?}}." },
+        code: { type: "string", description: "save : corps async (comme browser_script) qui utilise args et renvoie une valeur JSON." },
+        site: { type: "string", description: "save : hôte couvert (domaine nu : ses sous-domaines aussi) ; list : filtre." },
+        effects: { type: "string", enum: ["read", "write"], default: "read", description: "save : write si elle envoie, publie, achète ou modifie." },
+        returns: { type: "string", description: "save : forme de la valeur renvoyée." },
+        test: { type: "object", description: "save : arguments d'un essai ; enregistrée seulement s'il réussit avec une valeur non vide." },
+        timeoutMs: { type: "number", default: 120_000, maximum: 280_000, description: "run." },
+        label,
+      },
+    },
+  },
   {
     name: "tabs_context",
     description:
@@ -509,7 +589,8 @@ export const TOOLS: Tool[] = [
       "Mémoire par site, servie en tête de réponse à l'arrivée (navigate, tabs_create, tabs_context) : rejouer au lieu de redécouvrir. " +
       "list : routes, appels, macros, notes. save_call : une requête du HAR (requestId de devtools har list). save_route : un deep link sans jeton. " +
       "note : une ligne de playbook (le domaine nu couvre ses sous-domaines). delete : retirer le périmé. " +
-      "suggest_macros : séquences répétées du journal en code browser_script ; save_macro l'enregistre.",
+      "suggest_macros : séquences répétées du journal en code browser_script ; save_macro l'enregistre. " +
+      "Un parcours à relancer avec d'autres valeurs devient plutôt une fonction : skill save.",
     inputSchema: {
       type: "object",
       properties: {
@@ -536,10 +617,13 @@ export const TOOLS: Tool[] = [
     description:
       "Programme JavaScript async qui enchaîne des actions sans aller-retour avec le modèle (boucles, vérifications en série). " +
       "Bac à sable sans réseau ; il n'agit que par ces fonctions (async sauf use, tab, log) :\n" +
-      "nav(url | 'back' | 'forward' | 'reload') · text() · read(filter='interactive') · find(requête) · click(ref | [x, y]) · " +
-      "type(texte, ref?) · key('Enter') · fill(ref, valeur) · js(code) : valeur JSON, 50 000 car. max, résumer dans la page " +
+      "nav(url | 'back' | 'forward' | 'reload') · text(tabId?) · read(filter='interactive') · find(requête) · click(ref | [x, y]) · " +
+      "type(texte, ref?) · key('Enter') · fill(ref, valeur) · js(code, tabId?) : valeur JSON, 50 000 car. max, résumer dans la page " +
       "(String.raw`…` garde les \\d, \\s des regex) · shot() (5 max) · wait(s) · " +
       "waitFor({selector | text | textGone | urlContains | networkIdle, timeout}) · saveImage(ref?, nom?) · dialog(accept, promptText?) · " +
+      "open(url, {use?, keep?, wait?}) : onglet de fond (wait: \"dom\" rend la main plus tôt, à toi de relire), fermé à la fin si le script réussit, renvoie son id · close(tabId?) · keep(tabId?) · " +
+      "page(tabId?) : {title, url, text} · http(url, {method, headers, body}?) : {status, ok, body, json} sans cookies · " +
+      "skill(nom, args) : une fonction d'ABC (search…) · args : arguments passés à browser_script · " +
       "use(tabId) · tab() · call(outil, args) : {text, images, isError} sans lever · log(...).\n" +
       "Les fonctions lèvent une erreur si l'outil échoue. Résultat : valeur du return (JSON) + journal. En échec, la réponse donne " +
       "trace + from : renvoyer le code corrigé avec resume rejoue les appels déjà réussis sans les ré-exécuter.",
@@ -547,7 +631,8 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         code: { type: "string", description: "Corps d'une fonction async (await, return)." },
-        tabId: { type: "number", description: "Onglet courant au départ (sinon use())." },
+        tabId: { type: "number", description: "Onglet courant au départ (sinon open() ou use())." },
+        args: { type: "object", description: "Valeurs passées au code sous le nom args (même code, autres valeurs : prêt à devenir une fonction)." },
         timeoutMs: { type: "number", default: 120_000, maximum: 280_000 },
         resume: {
           type: "object",

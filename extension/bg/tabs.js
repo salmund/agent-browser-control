@@ -275,7 +275,7 @@ async function tabsContext(agent, { label } = {}) {
   }
   const who = wanted ? groupTitle(agent, false, wanted) : agent;
   if (!lines.length) {
-    return ok(text(`Aucun onglet pour l'agent « ${who} ». Créer un onglet avec tabs_create${wanted ? ` (label: "${wanted}")` : ""}.`));
+    return ok(text(`Aucun onglet pour l'agent « ${who} ». Créer un onglet avec tabs_create${wanted ? ` (label: "${wanted}")` : ""}, sauf si un verbe (search, read_urls, une fonction skill) fait le travail : il ouvre et referme ses onglets lui-même.`));
   }
   const hint = lines.length >= 8 ? "\nAstuce : tabs_cleanup ferme les onglets inactifs (dryRun: true pour prévisualiser)." : "";
   return ok(text(`Onglets de l'agent « ${who} » (${lines.length}) :\n${lines.join("\n")}${hint}`));

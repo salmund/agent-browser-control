@@ -5,6 +5,7 @@
  * Relaie les appels d'outils au démon, qu'il démarre si nécessaire.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,7 @@ import { HOST, PORT, disabledToolNames, getToken, timeoutFor, type CallResult } 
 import { createAbcServer } from "./mcp-server.ts";
 import { noticeFor } from "./notify.ts";
 
-const SHIM_INFO = { name: "agent-browser-control", version: "0.8.0" };
+const SHIM_INFO = { name: "agent-browser-control", version: "0.9.0" };
 /** Attente maximale d'une réponse du démon (ask_human peut durer 615 s). */
 const SHIM_TIMEOUT_MAX_MS = 660_000;
 
@@ -63,6 +64,7 @@ interface Health {
   version?: string;
   inflight?: number;
   settings?: { scriptsEnabled?: boolean };
+  skillsVersion?: string;
 }
 
 async function health(timeoutMs = 1000): Promise<Health | null> {
@@ -115,13 +117,15 @@ async function ensureDaemon(): Promise<void> {
 
 /** Vérification du démon : au premier appel, puis seulement après une erreur de connexion. */
 let daemonChecked = false;
+// Identifie cette session auprès du démon : le catalogue et les rappels « une fois » valent par session.
+const SESSION = randomUUID().slice(0, 12);
 
 async function call(tool: string, args: Record<string, unknown>): Promise<CallResult> {
   if (!daemonChecked) {
     await ensureDaemon();
     daemonChecked = true;
   }
-  const body = JSON.stringify({ agent: agentName(), tool, args });
+  const body = JSON.stringify({ agent: agentName(), tool, args, session: SESSION });
   const timeoutMs = Math.min(timeoutFor(tool, args) + 30_000, SHIM_TIMEOUT_MAX_MS);
   for (let attempt = 0; ; attempt++) {
     try {
@@ -156,13 +160,27 @@ async function call(tool: string, args: Record<string, unknown>): Promise<CallRe
 
 /** Dernier réglage connu (browser_script désactivé ou non), lu dans /health. */
 let lastSettings: Health["settings"] | undefined;
+let lastSkillsVersion: string | undefined;
 
 /** Outils que l'utilisateur a désactivés dans le panneau de l'extension (browser_script, activé par défaut). */
 async function disabledTools(): Promise<Set<string> | null> {
   const h = await health(2000);
   if (!h) return null;
   lastSettings = h.settings;
+  lastSkillsVersion = h.skillsVersion;
   return new Set(disabledToolNames(h.settings));
+}
+
+/** Descriptions calculées par le démon : le catalogue des fonctions apprises dans celle de l'outil skill. */
+async function toolDescriptions(): Promise<Record<string, string> | null> {
+  try {
+    const res = await daemonRequest("GET", "/skills", { timeoutMs: 2000, auth: true });
+    if (res.status !== 200) return null;
+    const body = JSON.parse(res.text) as { descriptions?: Record<string, string> };
+    return body.descriptions ?? null;
+  } catch {
+    return null;
+  }
 }
 
 const server = createAbcServer({
@@ -170,17 +188,22 @@ const server = createAbcServer({
   listChanged: true,
   disabled: async () => (await disabledTools()) ?? new Set(disabledToolNames(lastSettings)),
   call,
+  describe: toolDescriptions,
 });
 
-// Si l'utilisateur change le réglage pendant la session, on prévient l'agent que la liste a changé.
-// null au départ : le premier relevé sert de référence, un changement ensuite (même vers « désactivé ») notifie.
+// Si l'utilisateur change le réglage pendant la session, ou si une fonction est enregistrée, on prévient l'agent
+// que la liste a changé. null au départ : le premier relevé sert de référence.
 let lastDisabled: string | null = null;
+let lastSkills: string | null = null;
 setInterval(async () => {
   const set = await disabledTools();
   if (!set) return; // démon injoignable : on garde la dernière référence.
   const current = [...set].join(",");
-  if (lastDisabled !== null && current !== lastDisabled) server.sendToolListChanged().catch(() => {});
+  const skills = lastSkillsVersion ?? "";
+  const changed = (lastDisabled !== null && current !== lastDisabled) || (lastSkills !== null && skills !== lastSkills);
+  if (changed) server.sendToolListChanged().catch(() => {});
   lastDisabled = current;
+  lastSkills = skills;
 }, 3000).unref();
 
 /**

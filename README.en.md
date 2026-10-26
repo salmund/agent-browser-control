@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#the-tools">The 35 tools</a> ·
+  <a href="#the-tools">The 38 tools</a> ·
   <a href="#the-side-panel">The side panel</a> ·
   <a href="#security">Security</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Your real browser.** Not a headless Chromium running on the side: the agent works in your tabs, with the
   accounts you're already signed in to. It sees what you see.
 - **Any agent.** Everything goes through [MCP](https://modelcontextprotocol.io): one line of configuration and the
-  agent gets all 35 tools, whatever model runs behind it.
+  agent gets all 38 tools, whatever model runs behind it.
 - **Far more than a click driver.** Accessibility tree with stable references, iframes (even cross-origin),
   network, WebSocket, console, cookies, performance, mobile emulation, request interception, GIF or video
   recording… The agent gets the DevTools, not just a mouse.
@@ -152,6 +152,7 @@ gesture (`computer`, `human: true` or `false`). Off by default: on your own PC, 
 
 | | Tools |
 |---|---|
+| **Verbs** | `search` (web, image or video search in one call: results, AI overview, pages read, thumbnails) · `read_urls` (several pages read at once, in parallel) · `skill` (learned functions: a journey captured once, replayed in one call) |
 | **Tabs** | `tabs_context` (with each tab's age) · `tabs_create` (incognito too) · `tabs_close` · `tabs_cleanup` (closes idle tabs, `dryRun` to preview) · `history_search` (find a visited page) · `navigate` |
 | **See** | `read_page` (accessibility tree with refs, iframes included: full, on-screen only or as a diff) · `find` · `scroll_extract` (infinite lists extracted in a single call) · `query` (structured extraction: selector + filter + pagination) · `read_tables` (tables as Markdown or CSV) · `get_page_text` (canvas pages too: Google Docs, Sheets, Slides export or OCR) · `save_image` · `read_screen_text` (local OCR) · `transcript` (the text of a YouTube video, without downloading anything) · `downloads` (download a file with your session, follow a download) · `read_document` (PDF, even scanned, Word, PowerPoint, Excel) |
 | **Act** | `computer` (screenshot, clicks, typing, keys, scrolling, drag and drop) · `form_input` · `credentials_fill` (fills logins / passwords without ever seeing them: encrypted vault or your Vaultwarden / Bitwarden, side panel Secrets tab) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` · `ask_human` (hand over to the user: captcha, 2FA, validation) · `captcha_solve` (solves Turnstile, reCAPTCHA, hCaptcha) |
@@ -169,6 +170,23 @@ A few details that make all the difference on real websites:
   the agent never has to deal with it.
 - **`read_page` in `diff` mode** only returns what changed since the previous read: less context, more speed.
 - **Compound actions (1 LLM turn instead of 2 or 3)**: `navigate` and `tabs_create` accept `snapshot: true` to directly return the interactive accessibility tree as soon as loading completes; `computer` and `form_input` accept `snapshot: true` or `then: "diff"` to settle the DOM (300 ms) and return the updated tree or diff immediately.
+
+### Think in verbs: `search`, `read_urls` and learned functions
+
+An agent that drives click by click pays a round trip to the model for every gesture. "Find me a picture of the
+pterygoid process" should not become "open Google, click Images, read the page, open an image…": it is a verb,
+`search {query: "pterygoid process", kind: "images"}`, which opens the search in a background tab, extracts the results
+(full-size image, source page, dimensions), attaches thumbnails so the model chooses by looking, saves the ones it wants
+(`pick`) and closes the tab. `kind: "web"` with `read: 3` searches **and** reads the top three pages in the same call;
+`read_urls` reads a list of pages in parallel.
+
+The same idea applies to every site, through **functions** (`skill`). The first visit to a site is slow: the agent
+explores. Then it captures the journey as a parameterised function (`skill save`, `browser_script` code using `args`,
+tried before being saved): `leboncoin.search {query, max_price}` does in a few seconds, with no model in the loop, what
+took twenty turns. The function catalogue is served by `tabs_context`, before the agent plans, and again on arrival on
+the site; a function that fails (the site changed) is flagged for repair, and its previous versions are kept. Built-in
+functions (`web.search`, `web.images`, `web.videos`, `web.read`, in [`skills/`](skills)) use the same format as learned
+ones (`~/.agent-browser-control/skills/`) and can be called from a script: `await skill("web.search", {query})`.
 
 ### `browser_script`: dozens of actions in a single call
 

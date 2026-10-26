@@ -159,7 +159,7 @@ async function startRun(msg, reply) {
   }
   frameRuns.set(win, msg.runId);
   run.started = true;
-  win.postMessage({ kind: "run", runId: msg.runId, code: msg.code, tabId: msg.tabId, replay: msg.replay ?? null }, "*");
+  win.postMessage({ kind: "run", runId: msg.runId, code: msg.code, tabId: msg.tabId, replay: msg.replay ?? null, args: msg.args ?? {}, label: msg.label }, "*");
 }
 
 function abortRun(runId) {

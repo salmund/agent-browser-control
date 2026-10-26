@@ -84,14 +84,16 @@ try {
   await until(() => ext.messages.some((m) => m.type === "hello"), 3000, "hello");
   assert.deepStrictEqual(ext.messages[0], { type: "hello", version: VERSION }, "hello en premier, avec la version");
   assert.strictEqual(readFileSync(join(t.configDir, "extension-origin"), "utf8").trim(), "chrome-extension://fake", "origine épinglée dans le dossier de test");
-  assert.strictEqual(textOf(await client.callTool({ name: "tabs_context", arguments: {} })), "echo smoke/tabs_context", "appel relayé");
+  const first = textOf(await client.callTool({ name: "tabs_context", arguments: {} }));
+  assert.ok(first.startsWith("echo smoke/tabs_context"), "appel relayé");
+  assert.ok(/Fonctions ABC/.test(first) && /web\.search\(query/.test(first), "catalogue des fonctions servi en début de session");
 
   // Une autre origine est refusée (4003), l'extension épinglée reste en service.
   const intrus = fakeExtension(t.port, "chrome-extension://intrus");
   await until(() => intrus.closed !== null, 3000, "refus de l'intrus");
   assert.strictEqual(intrus.closed!.code, 4003, "close 4003");
   assert.ok(intrus.closed!.reason.includes("unpin-extension"), "raison actionnable");
-  assert.strictEqual(textOf(await client.callTool({ name: "tabs_context", arguments: {} })), "echo smoke/tabs_context", "épinglée toujours servie");
+  assert.strictEqual(textOf(await client.callTool({ name: "tabs_context", arguments: {} })), "echo smoke/tabs_context", "épinglée toujours servie (catalogue pas répété)");
   await until(() => logText().includes('"event":"extension_refused"'), 2000, "refus journalisé");
   assert.ok(logText().includes("npm run unpin-extension"), "message de réinitialisation journalisé");
 

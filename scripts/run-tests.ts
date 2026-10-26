@@ -10,7 +10,7 @@ const FAST: { name: string; cmd: string; args: string[]; shell?: boolean }[] = [
   // npx est un .cmd sur Windows : passe par le shell (sans ça, ENOENT silencieux).
   { name: "typecheck", cmd: "npx", args: ["tsc", "--noEmit"], shell: true },
   { name: "syntaxe extension", cmd: process.execPath, args: ["scripts/check-extension-syntax.ts"] },
-  ...["extension-load", "devtools-unit", "settings", "analysis", "har-bodies", "har-export-code", "history", "housekeeping", "js-eval", "macros", "readme", "version", "watch", "ws-mask", "credentials", "bitwarden", "bw-keep", "bw-serve", "relay", "tabs-cleanup", "hardening", "smoke", "mcp-http", "pointer", "rich-editor", "usage-report", "notify", "site-profiles"].map(
+  ...["extension-load", "devtools-unit", "settings", "analysis", "har-bodies", "har-export-code", "history", "housekeeping", "js-eval", "macros", "readme", "version", "watch", "ws-mask", "credentials", "bitwarden", "bw-keep", "bw-serve", "relay", "tabs-cleanup", "hardening", "smoke", "mcp-http", "pointer", "rich-editor", "usage-report", "notify", "site-profiles", "skills"].map(
     (t) => ({ name: `test/${t}`, cmd: process.execPath, args: [`test/${t}.ts`] }),
   ),
 ];
@@ -52,6 +52,8 @@ const E2E = [
   "e2e-webmail-compose",
   "e2e-target-steps",
   "e2e-silent-gestures",
+  "e2e-skills",
+  "e2e-fuite-onglets",
 ].map((t) => ({ name: `test/${t}`, cmd: process.execPath, args: [`test/${t}.ts`] }));
 
 const mode = process.argv[2] ?? "";

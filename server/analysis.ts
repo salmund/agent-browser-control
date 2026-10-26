@@ -457,11 +457,17 @@ export function shouldSuggestMemory(o: {
   return o.actions >= RICH_TAB_MIN_ACTIONS && !!normSiteHost(o.host) && !o.hasMemory && !o.alreadySuggested;
 }
 
-/** Suggestion de mémorisation, chiffrée et actionnable, à ignorer si usage unique. */
-export function formatMemorySuggestion(host: string, actions: number): string {
+/**
+ * Suggestion servie à la fermeture d'un long parcours : le figer est la règle (une recherche ou un relevé sur un
+ * site resservira avec d'autres valeurs), une simple mémoire de route l'exception.
+ */
+export function formatMemorySuggestion(host: string, actions: number, trajectory = ""): string {
+  const base = host.replace(/^www\./, "").split(".")[0];
   return (
-    `Parcours riche sur ${host} (${actions} actions) sans mémoire site_api : mémoriser pour la prochaine visite ? ` +
-    `site_api save_route (deep link sans jeton) + note (1 à 3 lignes de playbook). Ignorer si le parcours était à usage unique.`
+    `Avant de répondre : ${actions} actions sur ${host} cette fois${trajectory ? ` (${trajectory})` : ""}, aucune fonction pour ce site. ` +
+    `Fige ce parcours, il resservira avec d'autres valeurs : skill {action: "save", name: "${base}.…", description, params, code (avec args), test: {…}}, ` +
+    `et la prochaine fois ce sera 1 appel. Le plus rapide : l'API JSON du site par http(), sans onglet, si elle existe ; sinon une URL directe et des sélecteurs stables. ` +
+    `Seule exception : une action ponctuelle (achat, message envoyé, réglage de compte) : alors site_api save_route (deep link sans jeton) + note suffit.`
   );
 }
 

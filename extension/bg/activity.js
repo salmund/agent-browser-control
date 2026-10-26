@@ -76,6 +76,9 @@ function activityTarget(tool, args) {
       return clip(args.selector ?? "", 60);
     case "ask_human":
       return clip(args.question ?? "", 80);
+    case "browser_script":
+      // Fonction d'ABC (search, skill) : son nom dit ce qui se passe, le code ne parle pas à l'utilisateur.
+      return typeof args.skill === "string" ? clip(args.skill, 60) : "";
     case "site_api":
     case "downloads":
     case "devtools":

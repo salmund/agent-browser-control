@@ -32,7 +32,8 @@ const READY_SETTLE_MAX_MS = 1500; // après DOMContentLoaded : attente max de la
 /**
  * Attend que la page soit utilisable, sans attendre la dernière image, publicité ou traceur :
  * DOMContentLoaded du nouveau document, puis DOM stable 300 ms (1,5 s au plus), ou chargement
- * complet s'il arrive avant. until: "load" garde l'ancien comportement (chargement complet).
+ * complet s'il arrive avant. until: "load" garde l'ancien comportement (chargement complet) ; until: "dom" rend la
+ * main dès DOMContentLoaded, sans attendre la stabilisation (pour un code qui relit lui-même la page).
  * targetUrl évite de prendre la fin de chargement d'about:blank (onglet neuf) pour celle de la cible.
  * assumeNavigated : la navigation a déjà commencé (après un clic), le prochain DOMContentLoaded compte.
  */
@@ -64,7 +65,8 @@ function waitForReady(tabId, { until = "ready", targetUrl, assumeNavigated = fal
         navigated = true;
       } else if (method === "Page.domContentEventFired" && navigated && !contentLoaded) {
         contentLoaded = true;
-        waitDomSettle(tabId, 300, READY_SETTLE_MAX_MS).catch(() => {}).then(() => finish());
+        if (until === "dom") finish();
+        else waitDomSettle(tabId, 300, READY_SETTLE_MAX_MS).catch(() => {}).then(() => finish());
       }
     }
     chrome.tabs.onUpdated.addListener(onUpdated);

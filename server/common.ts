@@ -30,6 +30,8 @@ export interface CallRequest {
   agent: string;
   tool: string;
   args: Record<string, unknown>;
+  /** Session du shim stdio (plusieurs sessions d'un même agent, ex. claude-code, partagent son nom). */
+  session?: string;
 }
 
 /** Nom d'agent sûr (nom du groupe d'onglets) : chaîne courte, « agent » par défaut. */
@@ -45,7 +47,8 @@ export function parseCallRequest(body: unknown): CallRequest | null {
   if (typeof o.tool !== "string" || !o.tool.trim() || o.tool.length > 100) return null;
   const args = o.args ?? {};
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
-  return { agent: cleanAgent(o.agent), tool: o.tool, args: args as Record<string, unknown> };
+  const session = typeof o.session === "string" && /^[\w-]{1,64}$/.test(o.session) ? o.session : undefined;
+  return { agent: cleanAgent(o.agent), tool: o.tool, args: args as Record<string, unknown>, ...(session ? { session } : {}) };
 }
 
 // --- Délais par outil -----------------------------------------------------------------------------
@@ -90,6 +93,11 @@ export function timeoutFor(tool: string, args: Record<string, unknown> = {}): nu
       return 600_000;
     case "browser_script":
       return SCRIPT_TIMEOUT_MS;
+    case "search":
+    case "read_urls":
+    case "skill":
+      // Fonction d'ABC (script de 280 s au plus) + téléchargement des images trouvées.
+      return SCRIPT_TIMEOUT_MS + 35_000;
     case "credentials_fill":
       // Peut attendre l'utilisateur deux fois : déverrouiller son coffre (120 s), puis approuver (75 s).
       return 120_000 + 75_000 + MARGIN_MS;

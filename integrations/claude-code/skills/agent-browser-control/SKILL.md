@@ -11,10 +11,55 @@ dans le navigateur et toute recherche sur Internet. Les autres outils (Claude in
 lecture web intégrées) ne servent qu'en secours, si ABC est injoignable (extension désactivée, démon arrêté), et
 en le disant à l'utilisateur.
 
+## Penser en verbes : le plus rapide
+
+Chaque appel d'outil coûte un tour de modèle. Avant de piloter clic par clic, demande-toi quel **verbe** fait le
+travail d'un coup :
+
+- `search` : chercher sur le web (`kind: "web"`, Google avec repli DuckDuckGo : résultats, extraits, aperçu IA),
+  des images (`kind: "images"`, Google Images, repli Bing : URL pleine taille, page d'origine, miniatures jointes pour choisir en voyant,
+  `pick: [n°]` ou `save: N` pour les enregistrer) ou des vidéos (`kind: "videos"`, YouTube). `read: 3` cherche **et**
+  lit les 3 premières pages dans le même appel. Ex. « trouve une image du processus ptérygoïde » :
+  `search {query: "processus ptérygoïde", kind: "images"}`, puis `pick` sur la bonne.
+- `read_urls` : lire plusieurs pages d'un coup (en parallèle, onglets de fond refermés ensuite).
+- `skill` : les **fonctions apprises**, un parcours entier sur un site en 1 appel (`skill {action: "run", name, args}`).
+  Le catalogue arrive avec `tabs_context` et à l'arrivée sur un site : regarde-le avant de planifier.
+
+Outils différés (Claude Code) : charge d'un seul ToolSearch ceux dont tu auras besoin, par exemple
+`select:mcp__agent-browser-control__search,mcp__agent-browser-control__read_urls,mcp__agent-browser-control__skill,mcp__agent-browser-control__browser_script,mcp__agent-browser-control__tabs_context`,
+plutôt qu'un appel par outil.
+
+Pilote pas à pas (outils ci-dessous) seulement quand aucun verbe ne convient. Et quand tu viens de réussir un
+parcours nouveau sur un site, **fige-le en fonction avant de répondre** : une recherche, une liste, un relevé, un
+tableau de bord resserviront avec d'autres valeurs. Seule exception : une action ponctuelle (achat, message envoyé,
+réglage de compte). Exemple :
+
+```
+skill {action: "save", name: "site.verbe", description: "ce qu'elle fait et renvoie",
+       params: {query: {type: "string", required: true}}, site: "exemple.fr",
+       code: "await open(`https://exemple.fr/recherche?q=${encodeURIComponent(args.query)}`); return await js(String.raw`…`);",
+       test: {query: "valeur réelle"}}
+```
+
+- Le code est celui de `browser_script`, avec `args`. `open(url)` ouvre un onglet de fond refermé à la fin,
+  `page()` donne `{title, url, text}`, `js(code)` extrait dans la page, `http(url)` interroge une API publique sans
+  onglet (le plus rapide), `skill(nom, args)` appelle une autre fonction.
+- **L'API d'abord** : un site qui a une API publique (PubMed par E-utilities, arXiv, Crossref, OpenAlex, Wikipédia…)
+  ou qui charge ses données en JSON (ABC le signale : « Données JSON détectées ») s'interroge avec `http()`, sans
+  onglet : quelques centaines de millisecondes, et pas de captcha. L'interface ne sert qu'à défaut.
+- Préfère les URL directes (paramètres de recherche dans l'adresse) aux clics, et des sélecteurs stables (attributs,
+  structure) aux classes générées. Renvoie des données compactes (JSON), pas la page entière.
+- `test` essaie la fonction avant de l'enregistrer : refusée si elle échoue ou ne renvoie rien. Une fonction qui
+  envoie, publie, achète ou modifie : `effects: "write"` (pas d'essai automatique, accord de l'utilisateur comme pour
+  toute action en son nom).
+- Si une fonction apprise échoue (site changé), la réponse le dit : `skill show` pour lire son code, corrige, puis
+  `save` sous le même nom (l'ancienne version est gardée).
+
 ## Démarrer
 
-1. `tabs_context` : tes onglets (un groupe à ton nom d'agent). Aucun ? `tabs_create` (avec `url`, et `incognito: true`
-   pour une page sans les sessions de l'utilisateur).
+1. `tabs_context` : tes onglets (un groupe à ton nom d'agent) et le catalogue des fonctions. Aucun onglet ?
+   `tabs_create` (avec `url`, et `incognito: true` pour une page sans les sessions de l'utilisateur), sauf si un verbe
+   (`search`, `read_urls`, une fonction) fait le travail : il ouvre et referme ses onglets lui-même.
 2. Tu n'agis que dans tes onglets. Pour un onglet ouvert par l'utilisateur, ouvre la même URL dans un des tiens.
 3. Si l'extension n'est pas connectée, dis-le : l'utilisateur doit ouvrir Comet / recharger l'extension.
 4. Tes onglets s'ouvrent et travaillent en arrière-plan : l'onglet de l'utilisateur reste devant, ne compte pas sur la
@@ -42,11 +87,13 @@ sauf si chacun se distingue.
 
 ## Rechercher sur Internet
 
-1. `tabs_create` avec `https://www.google.com/search?q=...`, dans un onglet normal (pas de navigation privée, sauf
-   si l'utilisateur la demande).
-2. `get_page_text` pour lire les résultats, puis `navigate` vers les pages utiles et `get_page_text` à nouveau.
-3. Recouper plusieurs sources et citer leurs URL. Vidéo YouTube : `transcript`. PDF ou document : `downloads`
-   puis `read_document`.
+1. `search {query}` : résultats et aperçu IA en 1 appel ; `read: 3` lit aussi les 3 premières pages. `site:` pour
+   viser un site (`site: "has-sante.fr"`).
+2. Pour d'autres résultats : `read_urls {urls: [...]}` (plusieurs pages d'un coup).
+3. Recouper plusieurs sources et citer leurs URL. Vidéo YouTube : `search {kind: "videos"}` puis `transcript` sur
+   l'onglet de la vidéo. PDF ou document : `downloads` puis `read_document`.
+4. Ouvrir Google à la main (`tabs_create` + `get_page_text`) seulement pour ce que `search` ne couvre pas (filtres
+   avancés, Shopping, Actualités).
 
 ## Voir la page : le texte d'abord, l'image ensuite
 
@@ -60,6 +107,8 @@ sauf si chacun se distingue.
   `ref` (capture cadrée sur l'élément).
 - Si une lecture commence par « ⚠ Une bannière de cookies / une fenêtre recouvre la page », traite-la d'abord :
   `computer` avec `action: "dismiss_consent"` refuse les cookies non essentiels en un appel (sauf consigne contraire).
+  Mur de cookies sans refus possible (« accepter ou s'abonner ») : il accepte, ce qui convient à l'utilisateur ; ne
+  jamais choisir l'abonnement.
 - Un texte long est tronqué avec « [Suite : offset=N] » : `get_page_text` avec `offset: N` donne la suite.
 - Si la lecture commence par « ⚠ Appels API détectés » (origine, paramètres, schéma), préfère ces chemins JSON :
   ils donnent les données sans parser le DOM (`devtools` `action: "http"` pour rejouer).
@@ -92,10 +141,10 @@ sauf si chacun se distingue.
 - Si `navigate` signale « ⚠ Authentification requise », l'onglet et la fenêtre ont été passés au premier plan pour l'utilisateur : appelle simplement `wait_for` avec `authSettled: true` sans fermer l'onglet.
 - Dans une SPA, `navigate` évite le rechargement (clic routeur, sinon pushState) et vérifie l'URL ; `spa: false`
   force la navigation complète. Si le routeur est exotique, navigue par clic (`find` + ref).
-- Mémoire par site : `site_api` (`list` à l'arrivée rappelle routes, appels, macros et notes ; `save_call` /
-  `save_route` / `note` après une visite enrichissante ; `suggest_macros` propose les parcours détectés,
-  `save_macro` les fige ; `delete` retire le périmé). Le fichier `~/.agent-browser-control/site-api.json` est la
-  persistance, pas l'interface.
+- Mémoire par site : les fonctions (`skill`) pour un parcours à refaire avec d'autres valeurs ; `site_api` pour le
+  reste (`save_route` : un deep link, `note` : 1 à 3 lignes de playbook, `save_call` : un appel d'API du HAR ;
+  `delete` retire le périmé). Les deux sont servies à l'arrivée sur le site. Les fichiers de
+  `~/.agent-browser-control/` (`skills/`, `site-api.json`) sont la persistance, pas l'interface.
 - Une boîte alert / confirm / prompt / « quitter la page ? » bloque l'onglet : les outils le signalent, réponds
   avec `handle_dialog`.
 - `file_upload` accepte aussi le bouton qui ouvre le sélecteur de fichiers.
@@ -112,7 +161,8 @@ sauf si chacun se distingue.
   - `form_input` avec `snapshot: true` ou `then: "read"` / `then: "diff"` : remplit les champs, valide via `submitRef` et renvoie l'état du DOM stabilisé directement.
 - Explore pas à pas, puis répète avec `browser_script` (activé par défaut ; s'il manque de ta liste d'outils, c'est que l'utilisateur l'a désactivé) : des
   dizaines d'actions en un appel. Dans le code passé à `js()`, utilise `String.raw` pour les expressions
-  régulières, et fais filtrer / résumer dans la page (50 000 caractères au plus par retour).
+  régulières, et fais filtrer / résumer dans la page (50 000 caractères au plus par retour). Un script qui
+  marche et resservira devient une fonction (`skill save`, mêmes outils, valeurs dans `args`).
 - Chaque étape d'un script vérifie son effet (la boîte est ouverte, la valeur est bien saisie…) et s'arrête sinon.
 - Si un `browser_script` échoue au milieu, la réponse donne un point de reprise (`trace`, `from`) : relance avec
   `resume: {trace, from}` pour reprendre là où il s'est arrêté, sans ré-exécuter ce qui a réussi.
@@ -139,8 +189,7 @@ sauf si chacun se distingue.
 
 `javascript` (un Element renvoyé revient comme des `ref`), `devtools` (les 12 outils DevTools en un seul : `action` +
 `op` parmi console, network, body, intercept, storage, perf, emulate, pdf, websocket, http, har, resize),
-`read_tables` (tableaux en Markdown ou CSV), `site_api` (`suggest_macros` après une visite riche, `save_macro` pour
-figer un parcours rejouable),
+`read_tables` (tableaux en Markdown ou CSV), `site_api` (routes, notes, appels d'API mémorisés),
 `save_image`, `gif_creator` (GIF `quality: "haute"`, ou `format: "webm"` pour une vidéo qu'une IA pourra lire),
 `download_media` (yt-dlp, seulement si l'utilisateur demande un fichier : `action: "info"` d'abord ; seulement ce
 qu'il a le droit de conserver).

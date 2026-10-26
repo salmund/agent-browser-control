@@ -273,6 +273,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       const run = scriptRuns.get(msg.runId);
       if (!run || !String(sender.url).startsWith(`${EXTENSION_ORIGIN}offscreen.html`)) reply(fail("Script inconnu ou terminé."));
       else if (msg.tool === "browser_script") reply(fail("Un script ne peut pas lancer un autre script."));
+      else if (msg.tool === "__skill_source") {
+        // skill(nom, args) dans un script : le démon valide les arguments et donne le code, exécuté dans le même bac à sable.
+        daemonRpc("skill-source", { name: msg.args?.name, args: msg.args?.args ?? {}, agent: run.agent })
+          .then((src) => reply({ content: [text(JSON.stringify(src))] }), (err) => reply(fail(err.message)));
+      }
       else runTool(run.agent, msg.tool, msg.args ?? {}, { parentRun: msg.runId }).then(reply);
       return true;
     }

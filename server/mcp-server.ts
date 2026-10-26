@@ -16,6 +16,8 @@ export interface AbcServerOptions {
   disabled: () => Set<string> | Promise<Set<string>>;
   /** Exécute un outil ; une exception devient un résultat en erreur. */
   call: (tool: string, args: Record<string, unknown>) => Promise<CallResult>;
+  /** Descriptions calculées (catalogue des fonctions dans celle de skill) ; null ou absent : descriptions fixes. */
+  describe?: () => Record<string, string> | null | Promise<Record<string, string> | null>;
 }
 
 export function createAbcServer(opts: AbcServerOptions): Server {
@@ -25,7 +27,10 @@ export function createAbcServer(opts: AbcServerOptions): Server {
   });
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const disabled = await opts.disabled();
-    return { tools: TOOLS.filter((t) => !disabled.has(t.name)) };
+    const described = (await Promise.resolve(opts.describe?.()).catch(() => null)) ?? {};
+    return {
+      tools: TOOLS.filter((t) => !disabled.has(t.name)).map((t) => (described[t.name] ? { ...t, description: described[t.name] } : t)),
+    };
   });
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {

@@ -116,6 +116,7 @@ export function describe(entry) {
     return { verb: verb ?? TOOLS.gif_creator, target: "" };
   }
   if (tool === "tabs_create" && target) return { verb: TOOLS.tabs_create, target: hostOf(target) };
+  if (tool === "browser_script" && target) return { verb: "Lance la fonction", target };
   return { verb: TOOLS[tool] ?? tool.replace(/_/g, " "), target };
 }
 

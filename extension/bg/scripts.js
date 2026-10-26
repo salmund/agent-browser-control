@@ -11,8 +11,10 @@ const scriptRuns = new Map(); // runId -> { agent, actor, kill }
 const scriptTraces = new Map(); // runId -> trace des appels (reprise après échec, 5 dernières)
 let scriptCounter = 0;
 
-async function browserScript(agent, { code, tabId, timeoutMs, resume }) {
-  if (!(await scriptsEnabled())) {
+async function browserScript(agent, { code, tabId, timeoutMs, resume, args, label, skill, builtin }) {
+  // Fonctions intégrées d'ABC (search, read_urls) : code livré avec ABC, pas écrit par un agent. Le démon retire
+  // skill et builtin des appels directs d'un agent : seul lui peut les poser.
+  if (!(builtin === true && skill) && !(await scriptsEnabled())) {
     return fail(
       "browser_script est désactivé par l'utilisateur (panneau de l'extension). Ne pas réessayer : " +
       "agir pas à pas avec les autres outils, ou lui demander de l'activer s'il le souhaite.",
@@ -40,7 +42,9 @@ async function browserScript(agent, { code, tabId, timeoutMs, resume }) {
   const started = Date.now();
   let timer;
   try {
-    const done = chrome.runtime.sendMessage({ target: "offscreen", type: "run-script", runId, code, tabId, replay });
+    const scriptArgs = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+    const tag = typeof label === "string" && label.trim() ? label.trim().slice(0, 40) : undefined;
+    const done = chrome.runtime.sendMessage({ target: "offscreen", type: "run-script", runId, code, tabId, replay, args: scriptArgs, label: tag });
     const timeout = new Promise((resolve) => {
       timer = setTimeout(async () => {
         chrome.runtime.sendMessage({ target: "offscreen", type: "abort-script", runId }).catch(() => {});
@@ -80,10 +84,15 @@ async function browserScript(agent, { code, tabId, timeoutMs, resume }) {
         }
       }
     } else lines.push("", "Valeur renvoyée :", res.value === null ? "(aucune)" : JSON.stringify(res.value, null, 2));
+    if (res.error && Array.isArray(res.openTabs) && res.openTabs.length) {
+      lines.push("", `Onglet(s) ouvert(s) par open() laissé(s) pour inspection : ${res.openTabs.map((id) => `tabId ${id}`).join(", ")}.`);
+    }
     let body = lines.join("\n");
     if (body.length > 60_000) body = `${body.slice(0, 60_000)}\n[Tronqué]`;
     const out = [text(untrusted(body)), ...(res.images ?? [])];
-    return res.error ? { content: out, isError: true } : { content: out };
+    // Fonction d'ABC (skill, search, read_urls) : le démon met lui-même en forme la valeur brute.
+    const raw = skill ? { _script: { value: res.value ?? null, error: res.error ?? null, logs: res.logs ?? [], calls: res.calls, ms: Date.now() - started, body } } : {};
+    return res.error ? { content: out, isError: true, ...raw } : { content: out, ...raw };
   } finally {
     clearTimeout(timer);
     scriptRuns.delete(runId);

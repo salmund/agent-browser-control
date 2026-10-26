@@ -35,13 +35,14 @@ try {
   const { tools } = await client.listTools();
   assert.deepStrictEqual(tools.map((x) => x.name), TOOLS.map((x) => x.name), "mêmes outils, même ordre");
   assert.ok(client.getInstructions()?.includes("tabs_context"), "mêmes consignes");
-  assert.strictEqual(textOf(await client.callTool({ name: "tabs_context", arguments: {} })), "echo http-test/tabs_context", "appel relayé");
+  assert.ok(textOf(await client.callTool({ name: "tabs_context", arguments: {} })).startsWith("echo http-test/tabs_context"), "appel relayé");
+  assert.ok(tools.find((x) => x.name === "skill")?.description?.includes("Fonctions ABC"), "catalogue dans la description de skill");
   // Outil local (sans extension) : site_api list répond depuis le démon.
   assert.ok(textOf(await client.callTool({ name: "site_api", arguments: { action: "list" } })).includes("Site API vide"), "outil local");
 
   // x-abc-token accepté aussi.
   const client2 = await connect({ "x-abc-token": t.token() }, "autre");
-  assert.strictEqual(textOf(await client2.callTool({ name: "tabs_context", arguments: {} })), "echo autre/tabs_context", "x-abc-token");
+  assert.ok(textOf(await client2.callTool({ name: "tabs_context", arguments: {} })).startsWith("echo autre/tabs_context"), "x-abc-token");
 
   // Réglage « browser_script désactivé » envoyé par l'extension : retiré de la liste.
   ext.ws.send(JSON.stringify({ type: "settings", settings: { scriptsEnabled: false }, extensionVersion: "0.0.0-test" }));

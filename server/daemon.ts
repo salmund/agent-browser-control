@@ -117,8 +117,13 @@ import {
 import { ABC_DOWNLOADS_DIR, stageForBrowser } from "./user-dirs.ts";
 import { createAbcServer } from "./mcp-server.ts";
 import { createPointer } from "./pointer.ts";
+import { repairEntities } from "./skills.ts";
+import { createSkillEngine } from "./verbs.ts";
+import { skillToolDescription } from "./tools.ts";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 const EXTENSION_WAIT_MS = 10_000;
 const LOG_FILE = join(CONFIG_DIR, "actions.log");
 /** Fichiers joints par l'extension (GIF, captures…). ABC_OUTPUT_DIR le remplace (tests). */
@@ -349,6 +354,12 @@ function uploadPaths(paths: unknown): UploadCheck {
 
 /** Contrôles du démon avant l'extension : file_upload n'envoie jamais un fichier de secrets. */
 function preflight(call: CallRequest): { call: CallRequest } | { error: CallResult } {
+  if (call.tool === "browser_script") {
+    // skill et builtin ne sont posés que par le démon (fonctions d'ABC) : jamais par un agent.
+    const { skill: _skill, builtin: _builtin, ...args } = call.args;
+    if (typeof args.code === "string") args.code = repairEntities(args.code);
+    return { call: { ...call, args } };
+  }
   if (call.tool !== "file_upload") return { call };
   const check = uploadPaths(call.args.paths);
   if (!check.ok) return { error: errorResult(check.error) };
@@ -381,6 +392,8 @@ async function runCall(input: CallRequest): Promise<CallResult> {
   // Durées par étape jointes par l'extension (tabs_create…) : pour le journal seulement, jamais pour l'agent.
   const phases = (result as { _phases?: unknown })._phases;
   if (phases !== undefined) delete (result as { _phases?: unknown })._phases;
+  // Valeur brute d'un script lancé pour une fonction : déjà mise en forme, jamais renvoyée telle quelle.
+  delete (result as { _script?: unknown })._script;
   log({
     agent: input.agent, tool: input.tool, args: redactArgs(input.tool, input.args), ms: Date.now() - started, error: !!result.isError,
     ...(result.isError && { errorText: errorSummary(result) }),
@@ -401,7 +414,129 @@ async function afterForward(call: CallRequest, raw: CallResult): Promise<CallRes
   result = await runAttachedSiteApi(result);
   result = await harFallback(call, result);
   result = attachSiteBrief(call, result);
+  result = attachCatalog(call, result);
+  result = nudgeVerbs(call, result);
   return maybeSuggestMemory(call, result);
+}
+
+// --- Penser en verbes : catalogue en début de session, rappels au bon moment -----------------------------
+
+const CATALOG_REPEAT_MS = 30 * 60_000;
+const catalogServedAt = new Map<string, number>();
+const NUDGE_REPEAT_MS = 20 * 60_000;
+const nudgedAt = new Map<string, number>();
+/** Actions sur un même site au-delà desquelles un parcours mérite de devenir une fonction (rappel porté par un outil de lecture, jamais par javascript : sa valeur est relue telle quelle). */
+const SKILL_NUDGE_ACTIONS = 10;
+
+function appendText(result: CallResult, extra: string): CallResult {
+  const first = result.content.find((c) => c.type === "text");
+  if (first && first.type === "text") first.text += `\n\n${extra}`;
+  else result.content.push({ type: "text", text: extra });
+  return result;
+}
+
+/** Clé des rappels « une fois » : la session du shim si elle est connue, sinon le nom d'agent. */
+const sessionKey = (call: CallRequest) => (call.session ? `${call.agent}#${call.session}` : call.agent);
+
+function nudgeOnce(key: string, every = NUDGE_REPEAT_MS): boolean {
+  if (Date.now() - (nudgedAt.get(key) ?? 0) < every) return false;
+  nudgedAt.set(key, Date.now());
+  return true;
+}
+
+/**
+ * tabs_context ouvre la session : l'agent y apprend ce qu'ABC sait déjà faire en un appel, AVANT de
+ * planifier « aller sur Google, cliquer sur Images… ». Une fois par agent toutes les 30 min.
+ */
+function attachCatalog(call: CallRequest, result: CallResult): CallResult {
+  if (call.tool !== "tabs_context" || result.isError) return result;
+  const key = sessionKey(call);
+  if (Date.now() - (catalogServedAt.get(key) ?? 0) < CATALOG_REPEAT_MS) return result;
+  catalogServedAt.set(key, Date.now());
+  try {
+    return appendText(result, skillEngine.catalog(20));
+  } catch {
+    return result;
+  }
+}
+
+/** Requête d'un moteur de recherche ouvert à la main : le verbe search la fait en un appel. */
+function manualSearch(rawUrl: string): { query: string; kind: string } | null {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  const h = u.hostname.replace(/^www\./, "");
+  const p = u.searchParams;
+  if (/^google\.[a-z.]+$/.test(h) && u.pathname === "/search" && p.get("q")) {
+    const images = p.get("tbm") === "isch" || p.get("udm") === "2";
+    const videos = p.get("tbm") === "vid" || p.get("udm") === "7";
+    if (!images && !videos && (p.get("tbm") || (p.get("udm") && p.get("udm") !== "14"))) return null; // shopping, actualités, mode IA
+    return { query: p.get("q")!, kind: images ? "images" : videos ? "videos" : "web" };
+  }
+  if (h === "bing.com" && u.pathname.startsWith("/images/search") && p.get("q")) return { query: p.get("q")!, kind: "images" };
+  if ((h === "duckduckgo.com" || h === "html.duckduckgo.com") && p.get("q")) return { query: p.get("q")!, kind: p.get("ia") === "images" ? "images" : "web" };
+  if (h === "youtube.com" && u.pathname === "/results" && p.get("search_query")) return { query: p.get("search_query")!, kind: "videos" };
+  return null;
+}
+
+/**
+ * Rappels au moment où ils servent : une recherche ouverte à la main (search le fait en 1 appel), un long
+ * parcours sur un site sans fonction (le figer pour la prochaine fois). Une fois par agent et par cas.
+ */
+function nudgeVerbs(call: CallRequest, result: CallResult): CallResult {
+  if (result.isError) return result;
+  const url = typeof call.args?.url === "string" ? call.args.url : "";
+  if ((call.tool === "tabs_create" || call.tool === "navigate") && url) {
+    const found = manualSearch(url);
+    if (found && nudgeOnce(`${sessionKey(call)}|search|${found.kind}`)) {
+      const kind = found.kind === "web" ? "" : `, kind: "${found.kind}"`;
+      const extra = found.kind === "web" ? " ; read: 3 lit aussi les 3 premières pages" : found.kind === "images" ? " ; miniatures jointes, pick pour enregistrer" : "";
+      return appendText(result, `Astuce ABC : search {query: ${JSON.stringify(found.query.slice(0, 120))}${kind}} fait cette recherche et l'extraction en 1 appel${extra}.`);
+    }
+    return result;
+  }
+  if (call.tool === "browser_script") return nudgeScript(call, result);
+  const tabId = Number(call.args?.tabId);
+  const entry = Number.isInteger(tabId) ? tabActivity.get(tabId) : undefined;
+  if (!entry?.host || entry.count + 1 < SKILL_NUDGE_ACTIONS) return result;
+  if (!["get_page_text", "read_page", "find", "query", "scroll_extract", "read_tables", "replay_paginated"].includes(call.tool)) return result;
+  if (/^(www\.)?(google\.[a-z.]+|bing\.com|(html\.)?duckduckgo\.com)$/.test(entry.host) || skillEngine.hasSiteSkills(entry.host)) return result;
+  if (!nudgeOnce(`${sessionKey(call)}|skill|${entry.host}`, 2 * 3_600_000)) return result;
+  return appendText(
+    result,
+    `↺ ${entry.count + 1} actions sur ${entry.host} pour en arriver là (${trajectory(entry)}). ` +
+      "Qu'aurait-il fallu savoir pour le faire en 1 à 3 appels : une URL directe, une API JSON (http(), sans onglet : le plus rapide), un sélecteur stable ? " +
+      "Une recherche ou un relevé sur un site resservira avec d'autres valeurs : une fois le résultat obtenu, avant de répondre, " +
+      `fige-le : skill {action: "save", name: "${entry.host.replace(/^www\./, "").split(".")[0]}.…", ` +
+      "description, params, code (avec args), test: {…}}. La prochaine fois : 1 appel, quelques secondes.",
+  );
+}
+
+/**
+ * Un script qui vient de réussir sur un site sans fonction EST déjà la fonction : l'enregistrer tel quel évite de
+ * le réécrire la prochaine fois. Hôte lu dans la première adresse écrite en dur dans le code.
+ */
+function nudgeScript(call: CallRequest, result: CallResult): CallResult {
+  const code = typeof call.args?.code === "string" ? call.args.code : "";
+  if (code.length < 120 || /\bskill\s*\(/.test(code) || !/\b(http|open|nav)\s*\(/.test(code)) return result;
+  // Un script qui rend une erreur HTTP comme valeur n'a pas réussi, même sans exception.
+  const out = result.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+  if (/"status": ?[45]\d\d\b/.test(out)) return result;
+  const literal = /https?:\/\/[a-z0-9.-]+\.[a-z]{2,}/i.exec(code)?.[0];
+  if (!literal) return result;
+  const host = new URL(literal).hostname.replace(/^www\./, "");
+  if (/^(google\.[a-z.]+|bing\.com|(html\.)?duckduckgo\.com|example\.(com|org))$/.test(host) || skillEngine.hasSiteSkills(host)) return result;
+  if (!nudgeOnce(`${sessionKey(call)}|script|${host}`, 2 * 3_600_000)) return result;
+  const base = host.replace(/^(api|rest|ws|eutils|www\d?)\./, "").split(".")[0];
+  return appendText(
+    result,
+    `Ce script a réussi sur ${host}, qui n'a pas encore de fonction : avant de répondre, enregistre-le tel quel, les valeurs ` +
+      `qui changent passées en args (skill {action: "save", name: "${base}.…", description, params, code, test: {…}}). ` +
+      "La prochaine fois : 1 appel, sans réécrire le script.",
+  );
 }
 
 const server = createServer((req, res) => {
@@ -433,6 +568,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       inflight,
       idleMs: inflight ? 0 : Date.now() - lastCallEnd,
       shuttingDown,
+      skillsVersion: skillsVersion(),
     });
   }
 
@@ -448,11 +584,14 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 
   const authed = tokenMatches(requestToken(req.headers), token);
-  const known = ["/mcp", "/events", "/reload-extension", "/shutdown", "/call"];
+  const known = ["/mcp", "/events", "/reload-extension", "/shutdown", "/call", "/skills"];
   if (!known.includes(path)) return sendJson(res, 404, { error: "not found" });
   if (!authed) return sendJson(res, 401, { error: "bad token" });
 
   if (path === "/mcp") return handleMcpHttp(req, res, url);
+
+  // Catalogue des fonctions, pour la description de l'outil skill (shim stdio).
+  if (req.method === "GET" && path === "/skills") return sendJson(res, 200, { version: skillsVersion(), descriptions: toolDescriptions() });
 
   if (req.method === "GET" && path === "/events") return openEvents(res);
 
@@ -506,6 +645,7 @@ async function handleMcpHttp(req: IncomingMessage, res: ServerResponse, url: URL
     info: { name: "agent-browser-control", version: VERSION },
     listChanged: false,
     disabled: () => new Set(disabledToolNames(settings)),
+    describe: () => toolDescriptions(),
     call: (tool, args) => runCall({ agent, tool, args: args && typeof args === "object" && !Array.isArray(args) ? args : {} }),
   });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, maxRequestBodySize: MAX_BODY_BYTES });
@@ -613,6 +753,10 @@ function localTool(call: CallRequest): Promise<CallResult> | null {
     return readDocument({ path: String(args.path ?? ""), pages: args.pages as string | undefined })
       .then((text) => ({ content: [{ type: "text", text: untrusted(text) }] }));
   }
+  // Fonctions d'ABC : le démon valide, l'extension exécute le code dans le bac à sable de browser_script.
+  if (call.tool === "search") return skillEngine.search(call.agent, args);
+  if (call.tool === "read_urls") return skillEngine.readUrls(call.agent, args);
+  if (call.tool === "skill") return skillEngine.tool(call.agent, args);
   if (call.tool === "captcha_solve") {
     // Outil local : autoCaptcha pilote les outils d'extension existants, aucun code extension.
     const tabId = Number(args.tabId);
@@ -1137,6 +1281,9 @@ function attachSiteBrief(call: CallRequest, result: CallResult): CallResult {
   const blocks: string[] = [];
   const profiles: string[] = [];
   for (const h of [...hosts].sort().slice(0, 3)) {
+    // Les fonctions d'abord : elles remplacent le parcours entier.
+    const skills = skillEngine.siteBlock(h);
+    if (skills) blocks.push(skills);
     const brief = formatSiteBrief(api, h);
     if (brief) blocks.push(brief);
     // Profil livré avec ABC (de confiance, hors <site_memory>) : une fois par agent et par hôte toutes les 30 min.
@@ -1159,7 +1306,15 @@ const profileServedAt = new Map<string, number>();
 
 // Activité par onglet (compteur de session du démon) : sert la suggestion de
 // mémorisation à la fermeture. host = dernier hôte navigué (navigate/tabs_create).
-const tabActivity = new Map<number, { agent: string; count: number; host: string | null }>();
+const tabActivity = new Map<number, TabActivity>();
+interface TabActivity { agent: string; count: number; host: string | null; tools: Map<string, number>; paths: string[] }
+
+/** Le parcours d'un onglet en une ligne : outils les plus employés, pages visitées. */
+function trajectory(entry: TabActivity): string {
+  const tools = [...entry.tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t, n]) => (n > 1 ? `${t} ×${n}` : t));
+  const paths = entry.paths.slice(-4).map((p) => (p.length > 60 ? `${p.slice(0, 57)}…` : p));
+  return `${tools.join(", ")}${paths.length ? ` ; pages : ${paths.join(", ")}` : ""}`;
+}
 const memorySuggested = new Set<string>(); // hôtes déjà suggérés (pas de harcèlement).
 
 function trackTabCall(call: CallRequest, result?: CallResult): void {
@@ -1179,14 +1334,22 @@ function trackTabCall(call: CallRequest, result?: CallResult): void {
 function noteTabCall(tabId: number, call: CallRequest): void {
   let entry = tabActivity.get(tabId);
   if (!entry) {
-    entry = { agent: call.agent, count: 0, host: null };
+    entry = { agent: call.agent, count: 0, host: null, tools: new Map(), paths: [] };
     tabActivity.set(tabId, entry);
   }
   entry.count++;
+  const tool = call.tool === "computer" && typeof call.args?.action === "string" ? call.args.action : call.tool;
+  entry.tools.set(tool, (entry.tools.get(tool) ?? 0) + 1);
   if ((call.tool === "navigate" || call.tool === "tabs_create") && typeof call.args?.url === "string") {
     try {
       const u = new URL(call.args.url);
-      if (u.protocol === "http:" || u.protocol === "https:") entry.host = u.hostname;
+      if (u.protocol === "http:" || u.protocol === "https:") {
+        entry.host = u.hostname;
+        // Chemin et noms des paramètres (valeurs coupées) : la forme de l'URL directe, sans recopier de données.
+        const path = u.pathname + (u.search ? `?${[...u.searchParams.keys()].slice(0, 4).map((k) => `${k}=…`).join("&")}` : "");
+        if (entry.paths.at(-1) !== path) entry.paths.push(path);
+        if (entry.paths.length > 8) entry.paths.shift();
+      }
     } catch {}
   }
 }
@@ -1210,13 +1373,14 @@ function maybeSuggestMemory(call: CallRequest, result: CallResult): CallResult {
   if (!entry || !entry.host) return result;
   const host = entry.host;
   const alreadySuggested = memorySuggested.has(host);
-  if (!shouldSuggestMemory({ actions: entry.count, host, hasMemory: hostHasMemory(readSiteApi(), host), alreadySuggested })) {
+  const hasMemory = hostHasMemory(readSiteApi(), host) || skillEngine.hasSiteSkills(host);
+  if (!shouldSuggestMemory({ actions: entry.count, host, hasMemory, alreadySuggested })) {
     return result;
   }
   memorySuggested.add(host);
   const first = result.content.find((c) => c.type === "text");
   if (!first || first.type !== "text") return result;
-  first.text += `\n\n${formatMemorySuggestion(host, entry.count)}`;
+  first.text += `\n\n${formatMemorySuggestion(host, entry.count, trajectory(entry))}`;
   return result;
 }
 
@@ -1351,6 +1515,33 @@ let bwSessionKey: string | null = null;
 const bwKeep = createBwKeep(CONFIG_DIR);
 /** Réglage « Souris réelle » : le vrai pointeur de la machine, pour les gestes des agents (pointer.ts). */
 const pointer = createPointer({ log });
+
+/** Fonctions d'ABC : intégrées (skills/ du dépôt) et apprises par les agents (skills/ de la configuration). */
+const skillEngine = createSkillEngine({
+  builtinDir: fileURLToPath(new URL("../skills", import.meta.url)),
+  configDir: CONFIG_DIR,
+  outputDir: OUTPUT_DIR,
+  forward,
+  log,
+});
+
+/** Empreinte courte du catalogue : le shim prévient l'agent (list_changed) quand une fonction arrive ou change. */
+function skillsVersion(): string {
+  try {
+    return createHash("sha256").update(skillEngine.version()).digest("hex").slice(0, 12);
+  } catch {
+    return "";
+  }
+}
+
+/** Descriptions d'outils calculées : celle de skill porte le catalogue des fonctions apprises. */
+function toolDescriptions(): Record<string, string> {
+  try {
+    return { skill: skillToolDescription(skillEngine.catalog(15)) };
+  } catch {
+    return {};
+  }
+}
 /** Relais des demandes vers Argos : la décision repart vers l'extension, qui la traite comme un clic du panneau. */
 const relayForwards = new Map<number, { resolve: (ok: boolean) => void; timer: NodeJS.Timeout }>();
 let relayForwardSeq = 0;
@@ -1480,6 +1671,14 @@ async function handleDaemonRpc(ws: WebSocket, msg: { reqId?: unknown; op?: unkno
   }
   if (op === "pointer") {
     return pointer.run(params).then((result) => reply(true, result), (err) => reply(false, undefined, errText(err)));
+  }
+  // skill(nom, args) dans un script : arguments validés, code renvoyé pour s'exécuter dans le même bac à sable.
+  if (op === "skill-source") {
+    try {
+      return reply(true, skillEngine.source(params.name, params.args));
+    } catch (err) {
+      return reply(false, undefined, errText(err));
+    }
   }
   await bwSessionLoaded;
   try {

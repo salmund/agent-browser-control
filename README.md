@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="#installation">Installation</a> ·
-  <a href="#les-outils">Les 35 outils</a> ·
+  <a href="#les-outils">Les 38 outils</a> ·
   <a href="#le-panneau">Le panneau</a> ·
   <a href="#sécurité">Sécurité</a> ·
   <a href="#architecture">Architecture</a>
@@ -30,7 +30,7 @@
 - **Votre vrai navigateur.** Pas un Chromium headless lancé à côté : l'agent travaille dans vos onglets, avec vos
   comptes déjà connectés. Il voit ce que vous voyez.
 - **N'importe quel agent.** Tout passe par [MCP](https://modelcontextprotocol.io) : une ligne de configuration, et
-  l'agent dispose des 35 outils, quel que soit le modèle derrière.
+  l'agent dispose des 38 outils, quel que soit le modèle derrière.
 - **Bien plus qu'un pilote de clics.** Arbre d'accessibilité avec des références stables, iframes (même d'une autre
   origine), réseau, WebSocket, console, cookies, performance, émulation mobile, interception de requêtes,
   enregistrement GIF ou vidéo… L'agent a les DevTools, pas seulement une souris.
@@ -155,6 +155,7 @@ vous.
 
 | | Outils |
 |---|---|
+| **Verbes** | `search` (recherche web, images ou vidéos en un appel : résultats, aperçu IA, pages lues, miniatures) · `read_urls` (plusieurs pages lues d'un coup, en parallèle) · `skill` (fonctions apprises : un parcours figé une fois, rejoué en un appel) |
 | **Onglets** | `tabs_context` (avec l'âge de chaque onglet) · `tabs_create` (aussi en navigation privée) · `tabs_close` · `tabs_cleanup` (ferme les inactifs, `dryRun` pour prévisualiser) · `history_search` (retrouver une page visitée) · `navigate` |
 | **Voir** | `read_page` (arbre d'accessibilité avec refs, iframes comprises : en entier, à l'écran seulement ou en différentiel) · `find` · `scroll_extract` (listes à chargement progressif extraites en un appel) · `query` (extraction structurée : sélecteur + filtre + pagination) · `read_tables` (tableaux en Markdown ou CSV) · `get_page_text` (aussi pour les pages en canvas : export Google Docs, Sheets, Slides ou OCR) · `save_image` · `read_screen_text` (OCR locale) · `transcript` (le texte d'une vidéo YouTube, sans rien télécharger) · `downloads` (télécharger un fichier avec votre session, suivre un téléchargement) · `read_document` (PDF, même scanné, Word, PowerPoint, Excel) |
 | **Agir** | `computer` (capture, clics, saisie, touches, défilement, glisser-déposer) · `form_input` · `credentials_fill` (remplit identifiants / mots de passe sans jamais les voir : coffre chiffré ou votre Vaultwarden / Bitwarden, onglet Secrets du panneau) · `credentials_list` · `file_upload` · `wait_for` · `handle_dialog` · `ask_human` (passer la main à l'utilisateur : captcha, 2FA, validation) · `captcha_solve` (résout Turnstile, reCAPTCHA, hCaptcha) |
@@ -173,6 +174,24 @@ Quelques détails qui changent tout sur les vrais sites :
 - **`read_page` en mode `diff`** ne renvoie que ce qui a changé depuis la lecture précédente : moins de contexte,
   plus de vitesse.
 - **Actions composées (1 tour au lieu de 2 ou 3)** : `navigate` et `tabs_create` acceptent `snapshot: true` pour renvoyer directement l'arbre interactif dès le chargement terminé ; `computer` et `form_input` acceptent `snapshot: true` ou `then: "diff"` pour stabiliser le DOM (300 ms) et renvoyer le résultat ou le différentiel immédiatement.
+
+### Penser en verbes : `search`, `read_urls` et les fonctions apprises
+
+Un agent qui pilote clic par clic paie un aller-retour avec le modèle à chaque geste. « Trouve-moi une image du
+processus ptérygoïde » ne devrait pas devenir « ouvrir Google, cliquer sur Images, lire la page, ouvrir une image… » :
+c'est un verbe, `search {query: "processus ptérygoïde", kind: "images"}`, qui ouvre la recherche dans un onglet de
+fond, extrait les résultats (image en pleine taille, page d'origine, dimensions), joint les miniatures pour choisir en
+voyant, enregistre celles qu'on veut (`pick`) et referme l'onglet. `kind: "web"` avec `read: 3` cherche **et** lit les
+trois premières pages dans le même appel ; `read_urls` lit une liste de pages en parallèle.
+
+Le même principe vaut pour tous les sites, grâce aux **fonctions** (`skill`). La première visite d'un site est lente :
+l'agent explore. Ensuite, il fige le parcours en fonction paramétrée (`skill save`, code `browser_script` avec `args`,
+essayé avant d'être enregistré) : `leboncoin.recherche {query, prix_max}` fait en quelques secondes, sans modèle dans la
+boucle, ce qui avait demandé vingt tours. Le catalogue des fonctions est servi dès `tabs_context`, avant que l'agent
+ne planifie, et rappelé à l'arrivée sur le site ; une fonction qui échoue (site changé) est signalée à réparer, ses
+versions précédentes sont gardées. Les fonctions intégrées (`web.search`, `web.images`, `web.videos`, `web.read`, dans
+[`skills/`](skills)) sont écrites dans le même format que les fonctions apprises (`~/.agent-browser-control/skills/`)
+et s'appellent aussi depuis un script : `await skill("web.search", {query})`.
 
 ### `browser_script` : des dizaines d'actions en un seul appel
 

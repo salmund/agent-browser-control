@@ -186,7 +186,7 @@ async function apiHint(tabId, scope = "") {
       return `${k}${keys} : ${g.count} appel(s)${g.status ? `, ${g.status}` : ""}${paged}${where}`;
     });
     return `Données JSON détectées (rejouer plutôt que scroller) :\n${lines.join("\n")}\n` +
-      `Détail : devtools action="har" op="bodies" + urlPattern, ou site_api save_call pour mémoriser.\n\n`;
+      `Détail : devtools action="har" op="bodies" + urlPattern. Pour la prochaine fois : une fonction qui appelle cette API avec http() (skill save), sans onglet, le plus rapide.\n\n`;
   } catch {
     return "";
   }

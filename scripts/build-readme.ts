@@ -9,8 +9,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { TOOLS } from "../server/tools.ts";
 
-const ROWS_FR = ["Onglets", "Voir", "Agir", "DevTools", "Enregistrer, automatiser"] as const;
+const ROWS_FR = ["Verbes", "Onglets", "Voir", "Agir", "DevTools", "Enregistrer, automatiser"] as const;
 const ROWS_EN: Record<string, string> = {
+  Verbes: "Verbs",
   Onglets: "Tabs",
   Voir: "See",
   Agir: "Act",
@@ -20,6 +21,9 @@ const ROWS_EN: Record<string, string> = {
 
 /** Rubrique de chaque outil (ligne du tableau des README). */
 const CATEGORY: Record<string, string> = {
+  search: "Verbes",
+  read_urls: "Verbes",
+  skill: "Verbes",
   tabs_context: "Onglets",
   tabs_create: "Onglets",
   tabs_close: "Onglets",
