@@ -23,7 +23,11 @@ travail d'un coup :
   `search {query: "processus ptérygoïde", kind: "images"}`, puis `pick` sur la bonne.
 - `read_urls` : lire plusieurs pages d'un coup (en parallèle, onglets de fond refermés ensuite).
 - `skill` : les **fonctions apprises**, un parcours entier sur un site en 1 appel (`skill {action: "run", name, args}`).
-  Le catalogue arrive avec `tabs_context` et à l'arrivée sur un site : regarde-le avant de planifier.
+  Le catalogue est dans la description de l'outil `skill` (il arrive aussi avec `tabs_context` et à l'arrivée sur
+  un site) : regarde-le avant de planifier.
+
+Un verbe s'appelle **directement**, sans `tabs_context` avant ni après : il ouvre et referme ses onglets lui-même
+(sa réponse le dit). Pour une recherche, une image ou une lecture, c'est un seul appel puis la réponse.
 
 Outils différés (Claude Code) : charge d'un seul ToolSearch ceux dont tu auras besoin, par exemple
 `select:mcp__agent-browser-control__search,mcp__agent-browser-control__read_urls,mcp__agent-browser-control__skill,mcp__agent-browser-control__browser_script,mcp__agent-browser-control__tabs_context`,
@@ -57,9 +61,9 @@ skill {action: "save", name: "site.verbe", description: "ce qu'elle fait et renv
 
 ## Démarrer
 
-1. `tabs_context` : tes onglets (un groupe à ton nom d'agent) et le catalogue des fonctions. Aucun onglet ?
-   `tabs_create` (avec `url`, et `incognito: true` pour une page sans les sessions de l'utilisateur), sauf si un verbe
-   (`search`, `read_urls`, une fonction) fait le travail : il ouvre et referme ses onglets lui-même.
+1. Un verbe (`search`, `read_urls`, une fonction) fait le travail ? Appelle-le, sans rien d'autre. Sinon
+   `tabs_context` : tes onglets (un groupe à ton nom d'agent) et le catalogue des fonctions. Aucun onglet ?
+   `tabs_create` (avec `url`, et `incognito: true` pour une page sans les sessions de l'utilisateur).
 2. Tu n'agis que dans tes onglets. Pour un onglet ouvert par l'utilisateur, ouvre la même URL dans un des tiens.
 3. Si l'extension n'est pas connectée, dis-le : l'utilisateur doit ouvrir Comet / recharger l'extension.
 4. Tes onglets s'ouvrent et travaillent en arrière-plan : l'onglet de l'utilisateur reste devant, ne compte pas sur la

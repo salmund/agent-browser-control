@@ -6,7 +6,8 @@ export const SERVER_INSTRUCTIONS =
   "Pense en verbes avant de piloter pas à pas : search (web, images, vidéos ; read: N lit aussi les pages), read_urls " +
   "(plusieurs pages d'un coup) et les fonctions apprises de skill font un parcours entier en 1 appel. " +
   "Un parcours nouveau réussi sur un site (une recherche, une liste, un relevé) resservira avec d'autres valeurs : fige-le en fonction (skill save) avant de répondre, la prochaine fois ce sera 1 appel. " +
-  "Commence par tabs_context (il donne aussi le catalogue des fonctions) ; si aucun onglet, crée-en un avec tabs_create. " +
+  "Un verbe s'appelle directement, sans tabs_context : il ouvre et referme ses onglets lui-même, et le catalogue des fonctions est dans la description de skill. " +
+  "Pour piloter des onglets, commence par tabs_context ; si aucun onglet, crée-en un avec tabs_create. " +
   "Si tu es un des sous-agents d'un workflow (plusieurs agents en parallèle avec cette même connexion), " +
   "donne un label court et unique à tabs_context et tabs_create : tu as ainsi ton propre groupe d'onglets. " +
   "Travaille uniquement dans tes onglets. Préfère read_page / find + ref pour cibler les éléments, form_input pour les formulaires, " +

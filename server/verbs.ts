@@ -108,7 +108,9 @@ export function createSkillEngine(deps: EngineDeps) {
   function header(label: string, outcome: ScriptOutcome): string {
     const calls = outcome.calls != null ? `, ${outcome.calls} appel(s) d'outils` : "";
     const logs = outcome.logs.length ? `\nJournal : ${outcome.logs.map((l) => oneLine(l, 300)).join(" | ")}` : "";
-    return `${label} : ${outcome.ok ? "réussie" : "en échec"} en ${seconds(outcome.ms)}${calls}.${logs}`;
+    // Dit à l'agent qu'il n'a rien à fermer : sinon il revérifie ses onglets (un tour de modèle pour rien).
+    const tabs = outcome.ok ? " Onglets de open() refermés : rien à fermer." : "";
+    return `${label} : ${outcome.ok ? "réussie" : "en échec"} en ${seconds(outcome.ms)}${calls}.${tabs}${logs}`;
   }
 
   function failure(skill: Skill, outcome: ScriptOutcome): CallResult {
