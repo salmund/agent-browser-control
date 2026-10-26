@@ -876,8 +876,9 @@ function siteApiListText(api: Record<string, SiteEntry>): string {
   if (!sites.length) {
     return (
       "Site API vide : rien de capturé pour aller vite.\n" +
-      "Après un parcours coûteux, mémoriser l'utile : site_api save_call (tabId + requestId du HAR) pour un appel, " +
-      "save_route (nom + URL sans jeton) pour un deep link. Puis list, et rejouer au lieu de redécouvrir."
+      "Après un parcours coûteux qui resservira (une recherche, une liste, un relevé), le plus rapide la prochaine fois est " +
+      "une fonction : skill save (1 appel au lieu du parcours ; l'API JSON du site d'abord, celle qu'appelle sa propre page). " +
+      "Pour un simple repère : site_api save_route (nom + URL sans jeton), note (une ligne de playbook), save_call (requestId du HAR)."
     );
   }
   const lines: string[] = [];
