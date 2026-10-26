@@ -123,7 +123,7 @@ import { skillToolDescription } from "./tools.ts";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.9.0";
+const VERSION = "0.10.0";
 const EXTENSION_WAIT_MS = 10_000;
 const LOG_FILE = join(CONFIG_DIR, "actions.log");
 /** Fichiers joints par l'extension (GIF, captures…). ABC_OUTPUT_DIR le remplace (tests). */

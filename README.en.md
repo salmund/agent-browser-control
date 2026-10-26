@@ -148,6 +148,14 @@ clicking, and falls back to the simulated gesture when the real mouse is unavail
 page, protected site seen in the last 30 min); elsewhere gestures stay simulated and fast. The agent can decide for a
 gesture (`computer`, `human: true` or `false`). Off by default: on your own PC, the pointer stays yours.
 
+### Updating
+
+`npm run update`, from the repository folder, on each device: it waits until agents are done, fetches the new
+version, lets that version install itself (dependencies, settings migrations, daemon, extension, a check of every
+tool) and rolls back to the previous one if anything fails. A server keeps itself up to date with
+`npm run update -- --auto` run by a timer or a webhook. Details, device profile and rules for restructuring without
+breaking devices (in French): [`docs/mise-a-jour.md`](docs/mise-a-jour.md).
+
 ## The tools
 
 | | Tools |
@@ -187,6 +195,11 @@ took twenty turns. The function catalogue is served by `tabs_context`, before th
 the site; a function that fails (the site changed) is flagged for repair, and its previous versions are kept. Built-in
 functions (`web.search`, `web.images`, `web.videos`, `web.read`, in [`skills/`](skills)) use the same format as learned
 ones (`~/.agent-browser-control/skills/`) and can be called from a script: `await skill("web.search", {query})`.
+
+What an agent learns on one device can serve them all: just sync the `~/.agent-browser-control/skills/` folder between
+devices (with Syncthing, say, leaving `.anciennes`, the previous versions, local to each). The catalogue is re-read on
+every call, so a received function is usable at once; only the file named after its function (`<name>.js`) counts, so
+a sync conflict copy never replaces the original. Usage statistics (`skills-stats.json`) stay per device.
 
 ### `browser_script`: dozens of actions in a single call
 

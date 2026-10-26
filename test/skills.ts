@@ -5,7 +5,7 @@
  * Lancer avec : node test/skills.ts
  */
 import assert from "node:assert";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -198,6 +198,19 @@ try {
 
   // Catalogue vide d'apprises : invite à en écrire.
   assert.ok(/aucune pour l'instant/.test(formatCatalog(loadSkills(BUILTIN, dir), {})));
+
+  // Dossier partagé entre appareils (Syncthing) : une copie de conflit ne remplace jamais l'originale.
+  const appris = join(dir, "skills");
+  mkdirSync(appris, { recursive: true });
+  const fichier = (version: number, retour: string) =>
+    `/** @skill\n${JSON.stringify({ name: "partage.essai", description: "Fonction partagée entre appareils.", params: {}, version })}\n*/\nreturn ${retour};\n`;
+  writeFileSync(join(appris, "partage.essai.js"), fichier(2, '"originale"'));
+  writeFileSync(join(appris, "partage.essai.sync-conflict-20261026-120000-ABCDEFG.js"), fichier(1, '"conflit"'));
+  writeFileSync(join(appris, "copie.js"), fichier(3, '"copie"'));
+  const partagees = loadSkills(BUILTIN, dir);
+  assert.strictEqual(partagees.get("partage.essai")?.version, 2, "l'originale, pas la copie de conflit ni la copie mal nommée");
+  assert.ok(partagees.get("partage.essai")?.code.includes("originale"));
+  rmSync(appris, { recursive: true, force: true });
 
   // --- Le code des fonctions intégrées, exécuté sur de faux outils ---------------------------------
   async function runBuiltin(name: string, rawArgs: Record<string, unknown>, fake: Record<string, unknown>): Promise<unknown> {

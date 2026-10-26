@@ -14,7 +14,7 @@ import { HOST, PORT, disabledToolNames, getToken, timeoutFor, type CallResult } 
 import { createAbcServer } from "./mcp-server.ts";
 import { noticeFor } from "./notify.ts";
 
-const SHIM_INFO = { name: "agent-browser-control", version: "0.9.0" };
+const SHIM_INFO = { name: "agent-browser-control", version: "0.10.0" };
 /** Attente maximale d'une réponse du démon (ask_human peut durer 615 s). */
 const SHIM_TIMEOUT_MAX_MS = 660_000;
 

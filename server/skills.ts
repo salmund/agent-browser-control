@@ -103,6 +103,11 @@ export function formatSkillFile(meta: SkillMeta, code: string): string {
   return `/** @skill\n${JSON.stringify(meta, null, 2)}\n*/\n${code.replace(/^\s*\n/, "")}${code.endsWith("\n") ? "" : "\n"}`;
 }
 
+/**
+ * Un fichier ne compte que s'il porte le nom de sa fonction (<nom>.js) : une copie de conflit d'une
+ * synchronisation entre appareils (nom.sync-conflict-….js, Syncthing) ou une copie à la main ne prend
+ * jamais la place de l'originale.
+ */
 function readDirSkills(dir: string, source: Skill["source"]): Skill[] {
   if (!existsSync(dir)) return [];
   const out: Skill[] = [];
@@ -112,7 +117,7 @@ function readDirSkills(dir: string, source: Skill["source"]): Skill[] {
     try {
       if (!statSync(file).isFile()) continue;
       const skill = parseSkillFile(readFileSync(file, "utf8"), source, file);
-      if (skill) out.push(skill);
+      if (skill && f === `${skill.name}.js`) out.push(skill);
     } catch {}
   }
   return out;

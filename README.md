@@ -151,6 +151,14 @@ page de connexion, site protégé vu depuis moins de 30 min) ; ailleurs, le gest
 trancher pour un geste (`computer`, `human: true` ou `false`). Désactivé par défaut : sur votre PC, le pointeur reste à
 vous.
 
+### Mettre à jour
+
+`npm run update`, depuis le dossier du dépôt, sur chaque appareil : la commande attend que les agents aient fini,
+récupère la nouvelle version, la laisse se mettre en place elle-même (dépendances, migrations des réglages, démon,
+extension, vérification de tous les outils) et revient à la précédente si quelque chose échoue. Un serveur se tient
+à jour seul avec `npm run update -- --auto` lancé par un minuteur ou un webhook. Détails, profil d'appareil et
+règles pour restructurer sans casser les appareils : [`docs/mise-a-jour.md`](docs/mise-a-jour.md).
+
 ## Les outils
 
 | | Outils |
@@ -192,6 +200,12 @@ ne planifie, et rappelé à l'arrivée sur le site ; une fonction qui échoue (s
 versions précédentes sont gardées. Les fonctions intégrées (`web.search`, `web.images`, `web.videos`, `web.read`, dans
 [`skills/`](skills)) sont écrites dans le même format que les fonctions apprises (`~/.agent-browser-control/skills/`)
 et s'appellent aussi depuis un script : `await skill("web.search", {query})`.
+
+Ce qu'un agent apprend sur un appareil peut servir à tous : il suffit de synchroniser le dossier
+`~/.agent-browser-control/skills/` entre appareils (Syncthing, par exemple, en laissant `.anciennes`, les versions
+précédentes, propre à chacun). Le catalogue est relu à chaque appel, une fonction reçue sert donc aussitôt ; seul
+compte le fichier qui porte le nom de sa fonction (`<nom>.js`), si bien qu'une copie de conflit de la synchronisation
+ne remplace jamais l'originale. Les statistiques d'usage (`skills-stats.json`) restent propres à chaque appareil.
 
 ### `browser_script` : des dizaines d'actions en un seul appel
 
